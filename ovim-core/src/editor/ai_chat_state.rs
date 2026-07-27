@@ -448,6 +448,13 @@ pub struct CodeExplanationExchange {
     pub failed: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct CachedCodeExplanation {
+    pub tool_call_id: String,
+    pub steps: Vec<super::code_explanation::CodeExplanationStep>,
+    pub bytes: usize,
+}
+
 pub struct PendingCodeExplanation {
     pub tool_call: ToolCallInfo,
     pub steps: Vec<super::code_explanation::CodeExplanationStep>,
@@ -460,6 +467,8 @@ pub struct PendingCodeExplanation {
     pub interaction: CodeExplanationInteraction,
     /// Tool navigation must not silently retarget later agent mutations.
     pub original_active_buffer_id: BufferId,
+    /// Ephemeral read-only buffer rendering the current invocation-time snapshot.
+    pub presentation_buffer_id: Option<BufferId>,
     /// Present only while the original explain_with_codebase call is blocked.
     /// A question consumes this continuation but leaves the walkthrough open.
     pub continuation: Option<CodeExplanationContinuation>,
@@ -703,6 +712,10 @@ pub struct AiChatState {
     pub pending_subagent_control: Option<PendingSubagentControl>,
     /// Interactive code walkthrough currently blocking the invoking tool.
     pub pending_code_explanation: Option<PendingCodeExplanation>,
+    /// Oldest retained completed walkthrough first. Entries hold only files
+    /// below the large-file cutoff and share source text across repeated pages.
+    pub code_explanation_cache: VecDeque<CachedCodeExplanation>,
+    pub code_explanation_cache_bytes: usize,
     /// First-chat-open prompt when session starts outside a git repo.
     pub pending_no_repo_folder_approval: Option<PathBuf>,
     /// Session-scoped roots explicitly approved for path-restricted tool access
@@ -890,6 +903,8 @@ impl AiChatState {
             pending_web_execution: None,
             pending_subagent_control: None,
             pending_code_explanation: None,
+            code_explanation_cache: VecDeque::new(),
+            code_explanation_cache_bytes: 0,
             pending_no_repo_folder_approval: None,
             approved_external_roots: Vec::new(),
             tool_event_summaries: HashMap::new(),

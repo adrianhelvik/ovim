@@ -408,8 +408,15 @@ mental model, transition, or synthesis that does not belong to one source
 range. Their body is limited by the current terminal dimensions, and the agent
 must split dense material into focused semantic pages rather than truncating or
 compressing it. Code pages keep the referenced source selected in the existing
-compact card. Both page types aim to teach one new idea at a time and introduce
-only the context needed for the next page.
+compact card. Ovim captures eligible referenced files when it accepts the
+walkthrough, then validates and renders their code pages from that immutable
+snapshot. Completed
+walkthrough snapshots are retained for replay in a 10 MiB, oldest-first cache,
+so later buffer edits, external file changes, renames, or deletions do not replace
+cached code. Files of 5 MiB or larger are deliberately not retained and are read
+from the current buffer or disk when their page is shown; this keeps a single
+large source from displacing useful tutorials. Both page types aim to teach one
+new idea at a time and introduce only the context needed for the next page.
 
 Move between pages with Left/Right (or `h`/`l`). Press Space to ask about the
 current page; its explanation is attached as quoted context, Enter sends,

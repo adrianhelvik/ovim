@@ -141,6 +141,16 @@ impl Buffer {
     /// Enables syntax highlighting for this buffer based on file path
     /// Automatically skips large files for performance
     pub fn enable_syntax_highlighting(&mut self) {
+        let Some(path) = self.file_path.clone() else {
+            return;
+        };
+        self.enable_syntax_highlighting_for_path(&path);
+    }
+
+    /// Enables syntax highlighting using a source path without associating the
+    /// buffer with that file. This is used by immutable virtual views such as
+    /// walkthrough snapshots, which must never become save or LSP targets.
+    pub fn enable_syntax_highlighting_for_path(&mut self, path: &str) {
         // Don't enable syntax for large files
         if self.is_large_file() {
             // Note: Syntax highlighting disabled for large files - don't print to stderr
@@ -148,17 +158,15 @@ impl Buffer {
             return;
         }
 
-        if let Some(ref path) = self.file_path {
-            if let Some(lang) = LanguageRegistry::detect_from_path(path) {
-                if let Ok(mut highlighter) = SyntaxHighlighter::new(lang) {
-                    // Parse and build the cache directly from the rope — no
-                    // intermediate `String` copy of the entire buffer.
-                    highlighter.parse_rope(&self.rope);
-                    self.build_highlight_cache_from_rope(&highlighter);
+        if let Some(lang) = LanguageRegistry::detect_from_path(path) {
+            if let Ok(mut highlighter) = SyntaxHighlighter::new(lang) {
+                // Parse and build the cache directly from the rope — no
+                // intermediate `String` copy of the entire buffer.
+                highlighter.parse_rope(&self.rope);
+                self.build_highlight_cache_from_rope(&highlighter);
 
-                    self.syntax = Some(highlighter);
-                    self.version += 1;
-                }
+                self.syntax = Some(highlighter);
+                self.version += 1;
             }
         }
     }

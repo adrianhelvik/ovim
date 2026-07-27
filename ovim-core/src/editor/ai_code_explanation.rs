@@ -1,7 +1,9 @@
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::ToolResult;
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use super::ai_chat_state::{
     CodeExplanationContinuation, CodeExplanationExchange, CodeExplanationInteraction,
@@ -10,8 +12,10 @@ use super::ai_chat_state::{
 use super::code_explanation::{
     comment_rows_for_viewport, concept_body_row_limit, concept_body_rows_for_viewport,
     safe_code_rows, CodeExplanationDiscussionView, CodeExplanationPageView, CodeExplanationStep,
-    CodeExplanationView, MAX_WALKTHROUGH_COMMENT_BYTES, MAX_WALKTHROUGH_COMMENT_ROWS,
+    CodeExplanationView, MAX_WALKTHROUGH_CACHE_BYTES, MAX_WALKTHROUGH_CACHE_ENTRIES,
+    MAX_WALKTHROUGH_COMMENT_BYTES, MAX_WALKTHROUGH_COMMENT_ROWS,
     MAX_WALKTHROUGH_CONCEPT_BODY_BYTES, MAX_WALKTHROUGH_CONCEPT_TITLE_CHARS, MAX_WALKTHROUGH_STEPS,
+    MIN_UNCACHEABLE_WALKTHROUGH_FILE_BYTES,
 };
 use super::Editor;
 
@@ -120,10 +124,74 @@ impl Editor {
             .is_some_and(|chat| chat.pending_code_explanation.is_some())
     }
 
-    /// Replay a completed walkthrough from its retained tool-call arguments.
-    /// This deliberately revalidates paths and ranges against the current
-    /// workspace so stale history fails clearly instead of navigating to the
-    /// wrong code.
+    fn cached_code_explanation_steps(
+        &mut self,
+        tool_call_id: &str,
+    ) -> Option<Vec<CodeExplanationStep>> {
+        let chat = self.ai_state.chat.as_mut()?;
+        let position = chat
+            .code_explanation_cache
+            .iter()
+            .position(|entry| entry.tool_call_id == tool_call_id)?;
+        let entry = chat.code_explanation_cache.remove(position)?;
+        let steps = entry.steps.clone();
+        chat.code_explanation_cache.push_back(entry);
+        Some(steps)
+    }
+
+    fn retain_code_explanation_steps(&mut self, tool_call_id: &str, steps: &[CodeExplanationStep]) {
+        let mut seen = HashSet::new();
+        let bytes = steps
+            .iter()
+            .filter_map(|step| match step {
+                CodeExplanationStep::Code {
+                    absolute_path,
+                    snapshot: Some(snapshot),
+                    ..
+                } if seen.insert(absolute_path.clone()) => Some(snapshot.len()),
+                _ => None,
+            })
+            .sum::<usize>();
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return;
+        };
+
+        if let Some(position) = chat
+            .code_explanation_cache
+            .iter()
+            .position(|entry| entry.tool_call_id == tool_call_id)
+        {
+            if let Some(previous) = chat.code_explanation_cache.remove(position) {
+                chat.code_explanation_cache_bytes = chat
+                    .code_explanation_cache_bytes
+                    .saturating_sub(previous.bytes);
+            }
+        }
+        if bytes > MAX_WALKTHROUGH_CACHE_BYTES {
+            return;
+        }
+        while chat.code_explanation_cache_bytes.saturating_add(bytes) > MAX_WALKTHROUGH_CACHE_BYTES
+            || chat.code_explanation_cache.len() >= MAX_WALKTHROUGH_CACHE_ENTRIES
+        {
+            let Some(evicted) = chat.code_explanation_cache.pop_front() else {
+                break;
+            };
+            chat.code_explanation_cache_bytes = chat
+                .code_explanation_cache_bytes
+                .saturating_sub(evicted.bytes);
+        }
+        chat.code_explanation_cache
+            .push_back(super::ai_chat_state::CachedCodeExplanation {
+                tool_call_id: tool_call_id.to_string(),
+                steps: steps.to_vec(),
+                bytes,
+            });
+        chat.code_explanation_cache_bytes = chat.code_explanation_cache_bytes.saturating_add(bytes);
+    }
+
+    /// Replay a completed walkthrough from its retained invocation snapshot.
+    /// Evicted entries and deliberately uncached large files fall back to the
+    /// current workspace and are validated again.
     pub fn replay_code_explanation(&mut self, tool_call_id: &str) -> bool {
         if self.ai_chat_waiting() || self.ai_chat_has_pending_code_explanation() {
             self.set_status_message("Finish the active agent work before replaying a walkthrough");
@@ -155,10 +223,18 @@ impl Editor {
         tool_call: ToolCallInfo,
         continuation: CodeExplanationContinuation,
     ) -> Result<(), (ToolResult, Box<CodeExplanationContinuation>)> {
-        let steps = match self.parse_code_explanation_steps(&tool_call.arguments) {
-            Ok(steps) => steps,
-            Err(error) => return Err((error, Box::new(continuation))),
+        let cached_steps = matches!(continuation, CodeExplanationContinuation::Replay)
+            .then(|| self.cached_code_explanation_steps(&tool_call.id))
+            .flatten();
+        let steps = if let Some(steps) = cached_steps {
+            steps
+        } else {
+            match self.parse_code_explanation_steps(&tool_call.arguments) {
+                Ok(steps) => steps,
+                Err(error) => return Err((error, Box::new(continuation))),
+            }
         };
+        self.retain_code_explanation_steps(&tool_call.id, &steps);
         let original_active_buffer_id = self
             .ai_state
             .chat
@@ -185,6 +261,7 @@ impl Editor {
             answer_scroll: 0,
             interaction: CodeExplanationInteraction::Navigating,
             original_active_buffer_id,
+            presentation_buffer_id: None,
             continuation: Some(continuation),
         });
         chat.waiting = false;
@@ -196,6 +273,10 @@ impl Editor {
                 .as_mut()
                 .and_then(|chat| chat.pending_code_explanation.take())
             {
+                self.discard_code_explanation_presentation_buffer(
+                    pending.presentation_buffer_id,
+                    pending.original_active_buffer_id,
+                );
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.active_buffer_id = original_active_buffer_id;
                 }
@@ -559,6 +640,10 @@ impl Editor {
             return false;
         };
 
+        self.discard_code_explanation_presentation_buffer(
+            pending.presentation_buffer_id,
+            pending.original_active_buffer_id,
+        );
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.active_buffer_id = pending.original_active_buffer_id;
         }
@@ -694,6 +779,10 @@ impl Editor {
             .filter(|height| *height > 0)
             .or_else(|| (self.viewport_height() > 0).then(|| self.viewport_height()));
         let mut steps = Vec::with_capacity(raw_steps.len());
+        let mut snapshots: HashMap<PathBuf, Arc<str>> = HashMap::new();
+        // Large sources are shared only during validation, then dropped. Their
+        // pages intentionally read the file again when displayed.
+        let mut uncacheable_sources: HashMap<PathBuf, String> = HashMap::new();
 
         for (index, raw) in raw_steps.iter().enumerate() {
             let step_number = index + 1;
@@ -804,12 +893,29 @@ impl Editor {
                             .map_or(0, |area| area.width as usize),
                     )
                 });
-            let metrics = self.code_explanation_source_metrics(
-                &absolute_path,
-                start_line,
-                end_line,
-                wrap_width,
-            );
+            if !snapshots.contains_key(&absolute_path)
+                && !uncacheable_sources.contains_key(&absolute_path)
+            {
+                let content = self
+                    .capture_code_explanation_source(&absolute_path)
+                    .map_err(|error| {
+                        ToolResult::Error(format!(
+                            "step {step_number} cannot read '{path}': {error}"
+                        ))
+                    })?;
+                if content.len() >= MIN_UNCACHEABLE_WALKTHROUGH_FILE_BYTES {
+                    uncacheable_sources.insert(absolute_path.clone(), content);
+                } else {
+                    snapshots.insert(absolute_path.clone(), Arc::from(content));
+                }
+            }
+            let snapshot = snapshots.get(&absolute_path).cloned();
+            let source = snapshot
+                .as_deref()
+                .or_else(|| uncacheable_sources.get(&absolute_path).map(String::as_str));
+            let source = source.expect("validated source must remain available during parsing");
+            let metrics =
+                self.code_explanation_source_metrics(source, start_line, end_line, wrap_width);
             if start_line > metrics.line_count {
                 return Err(ToolResult::Error(format!(
                     "step {step_number} start_line ({start_line}) exceeds '{path}' line count ({})",
@@ -833,6 +939,7 @@ impl Editor {
             steps.push(CodeExplanationStep::Code {
                 path,
                 absolute_path,
+                snapshot,
                 start_line,
                 end_line,
                 comment,
@@ -851,13 +958,7 @@ impl Editor {
         })
     }
 
-    fn code_explanation_source_metrics(
-        &self,
-        path: &Path,
-        start_line: usize,
-        end_line: usize,
-        wrap_width: Option<usize>,
-    ) -> CodeExplanationSourceMetrics {
+    fn capture_code_explanation_source(&self, path: &Path) -> Result<String, String> {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         if let Some(buffer) = self.buffers.iter().find(|buffer| {
             buffer.file_path().is_some_and(|candidate| {
@@ -867,33 +968,34 @@ impl Editor {
                     == canonical
             })
         }) {
-            let line_count = buffer.rope().len_lines();
-            let line_visual_rows = wrap_width.map(|width| {
-                (start_line.saturating_sub(1)..end_line.min(line_count))
-                    .map(|line| {
-                        (
-                            line + 1,
-                            crate::wrap::visual_line_count(
-                                buffer.line_text(line).as_deref().unwrap_or(""),
-                                width,
-                                self.options.tab_width,
-                            ),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            });
-            let visual_rows = line_visual_rows
-                .as_ref()
-                .map(|rows| rows.iter().map(|(_, count)| count).sum());
-            return CodeExplanationSourceMetrics {
-                line_count,
-                visual_rows,
-                line_visual_rows,
-            };
+            return Ok(buffer.rope().to_string());
         }
 
-        let content = std::fs::read_to_string(path).unwrap_or_default();
-        let lines = content.lines().collect::<Vec<_>>();
+        const STABLE_READ_ATTEMPTS: usize = 3;
+        for _ in 0..STABLE_READ_ATTEMPTS {
+            let first = std::fs::read(path).map_err(|error| error.to_string())?;
+            let second = std::fs::read(path).map_err(|error| error.to_string())?;
+            if first != second {
+                continue;
+            }
+            let (encoding, bom_offset) = crate::buffer::FileEncoding::detect(&second);
+            let content = encoding
+                .decode(&second, bom_offset)
+                .map_err(|error| error.to_string())?;
+            return Ok(crate::buffer::normalize_for_buffer(&content).into_owned());
+        }
+
+        Err("file changed repeatedly while it was being captured".to_string())
+    }
+
+    fn code_explanation_source_metrics(
+        &self,
+        content: &str,
+        start_line: usize,
+        end_line: usize,
+        wrap_width: Option<usize>,
+    ) -> CodeExplanationSourceMetrics {
+        let lines = content.split('\n').collect::<Vec<_>>();
         let line_count = lines.len().max(1);
         let line_visual_rows = wrap_width.map(|width| {
             (start_line.saturating_sub(1)..end_line.min(line_count))
@@ -920,17 +1022,35 @@ impl Editor {
     }
 
     fn show_current_code_explanation_step(&mut self) -> Result<(), ToolResult> {
-        let step = self
+        let (step, previous_buffer_id, original_buffer_id) = self
             .ai_state
             .chat
             .as_ref()
             .and_then(|chat| chat.pending_code_explanation.as_ref())
-            .and_then(|pending| pending.steps.get(pending.current))
-            .cloned()
+            .and_then(|pending| {
+                pending.steps.get(pending.current).cloned().map(|step| {
+                    (
+                        step,
+                        pending.presentation_buffer_id,
+                        pending.original_active_buffer_id,
+                    )
+                })
+            })
             .ok_or_else(|| ToolResult::Error("walkthrough has no current page".to_string()))?;
+
+        self.discard_code_explanation_presentation_buffer(previous_buffer_id, original_buffer_id);
+        if let Some(pending) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+        {
+            pending.presentation_buffer_id = None;
+        }
 
         let CodeExplanationStep::Code {
             absolute_path,
+            snapshot,
             start_line,
             end_line,
             ..
@@ -940,14 +1060,34 @@ impl Editor {
             return Ok(());
         };
 
-        let opened = self.handle_open_file_at_absolute_path(
-            &absolute_path,
-            &json!({ "line": start_line, "column": 1 }),
-            false,
-        );
-        if let ToolResult::Error(error) = opened {
-            return Err(ToolResult::Error(error));
+        let source = match snapshot {
+            Some(snapshot) => snapshot,
+            None => Arc::from(
+                self.capture_code_explanation_source(&absolute_path)
+                    .map_err(|error| {
+                        ToolResult::Error(format!(
+                            "cannot read uncached walkthrough source '{}': {error}",
+                            absolute_path.display()
+                        ))
+                    })?,
+            ),
+        };
+        let mut buffer = crate::buffer::Buffer::new_from_str(&source);
+        buffer.set_read_only(true);
+        buffer.enable_syntax_highlighting_for_path(&absolute_path.to_string_lossy());
+        let presentation_buffer_id = buffer.id();
+        self.add_buffer(buffer);
+        // The virtual snapshot is intentionally not an LSP document or a save target.
+        self.lsp.state.needs_lsp_init = false;
+        if let Some(pending) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+        {
+            pending.presentation_buffer_id = Some(presentation_buffer_id);
         }
+
         let selected = self.execute_navigation_tool(
             "select_text",
             &json!({
@@ -956,17 +1096,41 @@ impl Editor {
             }),
         );
         if let ToolResult::Error(error) = selected {
+            self.discard_code_explanation_presentation_buffer(
+                Some(presentation_buffer_id),
+                original_buffer_id,
+            );
             return Err(ToolResult::Error(error));
         }
         // `select_text` centers the midpoint for general navigation. A
         // walkthrough instead owns the bottom rows with its card, so pin the
         // range's first line to the top and let the validated visual-row budget
         // flow downward without being obscured.
-        self.buffer_mut()
-            .cursor_mut()
-            .set_position(start_line.saturating_sub(1), crate::unicode::GraphemeCol(0));
+        self.buffer_mut().cursor_mut().set_position(
+            start_line.saturating_sub(1),
+            crate::unicode::GraphemeCol::ZERO,
+        );
         self.move_cursor_line_to_top_with_offset(0);
         Ok(())
+    }
+
+    pub(super) fn discard_code_explanation_presentation_buffer(
+        &mut self,
+        buffer_id: Option<crate::buffer::BufferId>,
+        fallback_buffer_id: crate::buffer::BufferId,
+    ) {
+        let Some(buffer_id) = buffer_id else {
+            return;
+        };
+        let Some(index) = self.find_buffer_index_by_id(buffer_id) else {
+            return;
+        };
+        self.buffers.remove(index);
+        self.current_buffer_index = self
+            .find_buffer_index_by_id(fallback_buffer_id)
+            .unwrap_or_else(|| index.min(self.buffers.len().saturating_sub(1)));
+        self.lsp.state.needs_lsp_init = self.buffer().file_path().is_some();
+        self.mark_dirty();
     }
 }
 
@@ -1424,7 +1588,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn walkthrough_opens_and_selects_each_step_without_retargeting_the_agent() {
-        let (_dir, mut editor, first, second) = setup_editor();
+        let (_dir, mut editor, _first, _second) = setup_editor();
         let original_target = editor.ai_state.chat.as_ref().unwrap().active_buffer_id;
         let tool_call = call(json!([
             {
@@ -1444,24 +1608,16 @@ mod tests {
             panic!("could not start walkthrough: {error:?}");
         }
         assert!(editor.ai_chat_has_pending_code_explanation());
-        assert_eq!(
-            PathBuf::from(editor.buffer().file_path().unwrap())
-                .canonicalize()
-                .unwrap(),
-            first.canonicalize().unwrap()
-        );
+        assert!(editor.buffer().file_path().is_none());
+        assert_eq!(editor.buffer().line_text(1).as_deref(), Some("// first 2"));
         assert_eq!(editor.ai_code_explanation_view().unwrap().current, 1);
         let selection = editor.ai_state.active_selection.as_ref().unwrap();
         assert_eq!((selection.start_line, selection.end_line), (1, 3));
         assert_eq!(editor.scroll_offset(), 1);
 
         assert!(editor.move_code_explanation(true));
-        assert_eq!(
-            PathBuf::from(editor.buffer().file_path().unwrap())
-                .canonicalize()
-                .unwrap(),
-            second.canonicalize().unwrap()
-        );
+        assert!(editor.buffer().file_path().is_none());
+        assert_eq!(editor.buffer().line_text(6).as_deref(), Some("// second 7"));
         assert_eq!(editor.ai_code_explanation_view().unwrap().current, 2);
 
         editor.finish_code_explanation(true);
@@ -1474,8 +1630,69 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn concept_pages_and_code_pages_share_one_linear_sequence() {
+    async fn walkthrough_keeps_invocation_snapshot_after_external_edit_and_delete() {
         let (_dir, mut editor, _first, second) = setup_editor();
+        let original_buffer_count = editor.buffer_count();
+        let tool_call = call(json!([
+            {
+                "path": "first.rs",
+                "start_line": 2,
+                "comment": "The first page gives the harness time to edit another file."
+            },
+            {
+                "path": "second.rs",
+                "start_line": 7,
+                "comment": "This page must still use the version captured at invocation."
+            }
+        ]));
+
+        if let Err((error, _)) = editor.begin_code_explanation(tool_call, batch_continuation()) {
+            panic!("walkthrough should start: {error:?}");
+        }
+        std::fs::write(&second, "replacement line 1\nreplacement line 2\n")
+            .expect("replace source after capture");
+        std::fs::remove_file(&second).expect("delete live source after replacement");
+
+        assert!(editor.move_code_explanation(true));
+        assert_eq!(editor.buffer().line_text(6).as_deref(), Some("// second 7"));
+        assert_eq!(editor.buffer_count(), original_buffer_count + 1);
+
+        assert!(editor.finish_code_explanation(false));
+        assert_eq!(editor.buffer_count(), original_buffer_count);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn walkthrough_snapshot_does_not_follow_later_unsaved_buffer_edits() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        let source_buffer_id = editor.ai_state.chat.as_ref().unwrap().active_buffer_id;
+        let tool_call = call(json!([{
+            "path": "first.rs",
+            "start_line": 2,
+            "comment": "The walkthrough renders an immutable buffer snapshot."
+        }]));
+
+        if let Err((error, _)) = editor.begin_code_explanation(tool_call, batch_continuation()) {
+            panic!("walkthrough should start: {error:?}");
+        }
+        editor
+            .get_buffer_by_id_mut(source_buffer_id)
+            .unwrap()
+            .replace_all("changed after invocation\n");
+
+        assert_eq!(editor.buffer().line_text(1).as_deref(), Some("// first 2"));
+        assert_eq!(
+            editor
+                .get_buffer_by_id(source_buffer_id)
+                .unwrap()
+                .line_text(0)
+                .as_deref(),
+            Some("changed after invocation")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concept_pages_and_code_pages_share_one_linear_sequence() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
         let original_target = editor.ai_state.chat.as_ref().unwrap().active_buffer_id;
         let tool_call = call(json!([
             {
@@ -1506,12 +1723,8 @@ mod tests {
             editor.ai_code_explanation_view().unwrap().page,
             CodeExplanationPageView::Code { start_line: 7, .. }
         ));
-        assert_eq!(
-            PathBuf::from(editor.buffer().file_path().unwrap())
-                .canonicalize()
-                .unwrap(),
-            second.canonicalize().unwrap()
-        );
+        assert!(editor.buffer().file_path().is_none());
+        assert_eq!(editor.buffer().line_text(6).as_deref(), Some("// second 7"));
         assert!(editor.ai_state.active_selection.is_some());
 
         assert!(editor.move_code_explanation(false));
@@ -1698,6 +1911,143 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn cached_replay_keeps_source_syntax_and_restores_the_lsp_target() {
+        let (_dir, mut editor, first, _second) = setup_editor();
+        let source_buffer_id = editor.ai_state.chat.as_ref().unwrap().active_buffer_id;
+        let tool_call = call(json!([{
+            "path": "first.rs",
+            "start_line": 2,
+            "comment": "The cached replay must preserve this source version."
+        }]));
+        editor
+            .conversation_mut()
+            .unwrap()
+            .append_assistant_message_with_tools(
+                String::new(),
+                "test".into(),
+                vec![tool_call.clone()],
+            );
+
+        if let Err((error, _)) =
+            editor.begin_code_explanation(tool_call.clone(), batch_continuation())
+        {
+            panic!("walkthrough should start: {error:?}");
+        }
+        assert!(editor.buffer().has_syntax_highlighting());
+        assert!(!editor.lsp.state.needs_lsp_init);
+        assert_eq!(
+            editor.ai_state.chat.as_ref().unwrap().active_buffer_id,
+            source_buffer_id
+        );
+        assert!(editor.finish_code_explanation(false));
+        assert!(editor.lsp.state.needs_lsp_init);
+
+        editor
+            .get_buffer_by_id_mut(source_buffer_id)
+            .unwrap()
+            .replace_all("changed after the walkthrough\n");
+        std::fs::remove_file(first).expect("cached replay must survive source deletion");
+        assert!(editor.replay_code_explanation(&tool_call.id));
+        assert_eq!(editor.buffer().line_text(1).as_deref(), Some("// first 2"));
+        assert!(editor.buffer().has_syntax_highlighting());
+        assert!(!editor.lsp.state.needs_lsp_init);
+        assert_eq!(
+            editor.ai_state.chat.as_ref().unwrap().active_buffer_id,
+            source_buffer_id
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn walkthrough_cache_evicts_oldest_tutorial_before_exceeding_ten_megabytes() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        let make_steps = |prefix: &str| {
+            ["a.rs", "b.rs"]
+                .into_iter()
+                .map(|name| CodeExplanationStep::Code {
+                    path: name.into(),
+                    absolute_path: PathBuf::from(format!("{prefix}-{name}")),
+                    snapshot: Some(Arc::from("x".repeat(3 * 1024 * 1024))),
+                    start_line: 1,
+                    end_line: 1,
+                    comment: "Cached source.".into(),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        editor.retain_code_explanation_steps("older", &make_steps("older"));
+        editor.retain_code_explanation_steps("newer", &make_steps("newer"));
+
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        assert_eq!(chat.code_explanation_cache.len(), 1);
+        assert_eq!(chat.code_explanation_cache[0].tool_call_id, "newer");
+        assert_eq!(chat.code_explanation_cache_bytes, 6 * 1024 * 1024);
+        assert!(chat.code_explanation_cache_bytes <= MAX_WALKTHROUGH_CACHE_BYTES);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn five_megabyte_files_are_read_on_demand_instead_of_retained() {
+        let (dir, mut editor, _first, _second) = setup_editor();
+        let large = dir.path().join("large.rs");
+        let mut original = b"// original large source\n".to_vec();
+        original.resize(MIN_UNCACHEABLE_WALKTHROUGH_FILE_BYTES, b' ');
+        std::fs::write(&large, original).unwrap();
+        let tool_call = call(json!([{
+            "path": "large.rs",
+            "start_line": 1,
+            "comment": "Large files are intentionally loaded only for the visible page."
+        }]));
+        editor
+            .conversation_mut()
+            .unwrap()
+            .append_assistant_message_with_tools(
+                String::new(),
+                "test".into(),
+                vec![tool_call.clone()],
+            );
+
+        if let Err((error, _)) =
+            editor.begin_code_explanation(tool_call.clone(), batch_continuation())
+        {
+            panic!("large walkthrough should start: {error:?}");
+        }
+        let pending = editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .pending_code_explanation
+            .as_ref()
+            .unwrap();
+        assert!(matches!(
+            &pending.steps[0],
+            CodeExplanationStep::Code { snapshot: None, .. }
+        ));
+        assert_eq!(
+            editor
+                .ai_state
+                .chat
+                .as_ref()
+                .unwrap()
+                .code_explanation_cache_bytes,
+            0
+        );
+        assert_eq!(
+            editor.buffer().line_text(0).as_deref(),
+            Some("// original large source")
+        );
+        assert!(editor.finish_code_explanation(false));
+
+        let mut replacement = b"// replacement read on replay\n".to_vec();
+        replacement.resize(MIN_UNCACHEABLE_WALKTHROUGH_FILE_BYTES, b' ');
+        std::fs::write(&large, replacement).unwrap();
+        assert!(editor.replay_code_explanation(&tool_call.id));
+        assert_eq!(
+            editor.buffer().line_text(0).as_deref(),
+            Some("// replacement read on replay")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn completed_walkthrough_replays_locally_without_changing_history() {
         let (_dir, mut editor, _first, _second) = setup_editor();
         let tool_call = call(json!([
@@ -1851,8 +2201,9 @@ mod tests {
             .buffer_mut()
             .replace_all("an unsaved line that wraps\nsecond line\n");
         let path = PathBuf::from(editor.buffer().file_path().unwrap());
+        let snapshot = editor.capture_code_explanation_source(&path).unwrap();
 
-        let metrics = editor.code_explanation_source_metrics(&path, 1, 1, Some(8));
+        let metrics = editor.code_explanation_source_metrics(&snapshot, 1, 1, Some(8));
 
         assert_eq!(metrics.line_count, 3);
         assert!(metrics.visual_rows.unwrap() > 1);

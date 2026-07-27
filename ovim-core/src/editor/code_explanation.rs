@@ -1,7 +1,11 @@
 use super::ai_chat_input::wrap_chat_input_rows;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub const MAX_WALKTHROUGH_STEPS: usize = 32;
+pub const MAX_WALKTHROUGH_CACHE_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_WALKTHROUGH_CACHE_ENTRIES: usize = 64;
+pub const MIN_UNCACHEABLE_WALKTHROUGH_FILE_BYTES: usize = 5 * 1024 * 1024;
 pub const MAX_WALKTHROUGH_COMMENT_BYTES: usize = 4 * 1024;
 pub const MAX_WALKTHROUGH_COMMENT_ROWS: usize = 5;
 pub const MAX_WALKTHROUGH_CONCEPT_BODY_BYTES: usize = 8 * 1024;
@@ -30,6 +34,9 @@ pub enum CodeExplanationStep {
     Code {
         path: String,
         absolute_path: PathBuf,
+        /// Immutable invocation-time contents. Files at least 5 MiB are left
+        /// uncached and read only when their page is displayed.
+        snapshot: Option<Arc<str>>,
         start_line: usize,
         end_line: usize,
         comment: String,

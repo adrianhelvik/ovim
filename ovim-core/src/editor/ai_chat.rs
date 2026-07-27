@@ -328,6 +328,10 @@ impl Editor {
             }
         }
         if let Some(pending) = pending_explanation {
+            self.discard_code_explanation_presentation_buffer(
+                pending.presentation_buffer_id,
+                pending.original_active_buffer_id,
+            );
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.active_buffer_id = pending.original_active_buffer_id;
             }
@@ -752,6 +756,7 @@ mod tests {
             threads: Vec::new(),
             interaction: super::super::ai_chat_state::CodeExplanationInteraction::Navigating,
             original_active_buffer_id: buffer_id,
+            presentation_buffer_id: None,
             continuation: Some(
                 super::super::ai_chat_state::CodeExplanationContinuation::Batch {
                     runtime_tool: None,

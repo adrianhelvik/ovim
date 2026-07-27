@@ -339,6 +339,7 @@ mod tests {
             steps: vec![CodeExplanationStep::Code {
                 path: "demo.rs".into(),
                 absolute_path: PathBuf::from("demo.rs"),
+                snapshot: Some(std::sync::Arc::from("fn demo() {}\n")),
                 start_line: 1,
                 end_line: 1,
                 comment: "Context".into(),
@@ -355,6 +356,7 @@ mod tests {
                 exchange: 0,
             },
             original_active_buffer_id: chat.active_buffer_id,
+            presentation_buffer_id: None,
             continuation: None,
         });
 
