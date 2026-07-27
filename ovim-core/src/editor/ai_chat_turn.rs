@@ -39,6 +39,10 @@ impl Editor {
             return Ok(());
         }
 
+        if !self.ensure_codex_auth_for_chat_submit() {
+            return Ok(());
+        }
+
         let runtime_input = if input.is_empty() {
             "[Image attachment]".to_string()
         } else {

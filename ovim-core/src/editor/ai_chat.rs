@@ -24,6 +24,7 @@ impl Editor {
                 chat.mode_before_chat = mode_before;
             }
             self.set_mode(Mode::AiChat);
+            self.maybe_prompt_codex_auth_on_chat_open();
             self.maybe_prompt_exa_on_chat_open();
             return Ok(());
         }
@@ -79,6 +80,7 @@ impl Editor {
         self.ai_state.chat = Some(chat);
         self.set_mode(Mode::AiChat);
         self.maybe_prompt_no_repo_session_folder_access_on_chat_open();
+        self.maybe_prompt_codex_auth_on_chat_open();
         self.maybe_prompt_exa_on_chat_open();
 
         if let Some(msg) = initial {

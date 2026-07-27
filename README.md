@@ -10,7 +10,7 @@ ovim gives you what Neovim distros give you. LSP, tree-sitter highlighting, AI c
 
 - **35+ languages** with tree-sitter syntax highlighting, compiled in
 - **LSP auto-install** — open a file, the language server downloads and starts
-- **AI chat and editing** — `Space Space` to chat, visual select + `Space` to edit
+- **AI chat and editing** — `Space Space` to chat or edit a visual selection
 - **Vim keybindings** — operators + motions, text objects, visual mode, macros, marks, registers
 - **File explorer** — open a folder directly; filter, create, rename, copy, move, and delete safely
 - **Lua config** — `vim.opt.number = true` just works. Configure when you want to, not because you have to.
@@ -113,7 +113,8 @@ vim.opt.scrolloff = 10
 
 -- AI: Codex supplies inference from your ChatGPT subscription. Ovim is the
 -- agent harness: it owns context, tools, approvals, edits, and shell programs.
--- Run `codex login` once to bootstrap subscription authentication.
+-- On first use, press Enter in Ovim's sign-in dialog to authenticate in your
+-- browser. Ovim keeps and refreshes credentials independently from Codex CLI.
 -- The first chat can optionally enable Exa web search; reopen setup with /exa.
 vim.ai.setup({
   default_profile = "codex_terra",

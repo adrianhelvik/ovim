@@ -138,6 +138,13 @@ impl InputHandler {
             return Ok(());
         }
 
+        // Ovim-owned Codex sign-in is global: it can block both chat and
+        // selection inference, regardless of the editor mode underneath.
+        if editor.has_codex_auth_dialog() {
+            editor.handle_codex_auth_key(key_event);
+            return Ok(());
+        }
+
         code_explanation_mode::restore_owning_mode(editor);
 
         // Global keybindings (work in any mode)

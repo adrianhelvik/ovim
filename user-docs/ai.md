@@ -9,17 +9,25 @@ This guide covers practical AI configuration in ovim:
 
 ## Recommendation
 
-Install the Codex CLI and sign in with ChatGPT once. Ovim imports that login on
-first use, stores its own refreshable credentials as `ovim/codex-auth.json` in
-the platform config directory (`~/.config` on Linux,
-`~/Library/Application Support` on macOS), and calls the Codex Responses
-transport directly:
+Open AI chat with `Space Space`, or visually select text and press
+`Space Space`. When a direct Codex profile needs credentials, Ovim shows a
+sign-in dialog at the point of use:
 
-```bash
-npm install -g @openai/codex
-codex login
-codex login status
-```
+1. Press `Enter` to open ChatGPT sign-in in your browser.
+2. Complete sign-in and return to Ovim; the pending draft or unchanged
+   selection resumes automatically.
+3. Press `Esc` instead to dismiss the dialog without losing the draft or
+   selection.
+
+Ovim stores its own refreshable credentials as `ovim/codex-auth.json` in the
+platform config directory (`~/.config` on Linux,
+`~/Library/Application Support` on macOS). It refreshes them before expiry and,
+after an unexpected `401 Unauthorized`, refreshes and retries once.
+
+Ovim deliberately does not import, share, or refresh Codex CLI credentials.
+OAuth refresh tokens rotate, so two applications using the same credential
+lineage can periodically invalidate each other. Codex CLI may be installed and
+signed in separately, but it is not required for Ovim.
 
 The built-in defaults use `gpt-5.6-sol` at medium effort for chat and
 `gpt-5.6-terra` at low effort for selection edits and read-only queries. With
@@ -306,9 +314,14 @@ vim.ai.setup({
 })
 ```
 
-The `codex` provider does not accept an API key. To change accounts or repair
-authentication, remove Ovim's `codex-auth.json`, then use `codex logout` and
-`codex login` before opening Ovim again.
+The `codex` provider does not accept an API key. Ovim normally refreshes its
+credentials without intervention. If refresh is rejected, it marks that
+credential lineage for renewal and shows the browser sign-in dialog the next
+time Codex inference is opened or submitted.
+
+To change accounts manually, remove Ovim's `codex-auth.json`, then open AI chat
+or a visual-selection edit and press `Enter` in the sign-in dialog. This does
+not sign Codex CLI in or out.
 
 To retain the previous Codex-owned harness explicitly, configure
 `provider = "codex_app_server"`. That strategy launches `codex app-server` and

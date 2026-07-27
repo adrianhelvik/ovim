@@ -39,6 +39,20 @@ Create, rename, and paste operations refuse to overwrite existing paths.
 Rename and create prompts also reject paths that escape the selected directory,
 and the explorer root cannot be renamed, moved, or deleted.
 
+## AI Chat and Editing
+
+Press `Space Space` in normal mode to open AI chat. Select text visually and
+press `Space Space` to request an edit. The built-in Codex profiles use your
+ChatGPT subscription.
+
+On first use, Ovim checks its credentials and opens a sign-in dialog. Press
+`Enter` to continue in your browser, or `Esc` to dismiss it. Ovim resumes the
+draft or selection after sign-in and refreshes its own credentials
+automatically; installing or signing in to Codex CLI is not required.
+
+See [AI Setup](ai.md) for profiles, tools, approval behavior, and alternative
+providers.
+
 ## Headless Mode (for automation)
 
 Headless mode runs ovim without the TUI and exposes a local REST API for driving the editor.

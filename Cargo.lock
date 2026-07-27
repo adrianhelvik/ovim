@@ -2491,6 +2491,7 @@ dependencies = [
  "nix",
  "nucleo",
  "prometheus",
+ "rand 0.8.5",
  "regex",
  "reqwest",
  "ropey",

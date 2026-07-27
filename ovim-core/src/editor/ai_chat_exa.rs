@@ -12,7 +12,10 @@ impl Editor {
     }
 
     pub(crate) fn maybe_prompt_exa_on_chat_open(&mut self) {
-        if self.ai_chat_uses_direct_codex() && crate::ai::exa::should_offer_onboarding() {
+        if !self.has_codex_auth_dialog()
+            && self.ai_chat_uses_direct_codex()
+            && crate::ai::exa::should_offer_onboarding()
+        {
             self.open_exa_setup_dialog(None);
         }
     }

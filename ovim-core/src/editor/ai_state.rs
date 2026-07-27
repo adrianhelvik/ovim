@@ -86,6 +86,48 @@ pub struct PendingAiJob {
     pub completed_result: Option<anyhow::Result<AiJobResult>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodexAuthDialogPhase {
+    Offer,
+    Refreshing,
+    WaitingForBrowser,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexAuthDialogSummary {
+    pub phase: CodexAuthDialogPhase,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum CodexAuthResume {
+    None,
+    SubmitChat,
+    SubmitSelection {
+        buffer_id: BufferId,
+        buffer_version: usize,
+    },
+}
+
+pub(crate) struct CodexAuthDialog {
+    pub phase: CodexAuthDialogPhase,
+    pub detail: Option<String>,
+    pub authorize_url: Option<String>,
+    pub resume: CodexAuthResume,
+}
+
+pub(crate) struct PendingCodexAuth {
+    pub receiver: tokio::sync::oneshot::Receiver<anyhow::Result<()>>,
+    pub task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for PendingCodexAuth {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 pub struct AiState {
     /// Provider-independent run/agent/turn history and transient bindings.
     pub agent_runtime: Box<crate::agent_runtime::AgentRuntime>,
@@ -107,6 +149,10 @@ pub struct AiState {
     pub prompt: AiPromptState,
     pub active_selection: Option<AiSelectionSnapshot>,
     pub pending_jobs: Vec<PendingAiJob>,
+    /// Global because both chat and selection inference can require sign-in.
+    pub(crate) codex_auth_dialog: Option<CodexAuthDialog>,
+    pub(crate) pending_codex_auth: Option<PendingCodexAuth>,
+    pub(crate) pending_external_url: Option<String>,
     pub regions: Vec<AiEditRegion>,
     pub selected_region_id: Option<u64>,
     pub selection_hold_until_exit: bool,
@@ -191,6 +237,9 @@ impl AiState {
             prompt: AiPromptState::default(),
             active_selection: None,
             pending_jobs: Vec::new(),
+            codex_auth_dialog: None,
+            pending_codex_auth: None,
+            pending_external_url: None,
             regions: Vec::new(),
             selected_region_id: None,
             selection_hold_until_exit: false,

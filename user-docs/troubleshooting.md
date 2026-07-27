@@ -37,6 +37,26 @@ Common causes:
 - Wrong project root (adjust `root_markers` in `languages.toml`)
 - Large project indexing delay (wait for readiness)
 
+## Codex sign-in or repeated 401 errors
+
+Ovim signs in to ChatGPT independently from Codex CLI. Open AI chat with
+`Space Space`, then press `Enter` in the Ovim sign-in dialog and complete the
+browser flow. The action is the same for a visual-selection edit.
+
+Ovim refreshes expiring credentials automatically and retries one inference
+request after an unexpected `401 Unauthorized`. If the refresh token is
+rejected, the dialog asks you to sign in again while preserving the current
+draft or unchanged selection.
+
+To force an account change or replace damaged credentials, close Ovim, remove
+`ovim/codex-auth.json` from the platform config directory, and reopen AI chat:
+
+- macOS: `~/Library/Application Support/ovim/codex-auth.json`
+- Linux: `~/.config/ovim/codex-auth.json`
+
+Do not copy `~/.codex/auth.json` into Ovim. Sharing rotating refresh tokens with
+Codex CLI can make either application lose authentication periodically.
+
 ## Logs & debug mode
 
 If something “mysteriously” fails (or the UI gets corrupted), the first thing to grab is the log files.

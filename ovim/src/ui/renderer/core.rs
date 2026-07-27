@@ -435,6 +435,7 @@ fn render_overlays(
 
 fn has_blocking_modal(editor: &Editor) -> bool {
     editor.has_pending_lsp_install()
+        || editor.has_codex_auth_dialog()
         || editor.ai_chat_has_exa_setup_dialog()
         || editor.ai_chat_image_modal_path().is_some()
         || editor.ai_shell_inspector_is_open()
@@ -450,6 +451,8 @@ fn has_blocking_modal(editor: &Editor) -> bool {
 fn render_blocking_modals(frame: &mut Frame, editor: &mut Editor, theme: &Theme) {
     if editor.has_pending_lsp_install() {
         render_lsp_install_dialog(frame, editor, theme);
+    } else if editor.has_codex_auth_dialog() {
+        super::overlays::render_codex_auth_dialog(frame, editor);
     } else if editor.ai_chat_has_exa_setup_dialog() {
         render_ai_chat_exa_setup_dialog(frame, editor);
     } else if editor.ai_chat_image_modal_path().is_some() {
@@ -470,7 +473,10 @@ fn set_cursor_position(
     chat_area: Option<Rect>,
     file_tree_area: Option<Rect>,
 ) {
-    if editor.ai_chat_has_pending_code_explanation() || editor.ai_shell_inspector_is_open() {
+    if editor.has_codex_auth_dialog()
+        || editor.ai_chat_has_pending_code_explanation()
+        || editor.ai_shell_inspector_is_open()
+    {
         return;
     }
     let layout = ctx.layout;

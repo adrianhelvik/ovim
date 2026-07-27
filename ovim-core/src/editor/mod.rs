@@ -17,6 +17,7 @@ mod ai_chat_tools;
 mod ai_chat_turn;
 mod ai_chat_viewport;
 mod ai_code_explanation;
+mod ai_codex_auth;
 mod ai_comprehension;
 mod ai_context;
 mod ai_durable_chat;
@@ -104,7 +105,7 @@ pub use ai_chat_state::{
     AiChatActivity, ComprehensionPolicy, QueuedChatInput, QueuedChatInputKind,
 };
 pub use ai_shell_process::{ShellInspectorView, ShellProcessPhase};
-pub use ai_state::{AiEditRegion, AiRegionStatus};
+pub use ai_state::{AiEditRegion, AiRegionStatus, CodexAuthDialogPhase, CodexAuthDialogSummary};
 pub use ai_subagents::PreparedHeadlessAgentControl;
 pub use build_state::PendingShellCommand;
 pub use code_explanation::{
@@ -2027,6 +2028,9 @@ impl Editor {
     /// Handles a bracketed paste event (for all supported modes, including chat input).
     pub fn handle_paste_event(&mut self, text: &str) -> Result<()> {
         if text.is_empty() {
+            return Ok(());
+        }
+        if self.has_codex_auth_dialog() {
             return Ok(());
         }
         if self.mode() == Mode::AiChat && self.ai_chat_has_exa_setup_dialog() {

@@ -593,6 +593,12 @@ fn drain_syntax_results(
 
 /// Poll all independent background tasks (AI, make, git, chat, workflows).
 async fn poll_background_tasks(editor: &mut Editor) {
+    if let Some(url) = editor.take_pending_external_url() {
+        let _ = open::that_in_background(&url);
+    }
+    if editor.poll_pending_codex_auth() {
+        editor.mark_dirty();
+    }
     if editor.poll_pending_ai_jobs() {
         editor.mark_dirty();
     }
@@ -909,6 +915,9 @@ fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<bool>
                 process_external_file_change(editor);
             }
             Event::Mouse(mouse_event) => {
+                if editor.has_codex_auth_dialog() {
+                    continue;
+                }
                 // Skip mouse-move events — they don't change editor state and
                 // would otherwise trigger unnecessary redraws on every movement.
                 if matches!(mouse_event.kind, crossterm::event::MouseEventKind::Moved) {

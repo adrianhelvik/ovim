@@ -3,6 +3,7 @@ pub mod auto_mode;
 pub mod change_set;
 pub mod chat_types;
 mod codex_app_server;
+pub(crate) mod codex_auth;
 mod codex_inference;
 mod config;
 pub(crate) mod exa;

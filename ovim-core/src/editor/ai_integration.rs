@@ -157,6 +157,7 @@ impl Editor {
         self.ai_state.prompt.model_picker_index = 0;
         self.set_mode(Mode::AiPrompt);
         self.set_status_message("AI prompt: type instruction and press Enter".to_string());
+        self.maybe_prompt_codex_auth_on_selection_open();
         Ok(())
     }
 
@@ -259,6 +260,10 @@ impl Editor {
             self.set_mode(Mode::Normal);
             return Ok(());
         };
+
+        if !self.ensure_codex_auth_for_selection_submit() {
+            return Ok(());
+        }
 
         let profile_name = self.ai_state.active_profile.clone();
         let Some(profile) = self.ai_state.config.resolve_profile(&profile_name).cloned() else {

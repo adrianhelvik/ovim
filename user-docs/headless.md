@@ -73,6 +73,13 @@ ovim send -s dev "  "
 ovim send -s dev "inspect the project<Enter>"
 ```
 
+For unattended use, complete Ovim's contextual Codex sign-in once in the TUI
+before starting the headless session. The credential is stored in the same
+platform config directory and refreshes automatically. If credentials need
+renewal during a headless session, the auth dialog blocks inference without
+consuming the draft; attach a TUI or complete sign-in in a regular Ovim session
+before retrying.
+
 If auto mode pauses an Ovim tool for approval, the agent round remains blocked
 until the decision arrives. Inspect it with `ovim snapshot -s dev`, then
 send `<C-y>` (or `<Enter>`) to allow once, or `<C-n>` (or `<Esc>`) to deny. The

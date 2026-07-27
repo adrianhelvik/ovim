@@ -532,28 +532,12 @@ const MODAL_COLORS: ModalColors = ModalColors {
 /// - `'t'` = primary text, `'s'` = secondary/hint, `'a'` = action/keybindings
 fn render_modal_dialog(frame: &mut Frame, title: &str, lines: &[(&str, char)]) {
     let full = frame.area();
-    if full.width < 40 || full.height < 7 {
+    if full.width < 24 || full.height < 5 {
         return;
     }
     let width = ((full.width * 70) / 100)
         .clamp(48, 100)
         .min(full.width.saturating_sub(2));
-    let content_width = width.saturating_sub(2).max(1) as usize;
-    let content_rows = lines
-        .iter()
-        .map(|(text, _)| {
-            text.split('\n')
-                .map(|line| UnicodeWidthStr::width(line).max(1).div_ceil(content_width))
-                .sum::<usize>()
-        })
-        .sum::<usize>();
-    let requested_height = content_rows.saturating_add(2).min(u16::MAX as usize) as u16;
-    // Compute the max first and cap the min by it: for short terminals the
-    // preferred minimum (7) can exceed the available space, and
-    // `Ord::clamp` panics when min > max.
-    let max_height = full.height.saturating_sub(2).max(1);
-    let height = requested_height.clamp(7.min(max_height), max_height);
-    let area = centered_area(full, width, height);
 
     let c = &MODAL_COLORS;
     let content: Vec<Line> = lines
@@ -571,8 +555,15 @@ fn render_modal_dialog(frame: &mut Frame, title: &str, lines: &[(&str, char)]) {
             Line::from(Span::styled(*text, style))
         })
         .collect();
+    let content_width = width.saturating_sub(2).max(1) as usize;
+    let content: Vec<Line<'static>> = content
+        .iter()
+        .flat_map(|line| super::ai_chat::styled_word_wrap_line(line, content_width))
+        .map(Line::from)
+        .collect();
+    let requested_height = content.len().saturating_add(2).min(u16::MAX as usize) as u16;
 
-    let dialog = Paragraph::new(content).wrap(Wrap { trim: false }).block(
+    let dialog = Paragraph::new(content).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
@@ -586,8 +577,74 @@ fn render_modal_dialog(frame: &mut Frame, title: &str, lines: &[(&str, char)]) {
             ),
     );
 
+    // The content is pre-wrapped with the same word-aware routine used by the
+    // AI UI, so this height is exactly what will be rendered. In particular,
+    // deliberate spacer lines cannot push the primary action below the border.
+    // Compute the max first and cap the min by it: for short terminals the
+    // preferred minimum (7) can exceed the available space, and
+    // `Ord::clamp` panics when min > max.
+    let max_height = full.height.saturating_sub(2).max(1);
+    let height = requested_height.clamp(7.min(max_height), max_height);
+    let area = centered_area(full, width, height);
+
     frame.render_widget(ratatui::widgets::Clear, area);
     frame.render_widget(dialog, area);
+}
+
+/// Contextual ChatGPT sign-in for Ovim-owned direct Codex inference.
+pub fn render_codex_auth_dialog(frame: &mut Frame, editor: &Editor) {
+    use ovim_core::editor::CodexAuthDialogPhase;
+
+    let Some(summary) = editor.codex_auth_dialog_summary() else {
+        return;
+    };
+    let detail = summary.detail.unwrap_or_default();
+    match summary.phase {
+        CodexAuthDialogPhase::Offer => render_modal_dialog(
+            frame,
+            " Sign in to Codex ",
+            &[
+                ("Use your ChatGPT plan for Codex inference inside Ovim.", 't'),
+                (
+                    "Ovim keeps its own secure login and does not share refresh tokens with the Codex CLI.",
+                    's',
+                ),
+                (detail.as_str(), 's'),
+                (" ", 's'),
+                ("Enter: sign in in browser   Esc: not now", 'a'),
+            ],
+        ),
+        CodexAuthDialogPhase::Refreshing => render_modal_dialog(
+            frame,
+            " Refreshing Codex Sign-in ",
+            &[
+                ("Refreshing Ovim's Codex credentials…", 't'),
+                ("Your draft and selection are preserved.", 's'),
+                (" ", 's'),
+                ("Esc: cancel", 'a'),
+            ],
+        ),
+        CodexAuthDialogPhase::WaitingForBrowser => render_modal_dialog(
+            frame,
+            " Finish Sign-in in Your Browser ",
+            &[
+                ("Complete the OpenAI sign-in in the browser window.", 't'),
+                ("Ovim will continue automatically when it succeeds.", 's'),
+                (" ", 's'),
+                ("O: reopen browser   Esc: cancel", 'a'),
+            ],
+        ),
+        CodexAuthDialogPhase::Error => render_modal_dialog(
+            frame,
+            " Codex Sign-in Needs Attention ",
+            &[
+                (detail.as_str(), 't'),
+                ("Your draft and selection are still here.", 's'),
+                (" ", 's'),
+                ("Enter: try again   Esc: cancel", 'a'),
+            ],
+        ),
+    }
 }
 
 /// Centered consent dialog for LSP auto-install requests.
@@ -1469,6 +1526,42 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn modal_dialog_keeps_primary_action_visible_when_body_wraps() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render_modal_dialog(
+                    frame,
+                    " Sign in to Codex ",
+                    &[
+                        ("Use your ChatGPT plan for Codex inference inside Ovim.", 't'),
+                        (
+                            "Ovim keeps its own secure login and does not share refresh tokens with the Codex CLI.",
+                            's',
+                        ),
+                        (
+                            "Ovim's legacy Codex credentials cannot be reused safely; sign in to Ovim once",
+                            's',
+                        ),
+                        (" ", 's'),
+                        ("Enter: sign in in browser   Esc: not now", 'a'),
+                    ],
+                )
+            })
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Enter: sign in in browser"), "{rendered}");
     }
 
     #[test]

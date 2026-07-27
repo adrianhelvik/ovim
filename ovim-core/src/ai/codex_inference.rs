@@ -13,18 +13,14 @@ use base64::Engine;
 use bytes::Bytes;
 use futures_core::Stream;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 const CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api";
-const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 
 pub(crate) struct CodexInferenceRequest<'a> {
     pub profile: &'a AiProfileConfig,
@@ -188,7 +184,7 @@ async fn stream_direct(request: CodexInferenceRequest<'_>) -> Result<()> {
     let client = reqwest::Client::builder()
         .build()
         .context("failed to create Codex inference HTTP client")?;
-    let credentials = load_credentials(&client).await?;
+    let mut credentials = super::codex_auth::load_credentials(&client).await?;
     let base = request
         .profile
         .base_url
@@ -217,13 +213,25 @@ async fn stream_direct(request: CodexInferenceRequest<'_>) -> Result<()> {
     if let Some(key) = request.session_key {
         body["prompt_cache_key"] = json!(key);
     }
-    let response = client
-        .post(url)
+    let mut response = client
+        .post(&url)
         .headers(codex_headers(&credentials)?)
         .json(&body)
         .send()
         .await
         .context("Codex inference request failed")?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        credentials =
+            super::codex_auth::refresh_after_unauthorized(&client, &credentials.access_token)
+                .await?;
+        response = client
+            .post(&url)
+            .headers(codex_headers(&credentials)?)
+            .json(&body)
+            .send()
+            .await
+            .context("Codex inference retry failed")?;
+    }
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
@@ -576,232 +584,7 @@ fn emit_call(call: &mut FunctionCallAccumulator, tx: &UnboundedSender<StreamChun
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredCredentials {
-    access_token: String,
-    refresh_token: String,
-    account_id: String,
-    #[serde(default)]
-    expires_at: u64,
-}
-
-#[derive(Deserialize)]
-struct CodexAuthFile {
-    tokens: CodexAuthTokens,
-}
-
-#[derive(Deserialize)]
-struct CodexAuthTokens {
-    access_token: String,
-    refresh_token: String,
-    account_id: String,
-}
-
-fn ovim_auth_path() -> Result<PathBuf> {
-    Ok(dirs::config_dir()
-        .ok_or_else(|| anyhow!("cannot locate config directory"))?
-        .join("ovim/codex-auth.json"))
-}
-
-fn codex_auth_path() -> Result<PathBuf> {
-    if let Ok(home) = std::env::var("CODEX_HOME") {
-        return Ok(PathBuf::from(home).join("auth.json"));
-    }
-    Ok(dirs::home_dir()
-        .ok_or_else(|| anyhow!("cannot locate home directory"))?
-        .join(".codex/auth.json"))
-}
-
-async fn load_credentials(client: &reqwest::Client) -> Result<StoredCredentials> {
-    let ovim_path = ovim_auth_path()?;
-    let imported = !ovim_path.exists();
-    let mut credentials = if !imported {
-        serde_json::from_slice(
-            &std::fs::read(&ovim_path).context("failed to read Ovim Codex credentials")?,
-        )
-        .context("invalid Ovim Codex credentials")?
-    } else {
-        let path = codex_auth_path()?;
-        let source: CodexAuthFile = serde_json::from_slice(&std::fs::read(&path).with_context(|| {
-            format!("Codex subscription login not found at {}. Run `codex login` once, then retry Ovim.", path.display())
-        })?).context("invalid Codex login file")?;
-        StoredCredentials {
-            expires_at: jwt_expiry(&source.tokens.access_token).unwrap_or_default(),
-            access_token: source.tokens.access_token,
-            refresh_token: source.tokens.refresh_token,
-            account_id: source.tokens.account_id,
-        }
-    };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    if credentials.expires_at == 0 {
-        credentials.expires_at = jwt_expiry(&credentials.access_token).unwrap_or_default();
-    }
-    if credentials.expires_at <= now.saturating_add(60) {
-        let _lock = AuthFileLock::acquire(ovim_path.with_extension("lock")).await?;
-        // Another Ovim process may have refreshed while this process waited.
-        if ovim_path.exists() {
-            if let Ok(mut latest) = serde_json::from_slice::<StoredCredentials>(
-                &std::fs::read(&ovim_path).context("failed to reread Ovim Codex credentials")?,
-            ) {
-                if latest.expires_at == 0 {
-                    latest.expires_at = jwt_expiry(&latest.access_token).unwrap_or_default();
-                }
-                if latest.expires_at > now.saturating_add(60) {
-                    return Ok(latest);
-                }
-                credentials = latest;
-            }
-        }
-        credentials = refresh_credentials(client, credentials).await?;
-        write_credentials(&ovim_path, &credentials)?;
-        return Ok(credentials);
-    }
-    if imported {
-        let _lock = AuthFileLock::acquire(ovim_path.with_extension("lock")).await?;
-        if ovim_path.exists() {
-            return serde_json::from_slice(
-                &std::fs::read(&ovim_path).context("failed to reread Ovim Codex credentials")?,
-            )
-            .context("invalid Ovim Codex credentials");
-        }
-        write_credentials(&ovim_path, &credentials)?;
-    }
-    Ok(credentials)
-}
-
-struct AuthFileLock(PathBuf);
-
-impl AuthFileLock {
-    async fn acquire(path: PathBuf) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        for _ in 0..100 {
-            match std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&path)
-            {
-                Ok(_) => return Ok(Self(path)),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let stale = std::fs::metadata(&path)
-                        .and_then(|metadata| metadata.modified())
-                        .ok()
-                        .and_then(|modified| modified.elapsed().ok())
-                        .is_some_and(|age| age.as_secs() > 60);
-                    if stale {
-                        let _ = std::fs::remove_file(&path);
-                        continue;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-                Err(error) => return Err(error).context("failed to lock Ovim Codex credentials"),
-            }
-        }
-        Err(anyhow!(
-            "timed out waiting for another Ovim process to refresh Codex credentials"
-        ))
-    }
-}
-
-impl Drop for AuthFileLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-async fn refresh_credentials(
-    client: &reqwest::Client,
-    current: StoredCredentials,
-) -> Result<StoredCredentials> {
-    let response = client
-        .post(OPENAI_TOKEN_URL)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", current.refresh_token.as_str()),
-            ("client_id", OPENAI_CLIENT_ID),
-        ])
-        .send()
-        .await
-        .context("failed to refresh Codex subscription login")?;
-    let status = response.status();
-    let value: Value = response
-        .json()
-        .await
-        .context("invalid Codex login refresh response")?;
-    if !status.is_success() {
-        anyhow::bail!("Codex login refresh returned {status}; run `codex login` again");
-    }
-    let access_token = value
-        .get("access_token")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("Codex login refresh omitted access_token"))?
-        .to_owned();
-    let refresh_token = value
-        .get("refresh_token")
-        .and_then(Value::as_str)
-        .unwrap_or(&current.refresh_token)
-        .to_owned();
-    let expires_at = value
-        .get("expires_in")
-        .and_then(Value::as_u64)
-        .map(|seconds| {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                + seconds
-        })
-        .or_else(|| jwt_expiry(&access_token))
-        .unwrap_or_default();
-    Ok(StoredCredentials {
-        access_token,
-        refresh_token,
-        account_id: current.account_id,
-        expires_at,
-    })
-}
-
-fn jwt_expiry(token: &str) -> Option<u64> {
-    let payload = token.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()?;
-    serde_json::from_slice::<Value>(&bytes)
-        .ok()?
-        .get("exp")?
-        .as_u64()
-}
-
-fn write_credentials(path: &Path, credentials: &StoredCredentials) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec(credentials)?;
-    #[cfg(unix)]
-    {
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temp)?;
-        file.write_all(&bytes)?;
-    }
-    #[cfg(not(unix))]
-    std::fs::write(&temp, bytes)?;
-    std::fs::rename(temp, path)?;
-    Ok(())
-}
-
-fn codex_headers(credentials: &StoredCredentials) -> Result<HeaderMap> {
+fn codex_headers(credentials: &super::codex_auth::StoredCredentials) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert(
         AUTHORIZATION,
