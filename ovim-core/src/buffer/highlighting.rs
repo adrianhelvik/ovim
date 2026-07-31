@@ -71,6 +71,49 @@ fn find_inline_code_spans(line: &str) -> Vec<Range<usize>> {
 /// Per-line syntax highlights: maps character ranges to highlight groups
 pub type LineHighlights = Vec<Vec<(Range<usize>, HighlightGroup)>>;
 
+/// Overlay higher-priority spans without discarding uncovered base syntax.
+/// LSP semantic tokens are sorted and non-overlapping by protocol; each token
+/// splits any intersecting Tree-sitter span and replaces only that interval.
+fn overlay_line_highlights(
+    base: &[(Range<usize>, HighlightGroup)],
+    overlays: &[(Range<usize>, HighlightGroup)],
+) -> Vec<(Range<usize>, HighlightGroup)> {
+    let mut merged = Vec::with_capacity(base.len() + overlays.len());
+
+    for (base_range, group) in base {
+        let mut remaining = vec![base_range.clone()];
+        for (overlay_range, _) in overlays {
+            if overlay_range.start >= overlay_range.end {
+                continue;
+            }
+            let mut next = Vec::with_capacity(remaining.len() + 1);
+            for range in remaining {
+                if overlay_range.end <= range.start || overlay_range.start >= range.end {
+                    next.push(range);
+                    continue;
+                }
+                if range.start < overlay_range.start {
+                    next.push(range.start..overlay_range.start.min(range.end));
+                }
+                if overlay_range.end < range.end {
+                    next.push(overlay_range.end.max(range.start)..range.end);
+                }
+            }
+            remaining = next;
+        }
+        merged.extend(remaining.into_iter().map(|range| (range, *group)));
+    }
+
+    merged.extend(
+        overlays
+            .iter()
+            .filter(|(range, _)| range.start < range.end)
+            .cloned(),
+    );
+    merged.sort_by_key(|(range, _)| (range.start, range.end));
+    merged
+}
+
 /// Large file threshold in lines - files above this disable expensive features
 const LARGE_FILE_LINES: usize = 50_000;
 
@@ -568,8 +611,8 @@ impl Buffer {
     ///
     /// Priority order:
     /// 1. Code block cache (for markdown code fences with known languages)
-    /// 2. Semantic highlights (from LSP)
-    /// 3. Tree-sitter cached highlights
+    /// 2. Tree-sitter cached highlights
+    /// 3. Semantic highlights overlaid only on their covered ranges
     /// 4. Inline code overlay (for markdown: backtick `code` spans)
     pub fn highlights_for_line(
         &self,
@@ -579,13 +622,6 @@ impl Buffer {
         if let Some(ref code_cache) = self.code_block_cache {
             if let Some(highlights) = code_cache.highlights_for_line(line_idx) {
                 return Cow::Borrowed(highlights.as_slice());
-            }
-        }
-
-        // Prefer semantic highlights from LSP if available
-        if let Some(ref semantic) = self.semantic_highlights {
-            if line_idx < semantic.len() && !semantic[line_idx].is_empty() {
-                return Cow::Borrowed(semantic[line_idx].as_slice());
             }
         }
 
@@ -612,9 +648,26 @@ impl Buffer {
                     for span in inline_spans {
                         highlights.push((span, HighlightGroup::MarkupRaw));
                     }
+                    if let Some(semantic) = self
+                        .semantic_highlights
+                        .as_ref()
+                        .and_then(|lines| lines.get(line_idx))
+                        .filter(|spans| !spans.is_empty())
+                    {
+                        return Cow::Owned(overlay_line_highlights(&highlights, semantic));
+                    }
                     return Cow::Owned(highlights);
                 }
             }
+        }
+
+        if let Some(semantic) = self
+            .semantic_highlights
+            .as_ref()
+            .and_then(|lines| lines.get(line_idx))
+            .filter(|spans| !spans.is_empty())
+        {
+            return Cow::Owned(overlay_line_highlights(base, semantic));
         }
 
         Cow::Borrowed(base)
@@ -881,5 +934,45 @@ impl Buffer {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semantic_overlay_splits_only_intersecting_syntax_ranges() {
+        let base = vec![
+            (0..12, HighlightGroup::String),
+            (14..20, HighlightGroup::Comment),
+        ];
+        let semantic = vec![(3..6, HighlightGroup::Variable)];
+
+        assert_eq!(
+            overlay_line_highlights(&base, &semantic),
+            vec![
+                (0..3, HighlightGroup::String),
+                (3..6, HighlightGroup::Variable),
+                (6..12, HighlightGroup::String),
+                (14..20, HighlightGroup::Comment),
+            ]
+        );
+    }
+
+    #[test]
+    fn highlights_for_line_preserves_uncovered_tree_sitter_spans() {
+        let mut buffer = Buffer::new();
+        buffer.cached_highlights = Some(vec![vec![(0..16, HighlightGroup::String)]]);
+        buffer.set_semantic_highlights(vec![vec![(6..10, HighlightGroup::Variable)]]);
+
+        assert_eq!(
+            buffer.highlights_for_line(0).as_ref(),
+            &[
+                (0..6, HighlightGroup::String),
+                (6..10, HighlightGroup::Variable),
+                (10..16, HighlightGroup::String),
+            ]
+        );
     }
 }

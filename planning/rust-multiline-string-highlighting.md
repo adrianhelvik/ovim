@@ -1,6 +1,6 @@
 # Syntax highlighting: multiline Rust strings
 
-> **Status:** Ready for implementation. The replacement policy is the leading hypothesis; capture raw Tree-sitter and semantic spans in the regression test before treating it as the confirmed cause.
+> **Status:** Implemented. Tree-sitter is confirmed to cover every line of an escaped Rust multiline string; semantic spans now replace only intersecting syntax ranges, preserving uncovered string highlighting.
 
 ## Observed behavior
 

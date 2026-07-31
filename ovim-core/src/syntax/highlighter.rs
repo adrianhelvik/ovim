@@ -945,6 +945,30 @@ const result = greet("World");"#;
     }
 
     #[test]
+    fn rust_escaped_multiline_string_highlights_every_content_line() {
+        let mut h =
+            SyntaxHighlighter::new(Language::Rust).expect("Rust highlighter should be created");
+        let source = r#"const HELP: &str = "\
+first line
+second line
+third line";"#;
+
+        h.parse(source);
+        let highlights = h.highlights_for_all_lines(source);
+        for (line_idx, content) in [(1, "first line"), (2, "second line"), (3, "third line")] {
+            assert!(
+                highlights[line_idx].iter().any(|(range, group)| {
+                    *group == HighlightGroup::String
+                        && range.start == 0
+                        && range.end >= content.len()
+                }),
+                "line {line_idx} should retain its complete string capture: {:?}",
+                highlights[line_idx]
+            );
+        }
+    }
+
+    #[test]
     fn test_line_range_matches_all_lines() {
         // Verify highlights_for_line_range produces the same results as the
         // corresponding slice of highlights_for_all_lines.
