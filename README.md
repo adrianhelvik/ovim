@@ -62,7 +62,7 @@ file toggles; and an in-panel `?` key reference.
 <table>
   <tr>
     <td width="50%"><img alt="Fuzzy file finder" src="https://github.com/user-attachments/assets/9f4fc346-50ea-4733-9386-eeb4b0082822" /></td>
-    <td width="50%"><img alt="AI code walkthrough" src="https://github.com/user-attachments/assets/917f4647-df45-4600-a75f-b2cd72f79934" /></td>
+    <td width="50%"><img alt="AI-assisted editing in ovim" src="docs/assets/ovim-agent-showcase.gif" /></td>
   </tr>
   <tr>
     <td align="center"><b>Fuzzy finder</b> — jump to any file, live preview</td>
