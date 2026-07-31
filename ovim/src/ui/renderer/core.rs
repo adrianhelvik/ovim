@@ -607,7 +607,17 @@ fn set_cursor_position(
         }
         if let Some(chat_rect) = chat_area {
             if let Some((cx, cy)) = super::ai_chat::chat_cursor_info(editor, chat_rect) {
-                frame.set_cursor_position((cx, cy));
+                let use_software_cursor =
+                    editor.render_cache.terminal_images_require_software_cursor
+                        && (!editor.render_cache.ai_chat_image_thumbnails.is_empty()
+                            || editor.ai_chat_image_modal_path().is_some());
+                if use_software_cursor {
+                    if let Some(cell) = frame.buffer_mut().cell_mut((cx, cy)) {
+                        cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+                    }
+                } else {
+                    frame.set_cursor_position((cx, cy));
+                }
             }
         }
     } else if editor.mode() == crate::mode::Mode::AiPrompt {
@@ -1079,7 +1089,7 @@ impl Renderer {
         self.terminal.autoresize()?;
         if take_terminal_image_refresh(
             &mut editor.render_cache,
-            self.image_renderer.is_enabled(),
+            self.image_renderer.uses_terminal_owned_images(),
             self.image_renderer.rendered_last_frame(),
         ) {
             // Inline terminal images are owned by the terminal rather than by
@@ -1089,6 +1099,8 @@ impl Renderer {
             self.terminal.clear()?;
         }
         editor.render_cache.terminal_image_support = self.image_renderer.is_enabled();
+        editor.render_cache.terminal_images_require_software_cursor =
+            self.image_renderer.requires_software_cursor();
 
         // Take the line cache out to avoid borrow conflict with terminal.draw()
         let mut line_cache = std::mem::take(&mut self.line_cache);

@@ -119,8 +119,11 @@ pub struct RenderCache {
     pub ai_chat_exa_dashboard_hitbox: Option<crate::Rect>,
     /// Hardware cursor position for the Exa key field.
     pub ai_chat_exa_input_cursor_pos: Option<(u16, u16)>,
-    /// Whether the frontend selected a real terminal graphics protocol.
+    /// Whether the frontend can render images, including cell-based fallbacks.
     pub terminal_image_support: bool,
+    /// iTerm's inline-image protocol is sensitive to hardware-cursor movement.
+    /// Frontends set this to request a cell-rendered cursor while images are visible.
+    pub terminal_images_require_software_cursor: bool,
     /// Focus regain invalidated terminal-owned image placements. The TUI
     /// consumes this before its next draw and forces a full surface refresh
     /// when the previous frame actually contained an image.

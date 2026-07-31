@@ -447,6 +447,12 @@ thumbnail is visible, so scrolling, new chat output, or hiding the chat cannot
 leave a historical image pinned over the current screen. Click a visible
 thumbnail to open its larger modal preview.
 
+Ovim automatically prefers the terminal's advertised Kitty, Sixel, or iTerm2
+protocol and falls back to Unicode half-block thumbnails when no native graphics
+protocol is available. Set `OVIM_IMAGE_PROTOCOL` to `kitty`, `sixel`, `iterm2`,
+`halfblocks`, or `off` to override detection. `halfblocks` is the most portable
+troubleshooting choice when native image placement flickers or is unstable.
+
 Terminal drag-and-drop is handled as a pasted image path, so the same behavior
 is available headlessly with `ovim paste -s SESSION '/path/to/image.png'`.
 
