@@ -2,9 +2,18 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "ovim")]
-#[command(version)]
+#[command(version, disable_version_flag = true)]
 #[command(about = "Oxidized Vim — a snappy, batteries-included terminal editor with Vim keybindings", long_about = None)]
 pub struct Cli {
+    /// Print version
+    #[arg(
+        short = 'v',
+        visible_short_alias = 'V',
+        long = "version",
+        action = clap::ArgAction::Version
+    )]
+    _version: Option<bool>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 
@@ -575,10 +584,12 @@ mod tests {
 
     #[test]
     fn version_flag_reports_the_package_version() {
-        let error = Cli::try_parse_from(["ovim", "--version"]).unwrap_err();
+        for flag in ["-v", "-V", "--version"] {
+            let error = Cli::try_parse_from(["ovim", flag]).unwrap_err();
 
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
-        assert!(error.to_string().contains(env!("CARGO_PKG_VERSION")));
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+            assert!(error.to_string().contains(env!("CARGO_PKG_VERSION")));
+        }
     }
 
     #[test]
