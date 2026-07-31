@@ -124,6 +124,22 @@ impl Editor {
             .is_some_and(|chat| chat.pending_code_explanation.is_some())
     }
 
+    /// Whether the visible buffer is the detached, read-only source snapshot
+    /// created for a walkthrough code page.
+    ///
+    /// This buffer is deliberately not an LSP document. Diagnostics and inlay
+    /// hints cached for the live file must therefore not be projected onto it,
+    /// even when line numbers happen to overlap.
+    pub fn ai_code_explanation_is_presenting_snapshot(&self) -> bool {
+        let current_id = self.buffer().id();
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_code_explanation.as_ref())
+            .and_then(|pending| pending.presentation_buffer_id)
+            == Some(current_id)
+    }
+
     fn cached_code_explanation_steps(
         &mut self,
         tool_call_id: &str,
@@ -1674,6 +1690,7 @@ mod tests {
         if let Err((error, _)) = editor.begin_code_explanation(tool_call, batch_continuation()) {
             panic!("walkthrough should start: {error:?}");
         }
+        assert!(editor.ai_code_explanation_is_presenting_snapshot());
         editor
             .get_buffer_by_id_mut(source_buffer_id)
             .unwrap()
@@ -1688,6 +1705,9 @@ mod tests {
                 .as_deref(),
             Some("changed after invocation")
         );
+
+        assert!(editor.finish_code_explanation(false));
+        assert!(!editor.ai_code_explanation_is_presenting_snapshot());
     }
 
     #[tokio::test(flavor = "multi_thread")]

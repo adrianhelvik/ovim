@@ -1477,7 +1477,15 @@ pub fn render_buffer(
     // Project every decoration through the edit log ONCE per render. Per-line
     // lookups in the loop below then read from a line-keyed map instead of
     // re-scanning `iter_all()` and re-projecting each decoration.
-    let projected_decorations = editor.decorations.project_all(rope, buffer.edit_log());
+    let projected_decorations = if editor.ai_code_explanation_is_presenting_snapshot() {
+        // Walkthrough code pages render an immutable virtual snapshot, not the
+        // live LSP document. Reusing the editor-global decoration map here can
+        // attach diagnostics and inlay hints from a different document state to
+        // coincidentally matching lines in the snapshot.
+        Default::default()
+    } else {
+        editor.decorations.project_all(rope, buffer.edit_log())
+    };
 
     let mut line_idx = start_line;
     while line_idx < line_count && visual_rows_used < emit_budget {
