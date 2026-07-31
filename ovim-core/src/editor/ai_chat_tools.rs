@@ -542,6 +542,7 @@ impl Editor {
             && matches!(
                 tc.name.as_str(),
                 "read_file_at_path"
+                    | "read_diagnostics"
                     | "view_image"
                     | "list_files"
                     | "edit_range"
@@ -559,7 +560,12 @@ impl Editor {
         );
         let visible_buffer_read = matches!(
             tc.name.as_str(),
-            "read_file" | "read_selection" | "read_diagnostics"
+            "read_file"
+                | "read_selection"
+                | "read_diagnostics"
+                | "document_symbols"
+                | "hover"
+                | "goto_definition"
         ) && self.buffer().file_path().is_some();
 
         if !self.active_chat_target_has_file_path()

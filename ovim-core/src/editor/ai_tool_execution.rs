@@ -810,8 +810,9 @@ impl Editor {
 
     /// Execute an LSP-backed tool (document_symbols, hover, goto_definition).
     pub(crate) fn execute_lsp_tool(&self, name: &str, args: &serde_json::Value) -> ToolResult {
-        let target_index = self.active_chat_target_buffer_index();
-        let buf = &self.buffers[target_index];
+        // LSP inspection follows the file the user is viewing. Unlike
+        // mutations, these tools must not silently inspect a pinned chat target.
+        let buf = &self.buffers[self.current_buffer_index];
         let Some(file_path) = buf.file_path() else {
             return ToolResult::Error(self.no_file_open_guidance());
         };
