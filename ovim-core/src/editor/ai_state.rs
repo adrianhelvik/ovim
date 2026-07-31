@@ -36,6 +36,8 @@ pub struct AiPromptState {
 
 #[derive(Debug, Clone)]
 pub struct AiSelectionSnapshot {
+    /// Buffer the coordinates and selected text were captured from.
+    pub buffer_id: BufferId,
     pub start_line: usize,
     /// Inclusive, zero-based grapheme column.
     pub start_col: usize,

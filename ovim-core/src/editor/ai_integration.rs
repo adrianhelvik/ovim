@@ -232,6 +232,7 @@ impl Editor {
 
         let selected_text = rope.slice(start_char..end_char).to_string();
         let snapshot = AiSelectionSnapshot {
+            buffer_id: self.buffer().id(),
             start_line,
             start_col,
             end_line,
@@ -591,6 +592,7 @@ impl Editor {
         let end_for_col = end_char.saturating_sub(1).max(start_char);
         let (end_line, end_col) = self.abs_char_to_line_col(end_for_col);
         let selection = AiSelectionSnapshot {
+            buffer_id: self.buffer().id(),
             start_line,
             start_col,
             end_line,

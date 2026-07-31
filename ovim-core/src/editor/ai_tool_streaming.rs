@@ -624,6 +624,20 @@ impl Editor {
         out.push_str(&file_info);
         remaining = remaining.saturating_sub(file_info.len());
 
+        let target_index = self.active_chat_target_buffer_index();
+        if target_index != self.current_buffer_index {
+            let target = &self.buffers[target_index];
+            let target_line = format!(
+                "Chat target: {} (revision {})\n",
+                target.file_path().unwrap_or("[No Name]"),
+                target.version(),
+            );
+            if target_line.len() <= remaining {
+                out.push_str(&target_line);
+                remaining = remaining.saturating_sub(target_line.len());
+            }
+        }
+
         // --- Cursor position (always) ---
         let cursor = buf.cursor();
         let cursor_line = format!(
@@ -653,7 +667,12 @@ impl Editor {
         }
 
         // --- Selection (if any, high priority) ---
-        if let Some(sel) = &self.ai_state.active_selection {
+        if let Some(sel) = self
+            .ai_state
+            .active_selection
+            .as_ref()
+            .filter(|selection| selection.buffer_id == buf.id())
+        {
             let sel_header = format!(
                 "\n### Selection (lines {}-{})\n",
                 sel.start_line + 1,

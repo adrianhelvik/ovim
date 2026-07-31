@@ -1,6 +1,6 @@
 # AI chat buffer context: visible buffer vs. chat target
 
-> **Status:** Ready for implementation.
+> **Status:** Implemented. Read-only current-buffer tools use visible state, workspace context and the editor preamble identify a divergent chat target, selections carry buffer identity, and implicit mutations still fail when their pinned target disappears.
 
 ## Summary
 

@@ -486,6 +486,7 @@ impl Editor {
         };
 
         self.ai_state.active_selection = Some(crate::editor::ai_state::AiSelectionSnapshot {
+            buffer_id: self.buffer().id(),
             start_line: start_line_0,
             start_col,
             end_line: end_line_0,

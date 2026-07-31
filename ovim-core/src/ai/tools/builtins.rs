@@ -11,6 +11,16 @@ use super::{ParamType, SideEffect, ToolDefinition, ToolParam, ToolRegistry, Tool
 /// Everything a tool handler needs from the editor (read-only snapshot).
 #[derive(Debug, Clone)]
 pub struct ToolExecutionContext {
+    /// Snapshot of the visible editor buffer. Read-only "current file" tools
+    /// use these fields even when the chat has a different pinned target.
+    pub visible_buffer_content: String,
+    pub visible_file_path: Option<String>,
+    pub visible_buffer_revision: usize,
+    pub visible_cursor: (usize, usize),
+    pub visible_diagnostics: Vec<DiagnosticFact>,
+    pub visible_current_file: Option<std::path::PathBuf>,
+    /// Snapshot of the pinned chat target. These legacy names remain the
+    /// mutation/default-target context used by editor-side tool execution.
     pub buffer_content: String,
     pub file_path: Option<String>,
     /// Monotonic revision of the active editor buffer.
@@ -202,7 +212,8 @@ pub struct OpenBufferState {
     pub path: String,
     pub modified: bool,
     pub revision: usize,
-    pub active: bool,
+    pub visible: bool,
+    pub chat_target: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -577,19 +588,36 @@ fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext
         }
     }
 
-    let active = ctx.open_buffer_states.iter().find(|buffer| buffer.active);
-    output.push_str("\nActive buffer:\n");
-    if let Some(active) = active {
+    let visible = ctx.open_buffer_states.iter().find(|buffer| buffer.visible);
+    output.push_str("\nVisible buffer:\n");
+    if let Some(visible) = visible {
         output.push_str(&format!(
             "  {}:{}:{} [{}revision {}]\n",
-            active.path,
-            ctx.cursor.0 + 1,
-            ctx.cursor.1 + 1,
-            if active.modified { "modified, " } else { "" },
-            active.revision,
+            visible.path,
+            ctx.visible_cursor.0 + 1,
+            ctx.visible_cursor.1 + 1,
+            if visible.modified { "modified, " } else { "" },
+            visible.revision,
         ));
     } else {
         output.push_str("  [No Name]\n");
+    }
+    let target = ctx
+        .open_buffer_states
+        .iter()
+        .find(|buffer| buffer.chat_target);
+    if target.map(|buffer| buffer.path.as_str()) != visible.map(|buffer| buffer.path.as_str()) {
+        output.push_str("Chat target:\n");
+        if let Some(target) = target {
+            output.push_str(&format!(
+                "  {} [{}revision {}]\n",
+                target.path,
+                if target.modified { "modified, " } else { "" },
+                target.revision,
+            ));
+        } else {
+            output.push_str("  unavailable\n");
+        }
     }
     if let Some((start_line, start_col, end_line, end_col)) = ctx.selection {
         // `end_col` is an exclusive zero-based grapheme column (see
@@ -728,13 +756,13 @@ fn read_file_def() -> ToolDefinition {
 }
 
 fn handle_read_file(args: &serde_json::Value, ctx: &ToolExecutionContext) -> ToolResult {
-    if let Some(path) = ctx.scope_context.current_file.as_ref() {
+    if let Some(path) = ctx.visible_current_file.as_ref() {
         if let Err(e) = ensure_non_sensitive_or_approved(path, ctx) {
             return e;
         }
     }
 
-    let lines: Vec<&str> = ctx.buffer_content.lines().collect();
+    let lines: Vec<&str> = ctx.visible_buffer_content.lines().collect();
     let total = lines.len();
 
     if total == 0 {
@@ -764,14 +792,14 @@ fn handle_read_file(args: &serde_json::Value, ctx: &ToolExecutionContext) -> Too
     }
 
     let mut output = String::new();
-    let file_label = ctx.file_path.as_deref().unwrap_or("[No Name]");
+    let file_label = ctx.visible_file_path.as_deref().unwrap_or("[No Name]");
     output.push_str(&format!(
         "File: {} (lines {}-{} of {})\nBuffer revision: {}\n",
         file_label,
         start + 1,
         end,
         total,
-        ctx.buffer_revision,
+        ctx.visible_buffer_revision,
     ));
     for (i, line) in lines[start..end].iter().enumerate() {
         output.push_str(&format!("{:>4} | {}\n", start + i + 1, line));
@@ -961,7 +989,7 @@ fn handle_read_selection(_args: &serde_json::Value, ctx: &ToolExecutionContext) 
         );
     };
 
-    let lines: Vec<&str> = ctx.buffer_content.lines().collect();
+    let lines: Vec<&str> = ctx.visible_buffer_content.lines().collect();
     if lines.is_empty() || start_line >= lines.len() {
         return ToolResult::Error("selection out of range".to_string());
     }
@@ -1047,14 +1075,14 @@ fn handle_read_diagnostics(args: &serde_json::Value, ctx: &ToolExecutionContext)
         );
     }
 
-    let file_label = ctx.file_path.as_deref().unwrap_or("[No Name]");
+    let file_label = ctx.visible_file_path.as_deref().unwrap_or("[No Name]");
     let lsp_versions = find_project_diagnostics_file(file_label, &ctx.project_diagnostics)
         .map(|file| file.lsp_versions.as_slice())
         .unwrap_or_default();
     format_diagnostics_for_file(
         file_label,
-        &ctx.diagnostics,
-        Some(ctx.buffer_revision),
+        &ctx.visible_diagnostics,
+        Some(ctx.visible_buffer_revision),
         lsp_versions,
     )
 }
@@ -1919,6 +1947,12 @@ mod tests {
 
     fn test_ctx(content: &str) -> ToolExecutionContext {
         ToolExecutionContext {
+            visible_buffer_content: content.to_string(),
+            visible_file_path: Some("test.rs".to_string()),
+            visible_buffer_revision: 7,
+            visible_cursor: (0, 0),
+            visible_diagnostics: vec![],
+            visible_current_file: Some(PathBuf::from("test.rs")),
             buffer_content: content.to_string(),
             file_path: Some("test.rs".to_string()),
             buffer_revision: 7,
@@ -1944,7 +1978,8 @@ mod tests {
                 path: "test.rs".to_string(),
                 modified: false,
                 revision: 7,
-                active: true,
+                visible: true,
+                chat_target: true,
             }],
             lsp_enabled: false,
             lsp_languages: vec![],
@@ -1970,7 +2005,7 @@ mod tests {
         match result {
             ToolResult::Success(output) => {
                 assert!(output.contains("Attached roots:"));
-                assert!(output.contains("Active buffer:"));
+                assert!(output.contains("Visible buffer:"));
                 assert!(output.contains("modified, revision 7"));
                 assert!(output.contains("Editor: 1 unsaved buffer"));
                 assert!(output.contains("Rust, Cargo"));
@@ -2167,7 +2202,7 @@ mod tests {
     #[test]
     fn read_diagnostics_with_items() {
         let mut ctx = test_ctx("fn main() {}");
-        ctx.diagnostics = vec![DiagnosticFact {
+        ctx.visible_diagnostics = vec![DiagnosticFact {
             message: "unused variable".to_string(),
             severity: Some("warning".to_string()),
             line: 0,
@@ -2281,6 +2316,12 @@ mod tests {
 
     fn test_ctx_with_project(content: &str, project_root: PathBuf) -> ToolExecutionContext {
         ToolExecutionContext {
+            visible_buffer_content: content.to_string(),
+            visible_file_path: Some("test.rs".to_string()),
+            visible_buffer_revision: 7,
+            visible_cursor: (0, 0),
+            visible_diagnostics: vec![],
+            visible_current_file: Some(PathBuf::from("test.rs")),
             buffer_content: content.to_string(),
             file_path: Some("test.rs".to_string()),
             buffer_revision: 7,
@@ -2306,7 +2347,8 @@ mod tests {
                 path: "test.rs".to_string(),
                 modified: false,
                 revision: 7,
-                active: true,
+                visible: true,
+                chat_target: true,
             }],
             lsp_enabled: false,
             lsp_languages: vec![],

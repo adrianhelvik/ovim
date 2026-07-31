@@ -200,12 +200,27 @@ impl Editor {
             let c = buf.cursor();
             (c.line(), c.col().0)
         };
+        let visible_index = self.current_buffer_index;
+        let visible_buf = &self.buffers[visible_index];
+        let visible_buffer_content = visible_buf.rope().to_string();
+        let visible_file_path = visible_buf.file_path().map(ToString::to_string);
+        let visible_buffer_revision = visible_buf.version();
+        let visible_cursor = {
+            let c = visible_buf.cursor();
+            (c.line(), c.col().0)
+        };
+        let visible_diagnostics = self.get_diagnostics_for_buffer_index(visible_index);
+        let visible_current_file = visible_buf
+            .file_path()
+            .map(PathBuf::from)
+            .map(|path| self.absolutize_path(&path));
 
         // Try to get selection from visual mode or last selection
         let selection = self
             .ai_state
             .active_selection
             .as_ref()
+            .filter(|selection| selection.buffer_id == visible_buf.id())
             .map(|s| (s.start_line, s.start_col, s.end_line, s.end_col));
 
         // Get diagnostics for active target buffer
@@ -228,7 +243,8 @@ impl Editor {
                 path: b.file_path().unwrap_or("[No Name]").to_string(),
                 modified: b.is_modified(),
                 revision: b.version(),
-                active: index == target_index,
+                visible: index == visible_index,
+                chat_target: index == target_index,
             });
             if let Some(p) = b.file_path() {
                 let path = std::path::Path::new(p);
@@ -254,6 +270,12 @@ impl Editor {
         lsp_languages.sort();
 
         ToolExecutionContext {
+            visible_buffer_content,
+            visible_file_path,
+            visible_buffer_revision,
+            visible_cursor,
+            visible_diagnostics,
+            visible_current_file,
             buffer_content,
             file_path,
             buffer_revision,
@@ -500,17 +522,22 @@ impl Editor {
                 self.execute_record_comprehension_checkpoint(&tc.arguments),
             );
         }
-        if tc.name != "bash" {
-            if let Err(err) = self.active_chat_target_buffer_index_strict() {
-                return ToolDispatchOutcome::Completed(ToolResult::Error(err));
-            }
-        }
-
         let has_explicit_path = tc
             .arguments
             .get("path")
             .and_then(|v| v.as_str())
             .is_some_and(|s| !s.trim().is_empty());
+        let implicit_mutation = !has_explicit_path
+            && self
+                .ai_state
+                .tool_registry
+                .get(&tc.name)
+                .is_some_and(|tool| tool.side_effect != SideEffect::Read);
+        if implicit_mutation {
+            if let Err(err) = self.active_chat_target_buffer_index_strict() {
+                return ToolDispatchOutcome::Completed(ToolResult::Error(err));
+            }
+        }
         let path_scoped_without_open_file = has_explicit_path
             && matches!(
                 tc.name.as_str(),
@@ -530,6 +557,10 @@ impl Editor {
             tc.name.as_str(),
             "list_files" | "search_project" | "workspace_context"
         );
+        let visible_buffer_read = matches!(
+            tc.name.as_str(),
+            "read_file" | "read_selection" | "read_diagnostics"
+        ) && self.buffer().file_path().is_some();
 
         if !self.active_chat_target_has_file_path()
             && tc.name != "open_file"
@@ -538,6 +569,7 @@ impl Editor {
             && tc.name != "web_fetch"
             && !path_scoped_without_open_file
             && !project_scoped_without_open_file
+            && !visible_buffer_read
         {
             return ToolDispatchOutcome::Completed(ToolResult::Error(self.no_file_open_guidance()));
         }
@@ -2568,6 +2600,7 @@ mod tests {
             fs::write(&file_b, "from_b\n").expect("seed b");
 
             let mut editor = Editor::default();
+            set_active_profile_project_scope(&mut editor);
             editor.open_file(&file_a).expect("open a");
             editor
                 .open_ai_chat(ChatOpts {
@@ -2596,6 +2629,44 @@ mod tests {
                 .as_deref()
                 .is_some_and(|p| p.ends_with("a.rs")));
             assert!(ctx.buffer_content.contains("from_a"));
+            assert!(ctx
+                .visible_file_path
+                .as_deref()
+                .is_some_and(|p| p.ends_with("b.rs")));
+            assert!(ctx.visible_buffer_content.contains("from_b"));
+
+            let read_call = ToolCallInfo {
+                id: "call_read_visible".to_string(),
+                name: "read_file".to_string(),
+                arguments: serde_json::json!({}),
+            };
+            match editor.dispatch_tool_call_with_approval(&read_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(output)) => {
+                    assert!(output.contains("from_b"), "{output}");
+                    assert!(!output.contains("from_a"), "{output}");
+                }
+                _ => panic!("unexpected read outcome"),
+            }
+
+            let mut workspace_ctx = editor.build_tool_execution_context();
+            workspace_ctx.scope_context.project_root = Some(dir.path().to_path_buf());
+            match crate::ai::tools::builtins::execute_builtin(
+                "workspace_context",
+                &serde_json::json!({
+                    "include_git": false,
+                    "include_projects": false,
+                    "include_diagnostics_summary": false,
+                }),
+                &workspace_ctx,
+            ) {
+                ToolResult::Success(output) => {
+                    assert!(output.contains("Visible buffer:\n"), "{output}");
+                    assert!(output.contains("b.rs"), "{output}");
+                    assert!(output.contains("Chat target:\n"), "{output}");
+                    assert!(output.contains("a.rs"), "{output}");
+                }
+                ToolResult::Error(error) => panic!("unexpected workspace error: {error}"),
+            }
         });
     }
 
@@ -2996,7 +3067,7 @@ mod tests {
         match editor.dispatch_tool_call_with_approval(&workspace_context_call, None) {
             ToolDispatchOutcome::Completed(ToolResult::Success(output)) => {
                 assert!(output.contains("Workspace:"), "{output}");
-                assert!(output.contains("Active buffer:\n  [No Name]"), "{output}");
+                assert!(output.contains("Visible buffer:\n  [No Name]"), "{output}");
             }
             ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
                 panic!("expected workspace_context success, got: {err}");
@@ -3007,9 +3078,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tool_dispatch_fails_when_active_target_buffer_id_is_invalid() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn invalid_chat_target_allows_visible_reads_but_rejects_implicit_mutations() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let visible_file = dir.path().join("visible.rs");
+        fs::write(&visible_file, "visible\n").expect("seed visible file");
         let mut editor = Editor::default();
+        editor.open_file(&visible_file).expect("open visible file");
         editor
             .open_ai_chat(ChatOpts {
                 name: "chat".to_string(),
@@ -3029,6 +3104,21 @@ mod tests {
         };
 
         match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+            ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+            ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
+                panic!("expected visible-buffer read, got: {err}");
+            }
+            ToolDispatchOutcome::ApprovalRequired(req) => {
+                panic!("unexpected approval request: {}", req.message);
+            }
+        }
+
+        let mutation_call = ToolCallInfo {
+            id: "call_edit".to_string(),
+            name: "edit_range".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        match editor.dispatch_tool_call_with_approval(&mutation_call, None) {
             ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
                 assert!(err.contains("Active chat target is no longer available"));
             }
