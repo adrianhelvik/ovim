@@ -138,15 +138,19 @@ fn parse_inline_elements(line: &str, elements: &mut Vec<MarkdownElement>) {
                     current_text.clear();
                 }
                 let mut bold_text = String::new();
+                let mut closed = false;
                 while let Some(bc) = chars.next() {
                     if bc == '*' && chars.peek() == Some(&'*') {
                         chars.next();
+                        closed = true;
                         break;
                     }
                     bold_text.push(bc);
                 }
-                if !bold_text.is_empty() {
+                if closed && !bold_text.is_empty() {
                     push_bold_elements(&bold_text, elements);
+                } else if !closed {
+                    elements.push(MarkdownElement::Text(format!("**{bold_text}")));
                 }
             }
             '`' => {
@@ -156,14 +160,18 @@ fn parse_inline_elements(line: &str, elements: &mut Vec<MarkdownElement>) {
                     current_text.clear();
                 }
                 let mut code_text = String::new();
+                let mut closed = false;
                 for cc in chars.by_ref() {
                     if cc == '`' {
+                        closed = true;
                         break;
                     }
                     code_text.push(cc);
                 }
-                if !code_text.is_empty() {
+                if closed && !code_text.is_empty() {
                     elements.push(MarkdownElement::InlineCode(code_text));
+                } else if !closed {
+                    elements.push(MarkdownElement::Text(format!("`{code_text}")));
                 }
             }
             _ => {
@@ -212,7 +220,10 @@ fn render_code_line_with_highlights(
     max_width: usize,
 ) -> Line<'static> {
     let mut spans = Vec::new();
-    spans.push(Span::raw(" ")); // Leading padding
+    spans.push(Span::styled(
+        " ",
+        Style::default().bg(colors::CODE_BLOCK_BG),
+    )); // Leading padding
 
     let chars: Vec<char> = line.chars().collect();
     let display_width = max_width.saturating_sub(2);
@@ -256,10 +267,15 @@ fn render_code_line_with_highlights(
     if chars.len() > display_width {
         spans.push(Span::styled(
             "...",
-            Style::default().fg(colors::CODE_BLOCK_FG),
+            Style::default()
+                .fg(colors::CODE_BLOCK_FG)
+                .bg(colors::CODE_BLOCK_BG),
         ));
     }
-    spans.push(Span::raw(" ")); // Trailing padding
+    spans.push(Span::styled(
+        " ",
+        Style::default().bg(colors::CODE_BLOCK_BG),
+    )); // Trailing padding
 
     Line::from(spans)
 }
@@ -307,8 +323,8 @@ pub fn render_markdown(
                 current_width += text.len();
             }
             MarkdownElement::InlineCode(code) => {
-                current_spans.push(Span::styled(format!(" {} ", code), code_style));
-                current_width += code.len() + 2;
+                current_spans.push(Span::styled(code.clone(), code_style));
+                current_width += code.len();
             }
             MarkdownElement::CodeBlock { language, code } => {
                 // Flush current line
@@ -429,6 +445,33 @@ mod tests {
         assert!(elements.iter().any(|element| {
             matches!(element, MarkdownElement::Bold(text) if text == " while history is focused.")
         }));
+    }
+
+    #[test]
+    fn inline_code_does_not_add_padding_for_concealed_backticks() {
+        let elements = parse_markdown("Use `code` now");
+        let lines = render_markdown(&elements, 80, None);
+        let rendered = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(rendered, "Use code now");
+        let code = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content == "code")
+            .expect("inline code span");
+        assert_eq!(code.style.bg, Some(colors::CODE_SPAN_BG));
+    }
+
+    #[test]
+    fn unmatched_inline_delimiters_remain_visible() {
+        let elements = parse_markdown("Keep `this and **that");
+        assert!(elements.iter().any(
+            |element| matches!(element, MarkdownElement::Text(text) if text == "`this and **that")
+        ));
     }
 
     #[test]

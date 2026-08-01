@@ -842,19 +842,23 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &mut Editor) {
                 .add_modifier(Modifier::BOLD),
         )),
     ]);
-    let card = Paragraph::new(content).wrap(Wrap { trim: false }).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(ratatui::widgets::BorderType::Rounded)
-            .border_style(Style::default().fg(MODAL_COLORS.border).bg(MODAL_COLORS.bg))
-            .title(title)
-            .title_style(
-                Style::default()
-                    .fg(MODAL_COLORS.title)
-                    .bg(MODAL_COLORS.bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-    );
+    let card = Paragraph::new(content)
+        .style(Style::default().fg(MODAL_COLORS.text).bg(MODAL_COLORS.bg))
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .style(Style::default().bg(MODAL_COLORS.bg))
+                .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .border_style(Style::default().fg(MODAL_COLORS.border).bg(MODAL_COLORS.bg))
+                .title(title)
+                .title_style(
+                    Style::default()
+                        .fg(MODAL_COLORS.title)
+                        .bg(MODAL_COLORS.bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+        );
     frame.render_widget(Clear, area);
     frame.render_widget(card, area);
 }

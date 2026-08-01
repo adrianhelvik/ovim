@@ -136,7 +136,7 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> serde_json
                             "type": { "const": "code" },
                             "path": {
                                 "type": "string",
-                                "description": "Project-relative file path."
+                                "description": "Project-relative or absolute file path. Outside-project paths must already be approved for the chat."
                             },
                             "start_line": {
                                 "type": "integer",

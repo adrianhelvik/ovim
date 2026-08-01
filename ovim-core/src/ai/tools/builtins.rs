@@ -814,9 +814,9 @@ fn handle_read_file(args: &serde_json::Value, ctx: &ToolExecutionContext) -> Too
 fn read_file_at_path_def() -> ToolDefinition {
     ToolDefinition {
         name: "read_file_at_path".to_string(),
-        description: "Read any file in the project by path. Use when you need to examine files \
-            found via list_files or search_project. Path is relative to project root. \
-            Returns file contents with line numbers."
+        description: "Read a file by path. Use when you need to examine files found via \
+            list_files or search_project. Paths may be project-relative or absolute; access \
+            outside the project requires user approval. Returns file contents with line numbers."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::Project,
@@ -830,7 +830,8 @@ fn read_file_at_path_def() -> ToolDefinition {
                 name: "path".to_string(),
                 param_type: ParamType::String,
                 required: true,
-                description: "File path relative to project root.".to_string(),
+                description: "Project-relative or absolute file path. Outside-project access requires user approval."
+                    .to_string(),
             },
             ToolParam {
                 name: "start_line".to_string(),
@@ -1663,7 +1664,7 @@ pub(crate) fn explain_with_codebase_def() -> ToolDefinition {
             name: "steps".to_string(),
             param_type: ParamType::CodeExplanationSteps,
             required: true,
-            description: "Narratively ordered concept and code pages in one linear walkthrough. Give every page exactly one new idea and one necessary connection. Split before the reader must retain two unfamiliar facts at once. Use concept pages for short introductions, prerequisites, transitions, or synthesis without a code location; prefer multiple focused concept pages over one dense page. Code-page paths are project-relative and lines are 1-indexed and inclusive. Select the smallest code block that demonstrates the idea, not the surrounding function. Establish prerequisites before consequences. A line or range may be revisited when a later page adds a distinct insight."
+            description: "Narratively ordered concept and code pages in one linear walkthrough. Give every page exactly one new idea and one necessary connection. Split before the reader must retain two unfamiliar facts at once. Use concept pages for short introductions, prerequisites, transitions, or synthesis without a code location; prefer multiple focused concept pages over one dense page. Code-page paths may be project-relative or absolute; outside-project paths must already be approved for the chat. Lines are 1-indexed and inclusive. Select the smallest code block that demonstrates the idea, not the surrounding function. Establish prerequisites before consequences. A line or range may be revisited when a later page adds a distinct insight."
                 .to_string(),
         }],
     }

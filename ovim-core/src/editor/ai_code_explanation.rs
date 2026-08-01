@@ -879,26 +879,36 @@ impl Editor {
             let root = root
                 .as_ref()
                 .ok_or_else(|| ToolResult::Error(self.no_project_root_error()))?;
-            let relative = Path::new(&path);
-            if relative.is_absolute()
-                || relative.components().any(|component| {
-                    matches!(
-                        component,
-                        Component::ParentDir | Component::RootDir | Component::Prefix(_)
-                    )
-                })
+            let supplied_path = Path::new(&path);
+            if supplied_path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
             {
                 return Err(ToolResult::Error(format!(
-                    "step {step_number} path must be project-relative without '..': {path}"
+                    "step {step_number} path must not contain '..': {path}"
                 )));
             }
-            let candidate = root.join(relative);
+            let candidate = if supplied_path.is_absolute() {
+                supplied_path.to_path_buf()
+            } else {
+                root.join(supplied_path)
+            };
             let absolute_path = candidate.canonicalize().map_err(|error| {
                 ToolResult::Error(format!("step {step_number} cannot open '{path}': {error}"))
             })?;
-            if !absolute_path.starts_with(root) || !absolute_path.is_file() {
+            if !absolute_path.is_file() {
                 return Err(ToolResult::Error(format!(
-                    "step {step_number} path is not a file inside the project: {path}"
+                    "step {step_number} path is not a file: {path}"
+                )));
+            }
+            if !absolute_path.starts_with(root)
+                && !self.ai_chat_yolo_mode()
+                && self
+                    .current_session_approved_root_for(&absolute_path)
+                    .is_none()
+            {
+                return Err(ToolResult::Error(format!(
+                    "step {step_number} path is outside the project and has not been approved for this chat: {path}. Use read_file_at_path or list_files with the absolute path to request access, then retry the walkthrough"
                 )));
             }
             let wrap_width =
@@ -1312,6 +1322,54 @@ mod tests {
             remaining_tool_calls: Vec::new(),
             model_name: "test".into(),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn walkthrough_accepts_absolute_paths_under_an_approved_external_root() {
+        let (_project, mut editor, _first, _second) = setup_editor();
+        let external = tempfile::tempdir().unwrap();
+        let source = external.path().join("external.rs");
+        std::fs::write(&source, "fn external() {}\n").unwrap();
+        editor
+            .ai_state
+            .chat
+            .as_mut()
+            .unwrap()
+            .approved_external_roots
+            .push(external.path().canonicalize().unwrap());
+
+        let steps = editor
+            .parse_code_explanation_steps(&json!({ "steps": [{
+                "type": "code",
+                "path": source,
+                "start_line": 1,
+                "comment": "This source is in an attached external root."
+            }]}))
+            .expect("approved absolute path should be accepted");
+
+        assert!(matches!(
+            &steps[0],
+            CodeExplanationStep::Code { absolute_path, .. } if absolute_path == &source.canonicalize().unwrap()
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn walkthrough_rejects_unapproved_absolute_paths_with_actionable_guidance() {
+        let (_project, editor, _first, _second) = setup_editor();
+        let external = tempfile::NamedTempFile::new().unwrap();
+        let error = editor
+            .parse_code_explanation_steps(&json!({ "steps": [{
+                "type": "code",
+                "path": external.path(),
+                "start_line": 1,
+                "comment": "This source has not been approved."
+            }]}))
+            .unwrap_err();
+
+        let ToolResult::Error(message) = error else {
+            panic!("expected an error");
+        };
+        assert!(message.contains("Use read_file_at_path or list_files"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

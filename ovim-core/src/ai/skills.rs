@@ -211,7 +211,7 @@ fn load_skill_content(
     source: PathBuf,
     origin: SkillOrigin,
 ) -> Result<Skill, String> {
-    let (yaml, instructions) = split_frontmatter(&content)?;
+    let (yaml, instructions) = split_frontmatter(content)?;
     let frontmatter: SkillFrontmatter =
         serde_yaml::from_str(yaml).map_err(|error| format!("invalid YAML frontmatter: {error}"))?;
     validate_name(&frontmatter.name)?;

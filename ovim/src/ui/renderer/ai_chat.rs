@@ -1541,7 +1541,12 @@ fn render_card_styled_line(
         if span_width == 0 {
             continue;
         }
-        spans.push(Span::styled(content, span.style.bg(row_bg)));
+        let style = if span.style.bg.is_some() {
+            span.style
+        } else {
+            span.style.bg(row_bg)
+        };
+        spans.push(Span::styled(content, style));
         used += span_width;
     }
 
@@ -2201,10 +2206,10 @@ fn center_text(text: &str, width: usize) -> String {
 mod tests {
     use super::{
         chat_cursor_info, compute_chat_split, highlight_chat_selection,
-        is_hidden_tool_only_assistant, render_card_header_line, render_card_text_line,
-        render_queued_input_row, render_tool_event_details, render_tool_event_row,
-        styled_word_wrap_line, text_display_width, truncate_with_ellipsis, word_wrap,
-        LineRenderCache, MessageRowStyle,
+        is_hidden_tool_only_assistant, render_card_header_line, render_card_styled_line,
+        render_card_text_line, render_queued_input_row, render_tool_event_details,
+        render_tool_event_row, styled_word_wrap_line, text_display_width, truncate_with_ellipsis,
+        word_wrap, LineRenderCache, MessageRowStyle, ACCENT_ASSISTANT_EDIT, BG_ASSISTANT_EDIT_ROW,
     };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ImageAttachment, ToolCallInfo};
     use ovim_core::editor::ai_chat_input::{chat_input_cursor_row_col, wrap_chat_input_rows};
@@ -2530,6 +2535,32 @@ mod tests {
             .unwrap();
 
         assert!(editor.render_cache.ai_chat_image_thumbnails.is_empty());
+    }
+
+    #[test]
+    fn card_rows_preserve_explicit_markdown_backgrounds() {
+        let code_bg = Color::Rgb(1, 2, 3);
+        let line = render_card_styled_line(
+            24,
+            "▍",
+            ACCENT_ASSISTANT_EDIT,
+            BG_ASSISTANT_EDIT_ROW,
+            vec![Span::styled(
+                "inline",
+                Style::default().fg(Color::White).bg(code_bg),
+            )],
+        );
+
+        let code_span = line
+            .spans
+            .iter()
+            .find(|span| span.content == "inline")
+            .expect("rendered inline-code span");
+        assert_eq!(code_span.style.bg, Some(code_bg));
+        assert_eq!(
+            line.spans.last().unwrap().style.bg,
+            Some(BG_ASSISTANT_EDIT_ROW)
+        );
     }
 
     #[test]
