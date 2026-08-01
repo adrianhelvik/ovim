@@ -2114,7 +2114,7 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
     let section = editor.ai_chat_model_picker_section();
     let content_rows = profile_names.len() + ovim_core::editor::AI_CHAT_REASONING_EFFORTS.len() + 2;
     let height = (content_rows as u16 + 2).min(area.height);
-    let width = area.width.min(52).max(24);
+    let width = area.width.clamp(24, 52);
     let anchor = anchor.unwrap_or(Rect::new(area.x, area.y.saturating_sub(1), width, 1));
     let popup = Rect {
         x: anchor.x.min(area.right().saturating_sub(width)).max(area.x),

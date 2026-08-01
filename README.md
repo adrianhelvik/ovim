@@ -245,6 +245,16 @@ Key modules:
 
 Contributions are welcome!
 
+To run the same formatting and Clippy checks as CI before every commit, install
+[pre-commit](https://pre-commit.com/) and enable the repository hooks:
+
+```bash
+pre-commit install
+```
+
+Run the checks manually with `pre-commit run --all-files`. The full test suite
+remains available through `cargo test --workspace`.
+
 ## License
 
 [MIT](LICENSE)
