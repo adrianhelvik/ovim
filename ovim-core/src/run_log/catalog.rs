@@ -16,6 +16,15 @@ pub trait CatalogClock: Send + Sync {
     fn now_millis(&self) -> i64;
 }
 
+/// Stable catalog identity for a user-approved folder that is not a Git
+/// repository. The folder root is an authorization boundary supplied by the
+/// caller, not a path discovered from the process working directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApprovedFolderRecord {
+    pub repository_id: RepositoryId,
+    pub root: PathBuf,
+}
+
 #[derive(Default)]
 pub struct SystemCatalogClock;
 
@@ -296,6 +305,59 @@ impl RunCatalog {
             CatalogError::RunLog(RunLogError::Corruption {
                 detail: format!("registered repository {repository_id} disappeared"),
             })
+        })
+    }
+
+    /// Registers a canonical, explicitly approved non-Git folder as a durable
+    /// conversation anchor. Its repository identity remains stable across
+    /// processes without claiming that the folder contains Git metadata.
+    pub fn register_approved_folder(
+        &self,
+        root: &Path,
+    ) -> Result<ApprovedFolderRecord, CatalogError> {
+        let root = path_key(root)?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| storage("begin approved folder registration", error))?;
+
+        let existing = transaction
+            .query_row(
+                "SELECT repository_id FROM approved_folder_roots WHERE root_path = ?1",
+                [&root],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| storage("resolve approved folder", error))?;
+        let repository_id = match existing {
+            Some(value) => parse_repository_id(value)?,
+            None => {
+                let id = RepositoryId::new();
+                // Valid Git registrations always use canonical absolute paths.
+                // This reserved relative marker therefore cannot collide with
+                // a real common Git directory, including one created later.
+                let marker = format!("approved-folder/{}", id.as_str());
+                transaction
+                    .execute(
+                        "INSERT INTO repositories(repository_id, common_git_dir, created_at_millis) VALUES (?1, ?2, ?3)",
+                        params![id.as_str(), marker.as_bytes(), self.clock.now_millis()],
+                    )
+                    .map_err(|error| storage("insert approved folder identity", error))?;
+                transaction
+                    .execute(
+                        "INSERT INTO approved_folder_roots(root_path, repository_id) VALUES (?1, ?2)",
+                        params![root, id.as_str()],
+                    )
+                    .map_err(|error| storage("insert approved folder root", error))?;
+                id
+            }
+        };
+        transaction
+            .commit()
+            .map_err(|error| storage("commit approved folder registration", error))?;
+        Ok(ApprovedFolderRecord {
+            repository_id,
+            root: bytes_path(root),
         })
     }
 
@@ -927,6 +989,15 @@ fn migrate(connection: &mut Connection) -> Result<(), CatalogError> {
              PRIMARY KEY(run_id, pid));",
         )
         .map_err(|error| migration(LATEST_MIGRATION, error))?;
+    // Approved non-Git folders share the durable conversation machinery but
+    // retain a distinct identity namespace. Keeping this additive and
+    // idempotent preserves readability by binaries predating folder anchors.
+    transaction
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS approved_folder_roots(\
+             root_path BLOB PRIMARY KEY, repository_id TEXT NOT NULL UNIQUE REFERENCES repositories(repository_id) ON DELETE CASCADE);",
+        )
+        .map_err(|error| migration(LATEST_MIGRATION, error))?;
     transaction.commit().map_err(|error| migration(0, error))
 }
 
@@ -1027,6 +1098,32 @@ mod tests {
             version,
             value: value.into(),
         }
+    }
+
+    #[test]
+    fn approved_folder_identity_is_stable_and_distinct_from_git_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(temporary.path().join("runs"));
+        let folder = temporary.path().join("workspace");
+        std::fs::create_dir(&folder).unwrap();
+        let folder = folder.canonicalize().unwrap();
+
+        let first = RunCatalog::open(&layout)
+            .unwrap()
+            .register_approved_folder(&folder)
+            .unwrap();
+        let reopened = RunCatalog::open(&layout).unwrap();
+        let second = reopened.register_approved_folder(&folder).unwrap();
+        let git = reopened
+            .register_repository(RepositoryRegistration {
+                common_git_dir: folder.join(".git"),
+                worktree_aliases: vec![folder.clone()],
+            })
+            .unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.root, folder);
+        assert_ne!(first.repository_id, git.repository_id);
     }
 
     #[test]

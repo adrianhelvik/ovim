@@ -37,6 +37,12 @@ executes approved effects in the repository, and returns results for the next
 inference round. Codex's read-only workspace sandbox is therefore not involved
 in repository reads or writes.
 
+When Ovim starts outside Git, an editable chat asks before treating the current
+folder as its project boundary. Approving creates a durable, folder-scoped chat
+identity and enables shell and mutation tools only within that folder. Denying
+or dismissing the prompt keeps those tools disabled. Read-only chats never gain
+shell or mutation access, even for an approved folder.
+
 On the first direct-Codex chat, Ovim offers to enable live web search through
 [Exa](https://dashboard.exa.ai/api-keys). Paste an Exa API key into the dialog,
 or click the link to sign in and create one. The dialog is dismissible and can

@@ -34,7 +34,12 @@ impl Editor {
             logical_name
         };
         let Some(services) = self.ai_state.durable_runs.as_ref() else {
-            return Ok(());
+            return match self.ai_state.run_storage_warning.as_deref() {
+                Some(warning) => Err(anyhow!(
+                    "{warning}. Check Ovim's data-directory permissions and reopen the chat"
+                )),
+                None => Ok(()),
+            };
         };
         if self.ai_state.durable_chat_bindings.contains_key(&ui_key) {
             return Ok(());
@@ -54,28 +59,59 @@ impl Editor {
             .ancestors()
             .find(|candidate| candidate.exists())
             .unwrap_or(start.as_path());
-        let snapshot =
-            RepositorySnapshot::capture(repository_start, crate::run_log::RepositoryId::new())
-                .context("AI chat requires a containing Git repository")?;
-        let worktree = snapshot
-            .local_paths
-            .workdir
-            .clone()
-            .ok_or_else(|| anyhow!("bare repositories cannot host an editor chat"))?;
-        let common_git_dir = snapshot
-            .local_paths
-            .common_git_dir
-            .clone()
-            .unwrap_or_else(|| snapshot.local_paths.git_dir.clone());
-        let repository = services
-            .catalog
-            .register_repository(RepositoryRegistration {
-                common_git_dir,
-                worktree_aliases: vec![worktree.clone()],
-            })?;
+        let (repository_id, project_root) = match RepositorySnapshot::capture(
+            repository_start,
+            crate::run_log::RepositoryId::new(),
+        ) {
+            Ok(snapshot) => {
+                let worktree = snapshot
+                    .local_paths
+                    .workdir
+                    .clone()
+                    .ok_or_else(|| anyhow!("bare repositories cannot host an editor chat"))?;
+                let common_git_dir = snapshot
+                    .local_paths
+                    .common_git_dir
+                    .clone()
+                    .unwrap_or_else(|| snapshot.local_paths.git_dir.clone());
+                let repository = services
+                    .catalog
+                    .register_repository(RepositoryRegistration {
+                        common_git_dir,
+                        worktree_aliases: vec![worktree.clone()],
+                    })?;
+                (repository.repository_id, worktree)
+            }
+            Err(crate::run_log::RepositorySnapshotError::NotRepository { .. }) => {
+                let approved_root = self
+                    .ai_state
+                    .no_repo_session_allowed_root
+                    .as_ref()
+                    .map(|root| crate::ai::path_policy::canonicalize_or_normalize(root))
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "approve this folder in the chat prompt to enable durable agent edits"
+                        )
+                    })?;
+                let start = crate::ai::path_policy::canonicalize_or_normalize(&start);
+                if !start.starts_with(&approved_root) {
+                    return Err(anyhow!(
+                        "the chat target {} is outside the approved folder {}",
+                        start.display(),
+                        approved_root.display()
+                    ));
+                }
+                let folder = services
+                    .catalog
+                    .register_approved_folder(&approved_root)
+                    .context("could not persist the approved folder identity")?;
+                (folder.repository_id, approved_root)
+            }
+            Err(error) => return Err(error).context("could not inspect the Git repository"),
+        };
         let conversation_key = ConversationKey {
-            repository_id: repository.repository_id,
-            scope: conversation_scope(self.get_buffer_by_id(buffer_id), &worktree)?,
+            repository_id,
+            scope: conversation_scope(self.get_buffer_by_id(buffer_id), &project_root)?,
             logical_name: durable_name.to_owned(),
         };
         let resume = self.ai_state.resume_durable_conversations;
@@ -491,6 +527,157 @@ mod tests {
         editor.ai_state = Box::new(AiState::with_run_storage_layout(layout).unwrap());
         editor.set_ai_conversation_resume_enabled(true);
         editor
+    }
+
+    fn editable_chat() -> ChatOpts {
+        ChatOpts {
+            name: "chat".into(),
+            allow_edits: true,
+            ..Default::default()
+        }
+    }
+
+    fn advertised_tools(editor: &Editor) -> HashSet<String> {
+        let profile = editor
+            .ai_state
+            .config
+            .resolve_profile(&editor.ai_state.active_profile)
+            .unwrap();
+        editor
+            .build_tool_schemas_for_chat(profile)
+            .into_iter()
+            .filter_map(|schema| {
+                schema
+                    .pointer("/function/name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn durable_storage_failure_is_actionable_instead_of_silent() {
+        let mut editor = Editor::default();
+        editor.ai_state.run_storage_warning = Some(
+            "durable agent run storage is unavailable: permission denied"
+                .to_string()
+                .into_boxed_str(),
+        );
+
+        let error = editor
+            .prepare_durable_ai_chat(editor.buffer().id(), "chat")
+            .unwrap_err();
+
+        assert!(error.to_string().contains("permission denied"));
+        assert!(error.to_string().contains("permissions"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn editable_repository_chat_advertises_shell_and_mutations() {
+        let (_repository, file) = repository_file();
+        let storage = tempfile::tempdir().unwrap();
+        let mut editor = durable_editor(&file, RunStorageLayout::new(storage.path().join("runs")));
+
+        editor.open_ai_chat(editable_chat()).unwrap();
+
+        let tools = advertised_tools(&editor);
+        assert!(tools.contains("bash"));
+        assert!(tools.contains("edit_range"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn approved_non_git_folder_advertises_shell_and_mutations_at_that_boundary() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("notes.txt");
+        fs::write(&file, "hello\n").unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let mut editor = durable_editor(&file, RunStorageLayout::new(storage.path().join("runs")));
+
+        editor.open_ai_chat(editable_chat()).unwrap();
+        assert!(editor.ai_chat_resolve_pending_no_repo_folder_approval(true));
+
+        assert_eq!(
+            editor.ai_effective_project_root().unwrap(),
+            crate::ai::path_policy::canonicalize_or_normalize(folder.path())
+        );
+        assert!(editor.durable_ai_mutations_available());
+        let tools = advertised_tools(&editor);
+        assert!(tools.contains("bash"));
+        assert!(tools.contains("edit_range"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unapproved_non_git_folder_fails_closed() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("notes.txt");
+        fs::write(&file, "hello\n").unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let mut editor = durable_editor(&file, RunStorageLayout::new(storage.path().join("runs")));
+
+        editor.open_ai_chat(editable_chat()).unwrap();
+
+        assert!(!editor.durable_ai_mutations_available());
+        let tools = advertised_tools(&editor);
+        assert!(!tools.contains("bash"));
+        assert!(!tools.contains("edit_range"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_only_chat_never_advertises_shell_or_mutations() {
+        let (_repository, repository_file) = repository_file();
+        let non_git = tempfile::tempdir().unwrap();
+        let non_git_file = non_git.path().join("notes.txt");
+        fs::write(&non_git_file, "hello\n").unwrap();
+
+        for file in [&repository_file, &non_git_file] {
+            let storage = tempfile::tempdir().unwrap();
+            let mut editor =
+                durable_editor(file, RunStorageLayout::new(storage.path().join("runs")));
+            editor.open_ai_chat(ChatOpts::default()).unwrap();
+            if editor.ai_chat_has_pending_no_repo_folder_approval() {
+                assert!(editor.ai_chat_resolve_pending_no_repo_folder_approval(true));
+            }
+
+            let tools = advertised_tools(&editor);
+            assert!(!tools.contains("bash"));
+            assert!(!tools.contains("edit_range"));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn approved_folder_conversation_resumes_with_the_same_durable_identity() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("notes.txt");
+        fs::write(&file, "hello\n").unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(storage.path().join("runs"));
+        let original = {
+            let mut editor = durable_editor(&file, layout.clone());
+            editor.open_ai_chat(editable_chat()).unwrap();
+            editor.ai_chat_resolve_pending_no_repo_folder_approval(true);
+            let turn = editor.begin_ai_runtime_turn("remember this").unwrap();
+            editor.ai_state.agent_runtime.complete_turn(&turn).unwrap();
+            editor
+                .ai_state
+                .durable_chat_bindings
+                .get(&editor.ai_chat_conversation_key())
+                .unwrap()
+                .binding
+                .clone()
+        };
+
+        let mut resumed = durable_editor(&file, layout);
+        resumed.ai_state.no_repo_session_allowed_root = Some(folder.path().to_path_buf());
+        resumed.open_ai_chat(editable_chat()).unwrap();
+        let binding = &resumed
+            .ai_state
+            .durable_chat_bindings
+            .get(&resumed.ai_chat_conversation_key())
+            .unwrap()
+            .binding;
+        assert_eq!(binding.key.repository_id, original.key.repository_id);
+        assert_eq!(binding.run_id, original.run_id);
+        assert_eq!(resumed.ai_chat_messages().len(), 1);
     }
 
     #[test]

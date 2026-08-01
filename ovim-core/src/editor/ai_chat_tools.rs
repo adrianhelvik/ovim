@@ -1064,10 +1064,44 @@ impl Editor {
         if allow {
             let root = normalize_path(&folder);
             self.ai_state.no_repo_session_allowed_root = Some(root.clone());
-            self.set_status_message(format!(
-                "Approved AI tool access for folder: {}",
-                root.display()
-            ));
+            let durable_key = self
+                .ai_state
+                .chat
+                .as_ref()
+                .map(|chat| (chat.origin_buffer_id, chat.opts.name.clone()));
+            let durable = if let Some((buffer_id, name)) = durable_key.as_ref() {
+                self.prepare_durable_ai_chat(*buffer_id, name)
+            } else {
+                Ok(())
+            };
+            match durable {
+                Ok(()) => {
+                    if let Some(key) = durable_key {
+                        let runtime_branch = self
+                            .ai_state
+                            .durable_chat_bindings
+                            .get(&key)
+                            .and_then(|binding| {
+                                self.ai_state
+                                    .agent_runtime
+                                    .selected_branch(&binding.locator)
+                                    .map(|(locator, _)| locator.clone())
+                            });
+                        if let (Some(chat), Some(runtime_branch)) =
+                            (self.ai_state.chat.as_mut(), runtime_branch)
+                        {
+                            chat.runtime_branch = runtime_branch;
+                        }
+                    }
+                    self.set_status_message(format!(
+                        "Approved durable AI tool access for folder: {}",
+                        root.display()
+                    ));
+                }
+                Err(error) => self.set_status_message(format!(
+                    "Folder approved, but durable agent edits remain disabled: {error}. Check Ovim's run-storage permissions and reopen the chat."
+                )),
+            }
         } else {
             self.ai_state.no_repo_session_allowed_root = None;
             self.set_status_message("Denied no-repo folder tool access".to_string());
