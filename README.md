@@ -129,6 +129,11 @@ vim.ai.setup({
       model = "gpt-5.6-sol",
       reasoning_effort = "medium",
     },
+    codex_luna = {
+      provider = "codex",
+      model = "gpt-5.6-luna",
+      reasoning_effort = "medium",
+    },
     codex_terra = {
       provider = "codex",
       model = "gpt-5.6-terra",
