@@ -164,7 +164,7 @@ fn render_chat_panel_impl(
         }
     }
 
-    render_chat_header(frame, editor, layout.header_area);
+    let model_picker_anchor = render_chat_header(frame, editor, layout.header_area);
     let gallery_paths = editor
         .ai_chat_pending_images()
         .iter()
@@ -194,7 +194,7 @@ fn render_chat_panel_impl(
     );
     render_slash_completion(frame, editor, layout.input_area, layout.messages_area.y);
     if editor.ai_chat_focus() == ChatFocus::ModelSelector {
-        render_model_picker(frame, editor, layout.content_area);
+        render_model_picker(frame, editor, model_picker_anchor, layout.content_area);
     }
 }
 
@@ -315,9 +315,9 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
     Some(layout.cursor_position())
 }
 
-fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) {
+fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Option<Rect> {
     if area.width == 0 || area.height == 0 {
-        return;
+        return None;
     }
     let yolo_enabled = editor.ai_chat_yolo_mode();
     let yolo_label = if yolo_enabled {
@@ -360,12 +360,39 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) {
             .bg(Color::Rgb(35, 70, 92))
             .add_modifier(Modifier::BOLD)
     };
+    let model_label = format!(" M:{} ▾ ", editor.ai_chat_effective_profile());
+    let effort_label = format!(" E:{} ▾ ", editor.ai_chat_reasoning_effort());
+    let model_width = text_display_width(&model_label) as u16;
+    let effort_width = text_display_width(&effort_label) as u16;
+    let controls_available = comprehension_x.saturating_sub(area.x);
+    let show_model = model_width <= controls_available;
+    let show_effort = show_model && model_width.saturating_add(effort_width) <= controls_available;
+
+    let mut spans = Vec::new();
+    let mut controls_width = 0;
+    if show_model {
+        spans.push(Span::styled(
+            model_label,
+            Style::default()
+                .fg(Color::Rgb(190, 220, 255))
+                .bg(Color::Rgb(38, 55, 78))
+                .add_modifier(Modifier::BOLD),
+        ));
+        controls_width += model_width;
+    }
+    if show_effort {
+        spans.push(Span::styled(
+            effort_label,
+            Style::default()
+                .fg(Color::Rgb(211, 196, 255))
+                .bg(Color::Rgb(55, 45, 78)),
+        ));
+        controls_width += effort_width;
+    }
+    spans.push(Span::styled(comprehension_label, comprehension_style));
+    spans.push(Span::styled(yolo_label, yolo_style));
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(comprehension_label, comprehension_style),
-            Span::styled(yolo_label, yolo_style),
-        ]))
-        .alignment(Alignment::Right),
+        Paragraph::new(Line::from(spans)).alignment(Alignment::Right),
         Rect::new(area.x, area.y, area.width, 1),
     );
     editor.render_cache.ai_chat_interactions.yolo_toggle = Some(
@@ -380,6 +407,30 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) {
         comprehension_width,
         1,
     )));
+    let controls_x = comprehension_x.saturating_sub(controls_width);
+    if show_model {
+        editor
+            .render_cache
+            .ai_chat_interactions
+            .model_picker_trigger = Some(crate::key_convert::convert_ratatui_rect(Rect::new(
+            controls_x,
+            area.y,
+            model_width,
+            1,
+        )));
+    }
+    if show_effort {
+        editor
+            .render_cache
+            .ai_chat_interactions
+            .effort_picker_trigger = Some(crate::key_convert::convert_ratatui_rect(Rect::new(
+            controls_x + model_width,
+            area.y,
+            effort_width,
+            1,
+        )));
+    }
+    show_model.then_some(Rect::new(controls_x, area.y, controls_width, 1))
 }
 
 fn render_chat_image_gallery(
@@ -2053,43 +2104,133 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     frame.render_widget(Paragraph::new(vec![Line::from(spans)]), area);
 }
 
-fn render_model_picker(frame: &mut Frame, editor: &Editor, area: Rect) {
+fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Rect>, area: Rect) {
     if area.height < 5 || area.width < 24 {
         return;
     }
     let profile_names = editor.ai_profile_names_sorted();
     let active_profile = editor.ai_chat_effective_profile();
-    let height = (profile_names.len() as u16 + 2).min(area.height.saturating_sub(2));
-    let width = area.width.saturating_sub(4).min(54);
+    let active_effort = editor.ai_chat_reasoning_effort_selection();
+    let section = editor.ai_chat_model_picker_section();
+    let content_rows = profile_names.len() + ovim_core::editor::AI_CHAT_REASONING_EFFORTS.len() + 2;
+    let height = (content_rows as u16 + 2).min(area.height);
+    let width = area.width.min(52).max(24);
+    let anchor = anchor.unwrap_or(Rect::new(area.x, area.y.saturating_sub(1), width, 1));
     let popup = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
+        x: anchor.x.min(area.right().saturating_sub(width)).max(area.x),
+        y: anchor.bottom().max(area.y),
         width,
         height,
     };
-    let items = profile_names.iter().filter_map(|name| {
-        let profile = editor.ai_state.config.resolve_profile(name)?;
+    let mut items = vec![ListItem::new(" MODEL PROFILES").style(
+        Style::default()
+            .fg(
+                if section == ovim_core::editor::ChatModelPickerSection::Model {
+                    ACCENT_SELECTED
+                } else {
+                    TEXT_DIM
+                },
+            )
+            .add_modifier(Modifier::BOLD),
+    )];
+    let mut model_rows = Vec::new();
+    for name in &profile_names {
+        let Some(profile) = editor.ai_state.config.resolve_profile(name) else {
+            continue;
+        };
         let selected = name == &active_profile;
-        let marker = if selected { "›" } else { " " };
-        let style = if selected {
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
+        let marker = if selected { "●" } else { "○" };
+        let detail = format!("{marker} {name}  {}", profile.model);
+        items.push(ListItem::new(detail).style(if selected {
+            Style::default().fg(Color::White).bg(BG_SELECTED_ROW)
         } else {
             Style::default().fg(TEXT_NORMAL)
+        }));
+        model_rows.push(name.clone());
+    }
+    items.push(
+        ListItem::new(" REASONING EFFORT").style(
+            Style::default()
+                .fg(
+                    if section == ovim_core::editor::ChatModelPickerSection::Effort {
+                        ACCENT_SELECTED
+                    } else {
+                        TEXT_DIM
+                    },
+                )
+                .add_modifier(Modifier::BOLD),
+        ),
+    );
+    for effort in ovim_core::editor::AI_CHAT_REASONING_EFFORTS {
+        let selected = *effort == active_effort;
+        let marker = if selected { "●" } else { "○" };
+        let detail = if *effort == "default" {
+            format!("{marker} default  inherit from profile")
+        } else {
+            format!("{marker} {effort}")
         };
-        Some(ListItem::new(format!("{marker} {name}  {}", profile.model)).style(style))
-    });
+        items.push(ListItem::new(detail).style(if selected {
+            Style::default().fg(Color::White).bg(BG_SELECTED_ROW)
+        } else {
+            Style::default().fg(TEXT_NORMAL)
+        }));
+    }
     frame.render_widget(Clear, popup);
     frame.render_widget(
         List::new(items).block(
             Block::default()
-                .title(" Model · ↑/↓ choose · Enter close ")
+                .title(" Model & effort · Tab section · ↑/↓ choose ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Rgb(82, 139, 255))),
         ),
         popup,
     );
+
+    let first_row = popup.y.saturating_add(2);
+    let visible_bottom = popup.bottom().saturating_sub(1);
+    editor
+        .render_cache
+        .ai_chat_interactions
+        .model_picker_options = model_rows
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            let y = first_row + index as u16;
+            (y < visible_bottom).then(|| {
+                (
+                    crate::key_convert::convert_ratatui_rect(Rect::new(
+                        popup.x + 1,
+                        y,
+                        popup.width.saturating_sub(2),
+                        1,
+                    )),
+                    name,
+                )
+            })
+        })
+        .collect();
+    let effort_start = first_row + profile_names.len() as u16 + 1;
+    editor
+        .render_cache
+        .ai_chat_interactions
+        .effort_picker_options = ovim_core::editor::AI_CHAT_REASONING_EFFORTS
+        .iter()
+        .enumerate()
+        .filter_map(|(index, effort)| {
+            let y = effort_start + index as u16;
+            (y < visible_bottom).then(|| {
+                (
+                    crate::key_convert::convert_ratatui_rect(Rect::new(
+                        popup.x + 1,
+                        y,
+                        popup.width.saturating_sub(2),
+                        1,
+                    )),
+                    (*effort).to_string(),
+                )
+            })
+        })
+        .collect();
 }
 
 // ---------------------------------------------------------------------------
@@ -2330,6 +2471,7 @@ mod tests {
         assert!(rendered.contains("Commands"));
         assert!(rendered.contains("/clear"));
         assert!(rendered.contains("/model [profile]"));
+        assert!(rendered.contains("/effort"));
         assert!(rendered.contains("/comprehension"));
         assert_eq!(
             editor
@@ -2337,7 +2479,7 @@ mod tests {
                 .ai_chat_interactions
                 .slash_completions
                 .len(),
-            5
+            6
         );
     }
 
@@ -2482,6 +2624,51 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(header.contains("YOLO ON"), "{header}");
+    }
+
+    #[test]
+    fn chat_header_model_and_effort_picker_expands_downward() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        editor.open_ai_chat_model_picker(ovim_core::editor::ChatModelPickerSection::Effort);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel(frame, &mut editor, Rect::new(0, 0, 100, 22), &theme)
+            })
+            .unwrap();
+
+        let interactions = &editor.render_cache.ai_chat_interactions;
+        let model = interactions.model_picker_trigger.expect("model trigger");
+        let effort = interactions.effort_picker_trigger.expect("effort trigger");
+        let comprehension = interactions
+            .comprehension_toggle
+            .expect("comprehension trigger");
+        assert_eq!(model.y, 0);
+        assert_eq!(model.x + model.width, effort.x);
+        assert_eq!(effort.x + effort.width, comprehension.x);
+        assert!(!interactions.model_picker_options.is_empty());
+        assert!(!interactions.effort_picker_options.is_empty());
+        assert!(interactions
+            .model_picker_options
+            .iter()
+            .chain(interactions.effort_picker_options.iter())
+            .all(|(area, _)| area.y > model.y));
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("MODEL PROFILES"), "{rendered}");
+        assert!(rendered.contains("REASONING EFFORT"), "{rendered}");
     }
 
     #[test]

@@ -19,6 +19,13 @@ pub enum ComprehensionPolicy {
     Commit,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChatModelPickerSection {
+    #[default]
+    Model,
+    Effort,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum PendingRuntimeTermination {
     Completed,
@@ -631,6 +638,10 @@ pub struct AiChatState {
     pub next_queued_input_id: u64,
     /// Which zone has focus.
     pub focus: ChatFocus,
+    /// Active half of the combined model and reasoning-effort picker.
+    pub model_picker_section: ChatModelPickerSection,
+    /// Per-chat reasoning effort. `None` inherits the selected profile.
+    pub reasoning_effort_override: Option<String>,
     /// Viewport behavior for chat history.
     pub viewport: ChatViewportState,
     /// Incremented whenever `/clear` starts a fresh provider context.
@@ -863,6 +874,8 @@ impl AiChatState {
             queued_inputs: VecDeque::new(),
             next_queued_input_id: 1,
             focus: ChatFocus::TextInput,
+            model_picker_section: ChatModelPickerSection::Model,
+            reasoning_effort_override: None,
             viewport: ChatViewportState::default(),
             context_generation: 0,
             history: ChatHistoryState::default(),

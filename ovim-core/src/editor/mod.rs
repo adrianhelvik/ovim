@@ -101,8 +101,10 @@ pub use crate::change::{
     TextObjectType,
 };
 pub use ai_chat_commands::AiChatSlashCompletion;
+pub use ai_chat_session::AI_CHAT_REASONING_EFFORTS;
 pub use ai_chat_state::{
-    AiChatActivity, ComprehensionPolicy, QueuedChatInput, QueuedChatInputKind,
+    AiChatActivity, ChatModelPickerSection, ComprehensionPolicy, QueuedChatInput,
+    QueuedChatInputKind,
 };
 pub use ai_shell_process::{ShellInspectorView, ShellProcessPhase};
 pub use ai_state::{AiEditRegion, AiRegionStatus, CodexAuthDialogPhase, CodexAuthDialogSummary};

@@ -633,12 +633,31 @@ fn handle_shell_inspector(editor: &mut Editor, key_event: KeyEvent) {
 }
 
 fn handle_model_selector(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    use crate::editor::ChatModelPickerSection;
+
     match key_event.code {
+        KeyCode::Tab | KeyCode::BackTab => {
+            let section = if editor.ai_chat_model_picker_section() == ChatModelPickerSection::Model
+            {
+                ChatModelPickerSection::Effort
+            } else {
+                ChatModelPickerSection::Model
+            };
+            editor.open_ai_chat_model_picker(section);
+        }
         KeyCode::Up | KeyCode::Left | KeyCode::Char('k') | KeyCode::Char('h') => {
-            editor.ai_cycle_profile(false);
+            if editor.ai_chat_model_picker_section() == ChatModelPickerSection::Model {
+                editor.ai_cycle_profile(false);
+            } else {
+                editor.cycle_ai_chat_reasoning_effort(false);
+            }
         }
         KeyCode::Down | KeyCode::Right | KeyCode::Char('j') | KeyCode::Char('l') => {
-            editor.ai_cycle_profile(true);
+            if editor.ai_chat_model_picker_section() == ChatModelPickerSection::Model {
+                editor.ai_cycle_profile(true);
+            } else {
+                editor.cycle_ai_chat_reasoning_effort(true);
+            }
         }
         KeyCode::Enter => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {

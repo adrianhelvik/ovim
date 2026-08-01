@@ -88,6 +88,13 @@ broken into smaller steps, but required mastery is not relaxed. Questions focus
 on behavior, invariants, realistic failure modes, and verification rather than
 line-number or syntax trivia.
 
+When the panel is wide enough, the selected model profile and reasoning effort
+appear immediately to the left of `COMPREHENSION`. Click either control to open
+the combined picker downward. Up/Down changes the active value, Tab switches
+between model and effort, and Enter closes the picker. An effort selected here
+overrides the profile for this chat only; `default` returns to the profile's
+configured effort.
+
 After the user demonstrates the critical concepts, Ovim binds a checkpoint to
 the repository's current index and worktree content. Meaningful subsequent
 changes make it stale automatically. A local commit that preserves the same
@@ -362,6 +369,8 @@ supported. Enter again executes a completed command.
 
 - `/model` opens the profile picker.
 - `/model codex_sol` switches directly to a named profile.
+- `/effort` opens the combined picker on reasoning effort.
+- `/effort default|none|low|medium|high|xhigh` sets the per-chat effort.
 - `/clear` clears the current conversation and starts a fresh provider context.
 - `/exa` opens web-search setup to add or replace an Exa API key.
 - `/comprehension`, `/comprehension publish`, `/comprehension commit`, and

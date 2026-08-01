@@ -407,6 +407,46 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             }
             return Ok(None);
         }
+        if let Some(profile) = editor
+            .render_cache
+            .ai_chat_interactions
+            .model_picker_options
+            .iter()
+            .find(|(area, _)| area.contains(col, row))
+            .map(|(_, profile)| profile.clone())
+        {
+            editor.ai_set_profile(&profile);
+            return Ok(None);
+        }
+        if let Some(effort) = editor
+            .render_cache
+            .ai_chat_interactions
+            .effort_picker_options
+            .iter()
+            .find(|(area, _)| area.contains(col, row))
+            .map(|(_, effort)| effort.clone())
+        {
+            editor.set_ai_chat_reasoning_effort(&effort);
+            return Ok(None);
+        }
+        if editor
+            .render_cache
+            .ai_chat_interactions
+            .model_picker_trigger
+            .is_some_and(|area| area.contains(col, row))
+        {
+            editor.open_ai_chat_model_picker(crate::editor::ChatModelPickerSection::Model);
+            return Ok(None);
+        }
+        if editor
+            .render_cache
+            .ai_chat_interactions
+            .effort_picker_trigger
+            .is_some_and(|area| area.contains(col, row))
+        {
+            editor.open_ai_chat_model_picker(crate::editor::ChatModelPickerSection::Effort);
+            return Ok(None);
+        }
         if editor
             .render_cache
             .ai_chat_interactions
@@ -1032,6 +1072,62 @@ mod tests {
         .unwrap();
 
         assert_eq!(editor.ai_chat_input(), "/model");
+    }
+
+    #[test]
+    fn clicking_chat_picker_trigger_and_effort_option_updates_chat() {
+        let mut editor = editor_with_docked_chat();
+        editor
+            .render_cache
+            .ai_chat_interactions
+            .effort_picker_trigger = Some(crate::Rect {
+            x: 42,
+            y: 0,
+            width: 10,
+            height: 1,
+        });
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 45,
+                row: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            editor.ai_chat_model_picker_section(),
+            crate::editor::ChatModelPickerSection::Effort
+        );
+        assert_eq!(
+            editor.ai_chat_focus(),
+            crate::ai::chat_types::ChatFocus::ModelSelector
+        );
+
+        editor
+            .render_cache
+            .ai_chat_interactions
+            .effort_picker_options = vec![(
+            crate::Rect {
+                x: 42,
+                y: 2,
+                width: 20,
+                height: 1,
+            },
+            "high".into(),
+        )];
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 45,
+                row: 2,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(editor.ai_chat_reasoning_effort(), "high");
     }
 
     #[test]

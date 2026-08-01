@@ -9,6 +9,7 @@ enum AiChatSlashCommandKind {
     Clear,
     Exa,
     Model,
+    Effort,
     Comprehension,
     Yolo,
 }
@@ -44,6 +45,12 @@ const AI_CHAT_SLASH_COMMANDS: &[AiChatSlashCompletion] = &[
         kind: AiChatSlashCommandKind::Model,
     },
     AiChatSlashCompletion {
+        command: "/effort",
+        usage: "/effort [default|none|low|medium|high|xhigh]",
+        description: "Choose the chat reasoning effort",
+        kind: AiChatSlashCommandKind::Effort,
+    },
+    AiChatSlashCompletion {
         command: "/comprehension",
         usage: "/comprehension [off|publish|commit]",
         description: "Require demonstrated understanding at a boundary",
@@ -62,6 +69,7 @@ enum AiChatSlashCommand {
     Clear,
     Exa,
     Model { profile: Option<String> },
+    Effort { effort: Option<String> },
     Comprehension { policy: super::ComprehensionPolicy },
     Yolo { enabled: Option<bool> },
 }
@@ -93,6 +101,18 @@ impl AiChatSlashCommand {
                 profile: arguments.first().map(|value| (*value).to_string()),
             }),
             AiChatSlashCommandKind::Model => Err(format!("Usage: {}", spec.usage)),
+            AiChatSlashCommandKind::Effort if arguments.len() <= 1 => {
+                let effort = arguments.first().copied();
+                if effort.is_some_and(|effort| {
+                    !super::ai_chat_session::AI_CHAT_REASONING_EFFORTS.contains(&effort)
+                }) {
+                    return Some(Err(format!("Usage: {}", spec.usage)));
+                }
+                Ok(Self::Effort {
+                    effort: effort.map(str::to_string),
+                })
+            }
+            AiChatSlashCommandKind::Effort => Err(format!("Usage: {}", spec.usage)),
             AiChatSlashCommandKind::Comprehension if arguments.len() <= 1 => {
                 let policy = match arguments.first().copied() {
                     None | Some("publish") => super::ComprehensionPolicy::Publish,
@@ -218,14 +238,23 @@ impl Editor {
             }
             Ok(AiChatSlashCommand::Model { profile: None }) => {
                 self.clear_ai_chat_input();
-                if let Some(chat) = self.ai_state.chat.as_mut() {
-                    chat.focus = ChatFocus::ModelSelector;
-                }
+                self.open_ai_chat_model_picker(super::ChatModelPickerSection::Model);
             }
             Ok(AiChatSlashCommand::Model {
                 profile: Some(profile),
             }) => {
                 if self.ai_set_profile(&profile) {
+                    self.clear_ai_chat_input();
+                }
+            }
+            Ok(AiChatSlashCommand::Effort { effort: None }) => {
+                self.clear_ai_chat_input();
+                self.open_ai_chat_model_picker(super::ChatModelPickerSection::Effort);
+            }
+            Ok(AiChatSlashCommand::Effort {
+                effort: Some(effort),
+            }) => {
+                if self.set_ai_chat_reasoning_effort(&effort) {
                     self.clear_ai_chat_input();
                 }
             }
@@ -324,6 +353,16 @@ mod tests {
             Some(Ok(AiChatSlashCommand::Clear))
         );
         assert_eq!(
+            AiChatSlashCommand::parse("/effort high"),
+            Some(Ok(AiChatSlashCommand::Effort {
+                effort: Some("high".into())
+            }))
+        );
+        assert!(matches!(
+            AiChatSlashCommand::parse("/effort enormous"),
+            Some(Err(_))
+        ));
+        assert_eq!(
             AiChatSlashCommand::parse("/exa"),
             Some(Ok(AiChatSlashCommand::Exa))
         );
@@ -372,7 +411,7 @@ mod tests {
         let chat = editor.ai_state.chat.as_mut().unwrap();
         chat.input = "/".into();
         chat.input_cursor = 1;
-        assert_eq!(editor.ai_chat_slash_completions().len(), 5);
+        assert_eq!(editor.ai_chat_slash_completions().len(), 6);
 
         let chat = editor.ai_state.chat.as_mut().unwrap();
         chat.input = "/cl".into();
@@ -457,5 +496,37 @@ mod tests {
         chat.input_cursor = chat.input.len();
         editor.submit_ai_chat_message().expect("disable yolo");
         assert!(!editor.ai_chat_yolo_mode());
+    }
+
+    #[test]
+    fn effort_command_sets_and_clears_the_per_chat_override() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let chat = editor.ai_state.chat.as_mut().expect("chat");
+        chat.input = "/effort high".into();
+        chat.input_cursor = chat.input.len();
+
+        editor.submit_ai_chat_message().expect("set effort");
+        assert_eq!(editor.ai_chat_reasoning_effort(), "high");
+        assert_eq!(
+            editor
+                .ai_state
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.reasoning_effort_override.as_deref()),
+            Some("high")
+        );
+
+        let chat = editor.ai_state.chat.as_mut().expect("chat");
+        chat.input = "/effort default".into();
+        chat.input_cursor = chat.input.len();
+        editor.submit_ai_chat_message().expect("inherit effort");
+        assert!(editor
+            .ai_state
+            .chat
+            .as_ref()
+            .expect("chat")
+            .reasoning_effort_override
+            .is_none());
     }
 }

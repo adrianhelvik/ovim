@@ -1,12 +1,90 @@
 use crate::ai::chat_types::{ChatFocus, ChatMessage};
 
-use super::ai_chat_state::AiChatState;
+use super::ai_chat_state::{AiChatState, ChatModelPickerSection};
 use super::Editor;
+
+pub const AI_CHAT_REASONING_EFFORTS: &[&str] =
+    &["default", "none", "low", "medium", "high", "xhigh"];
 
 impl Editor {
     /// Get a reference to the active chat state.
     pub fn ai_chat_state(&self) -> Option<&AiChatState> {
         self.ai_state.chat.as_ref()
+    }
+
+    pub fn open_ai_chat_model_picker(&mut self, section: ChatModelPickerSection) -> bool {
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        chat.model_picker_section = section;
+        chat.focus = ChatFocus::ModelSelector;
+        true
+    }
+
+    pub fn ai_chat_model_picker_section(&self) -> ChatModelPickerSection {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|chat| chat.model_picker_section)
+            .unwrap_or_default()
+    }
+
+    pub fn ai_chat_reasoning_effort(&self) -> String {
+        let Some(chat) = self.ai_state.chat.as_ref() else {
+            return "default".into();
+        };
+        chat.reasoning_effort_override
+            .clone()
+            .or_else(|| {
+                self.ai_state
+                    .config
+                    .resolve_profile(&self.ai_chat_effective_profile())
+                    .and_then(|profile| profile.reasoning_effort.clone())
+            })
+            .unwrap_or_else(|| "default".into())
+    }
+
+    /// Picker value, kept separate from the effective profile-derived effort.
+    pub fn ai_chat_reasoning_effort_selection(&self) -> String {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.reasoning_effort_override.clone())
+            .unwrap_or_else(|| "default".into())
+    }
+
+    pub fn set_ai_chat_reasoning_effort(&mut self, effort: &str) -> bool {
+        if !AI_CHAT_REASONING_EFFORTS.contains(&effort) {
+            self.set_status_message(format!("Unknown reasoning effort: {effort}"));
+            return false;
+        }
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        chat.reasoning_effort_override = (effort != "default").then(|| effort.to_string());
+        let effective = self.ai_chat_reasoning_effort();
+        self.set_status_message(if effort == "default" {
+            format!("AI reasoning effort: {effective} (profile default)")
+        } else {
+            format!("AI reasoning effort: {effective}")
+        });
+        true
+    }
+
+    pub fn cycle_ai_chat_reasoning_effort(&mut self, forward: bool) -> bool {
+        let current = self.ai_chat_reasoning_effort_selection();
+        let current = AI_CHAT_REASONING_EFFORTS
+            .iter()
+            .position(|effort| *effort == current)
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1) % AI_CHAT_REASONING_EFFORTS.len()
+        } else if current == 0 {
+            AI_CHAT_REASONING_EFFORTS.len() - 1
+        } else {
+            current - 1
+        };
+        self.set_ai_chat_reasoning_effort(AI_CHAT_REASONING_EFFORTS[next])
     }
 
     /// Get the messages for the current chat conversation.

@@ -200,12 +200,15 @@ impl Editor {
             .profile
             .clone()
             .unwrap_or_else(|| self.ai_state.active_profile.clone());
-        let profile = self
+        let mut profile = self
             .ai_state
             .config
             .resolve_profile(&profile_name)
             .ok_or_else(|| anyhow::anyhow!("No AI profile '{}' configured", profile_name))?
             .clone();
+        if let Some(effort) = chat.reasoning_effort_override.as_ref() {
+            profile.reasoning_effort = Some(effort.clone());
+        }
 
         let model_name = profile.model.clone();
         let remote_provider = profile.provider != crate::ai::AiProviderKind::Ollama;

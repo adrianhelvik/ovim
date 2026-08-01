@@ -11,6 +11,10 @@ pub struct ChatTextPoint {
 pub struct ChatInteractionGeometry {
     pub yolo_toggle: Option<crate::Rect>,
     pub comprehension_toggle: Option<crate::Rect>,
+    pub model_picker_trigger: Option<crate::Rect>,
+    pub effort_picker_trigger: Option<crate::Rect>,
+    pub model_picker_options: Vec<(crate::Rect, String)>,
+    pub effort_picker_options: Vec<(crate::Rect, String)>,
     pub history: Option<crate::Rect>,
     pub slash_completions: Vec<(crate::Rect, usize)>,
     pub branches: Vec<(crate::Rect, crate::ai::chat_types::NodeId)>,
@@ -152,6 +156,10 @@ mod tests {
         let mut interactions = ChatInteractionGeometry {
             yolo_toggle: Some(rect()),
             comprehension_toggle: Some(rect()),
+            model_picker_trigger: Some(rect()),
+            effort_picker_trigger: Some(rect()),
+            model_picker_options: vec![(rect(), "model".into())],
+            effort_picker_options: vec![(rect(), "medium".into())],
             history: Some(rect()),
             slash_completions: vec![(rect(), 1)],
             branches: vec![(rect(), 2)],
@@ -161,6 +169,11 @@ mod tests {
         interactions.begin_frame();
 
         assert!(interactions.yolo_toggle.is_none());
+        assert!(interactions.comprehension_toggle.is_none());
+        assert!(interactions.model_picker_trigger.is_none());
+        assert!(interactions.effort_picker_trigger.is_none());
+        assert!(interactions.model_picker_options.is_empty());
+        assert!(interactions.effort_picker_options.is_empty());
         assert!(interactions.history.is_none());
         assert!(interactions.slash_completions.is_empty());
         assert!(interactions.branches.is_empty());
