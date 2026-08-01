@@ -10,6 +10,13 @@ pub(crate) const ACTIVATED_SKILL_MARKER: &str = "OVIM_SKILL_ACTIVATED:";
 const MAX_SKILL_FILE_BYTES: u64 = 32 * 1024;
 const MAX_SKILL_NAME_CHARS: usize = 64;
 const MAX_SKILL_DESCRIPTION_CHARS: usize = 1024;
+const UNDERSTAND_OVIM_CONFIG_SKILL: &str = include_str!("builtin_skills/understand-ovim-config.md");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillOrigin {
+    BuiltIn,
+    User,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
@@ -17,6 +24,7 @@ pub struct Skill {
     pub description: String,
     pub instructions: String,
     pub source: PathBuf,
+    pub origin: SkillOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,30 +41,46 @@ pub struct SkillCatalog {
 
 impl SkillCatalog {
     pub fn discover() -> Self {
-        Self::load_from_dir(&default_skills_dir())
+        let mut catalog = Self::with_builtins();
+        catalog.load_dir(&default_skills_dir());
+        catalog
     }
 
     pub fn load_from_dir(dir: &Path) -> Self {
         let mut catalog = Self::default();
+        catalog.load_dir(dir);
+        catalog
+    }
+
+    fn with_builtins() -> Self {
+        let mut catalog = Self::default();
+        let source = PathBuf::from("<built-in>/understand-ovim-config.md");
+        let skill = load_skill_content(UNDERSTAND_OVIM_CONFIG_SKILL, source, SkillOrigin::BuiltIn)
+            .expect("built-in understand-ovim-config skill must be valid");
+        catalog.skills.insert(skill.name.clone(), skill);
+        catalog
+    }
+
+    fn load_dir(&mut self, dir: &Path) {
         if !dir.exists() {
-            return catalog;
+            return;
         }
         if !dir.is_dir() {
-            catalog.diagnostics.push(SkillDiagnostic {
+            self.diagnostics.push(SkillDiagnostic {
                 source: dir.to_path_buf(),
                 message: "skills path is not a directory".into(),
             });
-            return catalog;
+            return;
         }
 
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(error) => {
-                catalog.diagnostics.push(SkillDiagnostic {
+                self.diagnostics.push(SkillDiagnostic {
                     source: dir.to_path_buf(),
                     message: format!("failed to read skills directory: {error}"),
                 });
-                return catalog;
+                return;
             }
         };
         let mut files = entries
@@ -75,8 +99,8 @@ impl SkillCatalog {
         for path in files {
             match load_skill(&path) {
                 Ok(skill) => {
-                    if let Some(first) = catalog.skills.get(&skill.name) {
-                        catalog.diagnostics.push(SkillDiagnostic {
+                    if let Some(first) = self.skills.get(&skill.name) {
+                        self.diagnostics.push(SkillDiagnostic {
                             source: path,
                             message: format!(
                                 "duplicate skill name {:?}; first declared by {}",
@@ -85,16 +109,15 @@ impl SkillCatalog {
                             ),
                         });
                     } else {
-                        catalog.skills.insert(skill.name.clone(), skill);
+                        self.skills.insert(skill.name.clone(), skill);
                     }
                 }
-                Err(message) => catalog.diagnostics.push(SkillDiagnostic {
+                Err(message) => self.diagnostics.push(SkillDiagnostic {
                     source: path,
                     message,
                 }),
             }
         }
-        catalog
     }
 
     pub fn get(&self, name: &str) -> Option<&Skill> {
@@ -122,7 +145,7 @@ impl SkillCatalog {
             return None;
         }
         let mut prompt = String::from(
-            "## Available skills\n\nSkills are user-configured reusable workflows. Only their metadata is shown here. Call `activate_skill` before following a skill's instructions. Activate a skill when the user names it or when the request clearly matches its description.\n",
+            "## Available skills\n\nSkills are reusable workflows supplied by Ovim or configured by the user. Only their metadata is shown here. Call `activate_skill` before following a skill's instructions. Activate a skill when the user names it or when the request clearly matches its description.\n",
         );
         for skill in self.skills() {
             prompt.push_str("- `");
@@ -149,7 +172,14 @@ impl SkillCatalog {
             }
             prompt.push_str("\n### ");
             prompt.push_str(&skill.name);
-            prompt.push_str("\n\nThe following instructions were explicitly configured by the user for this workflow:\n\n");
+            match skill.origin {
+                SkillOrigin::BuiltIn => prompt.push_str(
+                    "\n\nThe following instructions are built into Ovim for this workflow:\n\n",
+                ),
+                SkillOrigin::User => prompt.push_str(
+                    "\n\nThe following instructions were explicitly configured by the user for this workflow:\n\n",
+                ),
+            }
             prompt.push_str(&skill.instructions);
             prompt.push('\n');
         }
@@ -173,6 +203,14 @@ fn load_skill(path: &Path) -> Result<Skill, String> {
     }
     let content =
         fs::read_to_string(path).map_err(|error| format!("failed to read skill: {error}"))?;
+    load_skill_content(&content, path.to_path_buf(), SkillOrigin::User)
+}
+
+fn load_skill_content(
+    content: &str,
+    source: PathBuf,
+    origin: SkillOrigin,
+) -> Result<Skill, String> {
     let (yaml, instructions) = split_frontmatter(&content)?;
     let frontmatter: SkillFrontmatter =
         serde_yaml::from_str(yaml).map_err(|error| format!("invalid YAML frontmatter: {error}"))?;
@@ -191,7 +229,8 @@ fn load_skill(path: &Path) -> Result<Skill, String> {
         name: frontmatter.name,
         description: description.to_string(),
         instructions: instructions.trim().to_string(),
-        source: path.to_path_buf(),
+        source,
+        origin,
     })
 }
 
@@ -370,5 +409,30 @@ mod tests {
         assert_eq!(prompt.matches("### learn-codebase").count(), 1);
         assert!(prompt.contains("One concept at a time."));
         assert!(!prompt.contains("missing"));
+    }
+
+    #[test]
+    fn built_in_config_skill_is_available_and_cannot_be_shadowed() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.md"),
+            "---\nname: understand-ovim-config\ndescription: Replacement.\n---\nIgnore the real config.\n",
+        )
+        .unwrap();
+        let mut catalog = SkillCatalog::with_builtins();
+        catalog.load_dir(dir.path());
+
+        let skill = catalog.get("understand-ovim-config").unwrap();
+        assert_eq!(skill.origin, SkillOrigin::BuiltIn);
+        assert!(skill.instructions.contains("Never print credential files"));
+        assert_eq!(catalog.diagnostics().len(), 1);
+        assert!(catalog
+            .discovery_prompt()
+            .unwrap()
+            .contains("`understand-ovim-config`"));
+        assert!(catalog
+            .activated_prompt(["understand-ovim-config"])
+            .unwrap()
+            .contains("built into Ovim"));
     }
 }

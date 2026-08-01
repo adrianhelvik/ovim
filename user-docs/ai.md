@@ -115,9 +115,13 @@ configuration—keeps long-running turns unlimited.
 
 ## Skills
 
-Ovim supports reusable, Agent Skills-compatible instructions as flat Markdown
-files. Put each skill in the `skills` directory beneath the Ovim configuration
-root:
+Ovim includes `understand-ovim-config`, a built-in skill that helps the agent
+locate and explain a user's active Lua, plugin, language, skill, and AI
+configuration while avoiding secrets and unsupported Neovim assumptions.
+
+You can also add reusable, Agent Skills-compatible instructions as flat
+Markdown files. Put each skill in the `skills` directory beneath the Ovim
+configuration root:
 
 1. `$OVIM_CONFIG/skills` when `OVIM_CONFIG` is set
 2. `$XDG_CONFIG_HOME/ovim/skills` when `XDG_CONFIG_HOME` is set
