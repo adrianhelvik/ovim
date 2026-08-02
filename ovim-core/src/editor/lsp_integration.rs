@@ -131,14 +131,14 @@ impl Editor {
         };
 
         // Get language_id from file extension
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
+        let language_id = match self.language_id_for_path(&file_path) {
             Some(id) => id,
             None => return,
         };
 
         // Send LSP close notification
         let file_path_string = file_path.to_string();
-        let _ = lsp.did_close_broadcast(uri, language_id).await;
+        let _ = lsp.did_close_broadcast(uri, &language_id).await;
         self.lsp.state.document_sync.remove(&file_path_string);
     }
 
@@ -1565,8 +1565,7 @@ impl Editor {
             }
 
             // Get language_id from file extension
-            let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
-            {
+            let language_id = match self.language_id_for_path(&file_path) {
                 Some(id) => id,
                 None => return,
             };
@@ -1581,7 +1580,7 @@ impl Editor {
 
             // Send the didChange notification to all servers for this language
             if lsp
-                .did_change_broadcast(uri.clone(), language_id, content.clone(), old_content)
+                .did_change_broadcast(uri.clone(), &language_id, content.clone(), old_content)
                 .await
                 .is_err()
             {
@@ -1636,8 +1635,7 @@ impl Editor {
             let content = self.buffer().rope().to_string();
 
             // Get language_id from file extension
-            let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
-            {
+            let language_id = match self.language_id_for_path(&file_path) {
                 Some(id) => id,
                 None => return,
             };
@@ -1648,7 +1646,7 @@ impl Editor {
 
             // Send the didSave notification to all servers for this language
             match lsp
-                .did_save_broadcast(uri, language_id, Some(content))
+                .did_save_broadcast(uri, &language_id, Some(content))
                 .await
             {
                 Ok(()) => {
@@ -1688,7 +1686,7 @@ impl Editor {
         let state_key = file_path.clone();
 
         // Get language_id from file extension
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
+        let language_id = match self.language_id_for_path(&file_path) {
             Some(id) => id,
             None => return false,
         };
@@ -1710,7 +1708,7 @@ impl Editor {
             DocumentSyncRequestAction::Noop => false,
             DocumentSyncRequestAction::DidOpen => {
                 match lsp
-                    .did_open_broadcast(uri.clone(), language_id, 1, content.to_string())
+                    .did_open_broadcast(uri.clone(), &language_id, 1, content.to_string())
                     .await
                 {
                     Ok(_) => {
@@ -1739,7 +1737,7 @@ impl Editor {
             DocumentSyncRequestAction::FlushQueued => {
                 // Use actual flushed content to avoid desync with LSP server.
                 let flushed = lsp
-                    .flush_pending_changes_broadcast(&uri, language_id)
+                    .flush_pending_changes_broadcast(&uri, &language_id)
                     .await
                     .ok()
                     .flatten();
@@ -1759,7 +1757,7 @@ impl Editor {
                 if lsp
                     .did_change_broadcast(
                         uri.clone(),
-                        language_id,
+                        &language_id,
                         content.clone(),
                         plan.old_content,
                     )
@@ -1782,7 +1780,7 @@ impl Editor {
 
                 // Use actual flushed content to avoid desync with LSP server.
                 let flushed = lsp
-                    .flush_pending_changes_broadcast(&uri, language_id)
+                    .flush_pending_changes_broadcast(&uri, &language_id)
                     .await
                     .ok()
                     .flatten();
@@ -1817,13 +1815,13 @@ impl Editor {
         };
 
         // Get language_id from file extension
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
+        let language_id = match self.language_id_for_path(&file_path) {
             Some(id) => id,
             None => return,
         };
 
         let file_path_string = file_path.to_string();
-        let _ = lsp.did_close_broadcast(uri, language_id).await;
+        let _ = lsp.did_close_broadcast(uri, &language_id).await;
         self.lsp.state.document_sync.remove(&file_path_string);
     }
 
@@ -2027,7 +2025,8 @@ impl Editor {
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col().0);
 
-        let language_id = crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
+        let language_id = self
+            .language_id_for_path(&file_path)
             .ok_or_else(|| anyhow!("Language not supported for LSP"))?
             .to_string();
 

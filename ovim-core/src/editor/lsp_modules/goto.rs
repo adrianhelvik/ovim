@@ -76,7 +76,7 @@ impl Editor {
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col().0);
 
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
+        let language_id = match self.language_id_for_path(&file_path) {
             Some(id) => id,
             None => {
                 self.set_lsp_status("Language not supported for LSP".to_string());
@@ -86,7 +86,7 @@ impl Editor {
 
         self.ensure_lsp_document_synced().await;
 
-        let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
+        let server_ids = lsp.servers_for_document(&language_id, std::path::Path::new(&file_path));
 
         Some(GotoPrepared {
             lsp,
@@ -125,7 +125,7 @@ impl Editor {
                 lsp.goto_definition_multi(&uri, line, character, &server_ids)
                     .await
             } else {
-                lsp.goto_definition(&uri, line, character, language_id)
+                lsp.goto_definition(&uri, line, character, &language_id)
                     .await
             };
             let _ = tx.send(result.map(|loc| GotoLocationResult {
@@ -164,7 +164,9 @@ impl Editor {
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            let result = lsp.implementation(&uri, line, character, language_id).await;
+            let result = lsp
+                .implementation(&uri, line, character, &language_id)
+                .await;
             let _ = tx.send(result.map(|loc| GotoLocationResult {
                 location: loc,
                 new_tab,
@@ -202,7 +204,7 @@ impl Editor {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = lsp
-                .type_definition(&uri, line, character, language_id)
+                .type_definition(&uri, line, character, &language_id)
                 .await;
             let _ = tx.send(result.map(|loc| GotoLocationResult {
                 location: loc,
@@ -223,6 +225,6 @@ struct GotoPrepared {
     uri: lsp_types::Uri,
     line: u32,
     character: u32,
-    language_id: &'static str,
+    language_id: String,
     server_ids: Vec<String>,
 }

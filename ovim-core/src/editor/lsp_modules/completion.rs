@@ -161,7 +161,7 @@ impl Editor {
             }
         };
 
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
+        let language_id = match self.language_id_for_path(&file_path) {
             Some(id) => id,
             None => {
                 self.set_lsp_status("Language not supported for LSP".to_string());
@@ -176,7 +176,7 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
 
         // Resolve the server group responsible for this document.
-        let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
+        let server_ids = lsp.servers_for_document(&language_id, std::path::Path::new(&file_path));
 
         // No LSP servers registered yet — server may still be initializing.
         if server_ids.is_empty() {

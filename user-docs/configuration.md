@@ -68,6 +68,46 @@ ovim lsp languages --verbose
 
 See `LANGUAGE_SUPPORT.md` for examples.
 
+## User Language Plugins
+
+Add a child directory containing `init.lua` under the active config directory's
+`plugins` directory. A plugin can register file detection, a native Tree-sitter
+parser, highlight queries, and one LSP command without rebuilding ovim:
+
+```text
+~/.config/ovim/plugins/nula/
+├── init.lua
+├── parser/nula.dylib       # .so on Linux, .dll on Windows
+└── queries/nula/highlights.scm
+```
+
+```lua
+-- ~/.config/ovim/plugins/nula/init.lua
+ovim.languages.register({
+  id = "nula",
+  name = "Nula",
+  files = { extensions = { "nula" } },
+  syntax = {
+    parser = { path = "parser/nula", symbol = "tree_sitter_nula" },
+    highlights = "queries/nula/highlights.scm",
+  },
+  lsp = {
+    cmd = { "nula", "lsp" },
+    language_id = "nula",
+    root_markers = { "nula.toml", ".git" },
+  },
+})
+```
+
+Relative paths are resolved from the `init.lua` that declares the language. If
+the parser path has no extension, ovim adds the platform's native-library
+extension. Registration validates the parser ABI and highlight query before the
+language becomes visible.
+
+Language plugins load once during startup. `:ConfigReload` does not reload or
+unload native parsers; restart ovim after changing a language registration. The
+initial API supports extensions, one highlight query, and one LSP per language.
+
 ## Session Directory Override (Advanced)
 
 By default, session files are stored under your OS cache directory:

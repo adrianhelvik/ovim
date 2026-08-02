@@ -155,7 +155,8 @@ fn rope_chunk_callback<'r>(
 
 /// Syntax highlighter using tree-sitter
 pub struct SyntaxHighlighter {
-    language: Language,
+    language: Option<Language>,
+    language_id: String,
     parser: Parser,
     tree: Option<Tree>,
     query: Query,
@@ -183,6 +184,32 @@ impl SyntaxHighlighter {
         let ts_language = LanguageRegistry::get_tree_sitter_language(language);
         let query_source = LanguageRegistry::get_highlight_query(language);
 
+        Self::from_parts(
+            Some(language),
+            format!("{:?}", language).to_ascii_lowercase(),
+            ts_language,
+            query_source,
+        )
+    }
+
+    pub fn from_definition(
+        language_id: &str,
+        syntax: &crate::language_catalog::SyntaxDefinition,
+    ) -> Result<Self, String> {
+        Self::from_parts(
+            LanguageRegistry::from_id(language_id),
+            language_id.to_string(),
+            syntax.language.clone(),
+            &syntax.highlights,
+        )
+    }
+
+    fn from_parts(
+        language: Option<Language>,
+        language_id: String,
+        ts_language: tree_sitter::Language,
+        query_source: &str,
+    ) -> Result<Self, String> {
         let mut parser = Parser::new();
         parser
             .set_language(&ts_language)
@@ -199,6 +226,7 @@ impl SyntaxHighlighter {
 
         Ok(Self {
             language,
+            language_id,
             parser,
             tree: None,
             query,
@@ -767,6 +795,11 @@ impl SyntaxHighlighter {
     /// Gets the language
     pub fn language(&self) -> Language {
         self.language
+            .expect("dynamic languages do not have a compatibility enum")
+    }
+
+    pub fn language_id(&self) -> &str {
+        &self.language_id
     }
 
     /// Gets the parse tree (if parsed)

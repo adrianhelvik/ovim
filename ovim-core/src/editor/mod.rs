@@ -325,6 +325,7 @@ pub type PreviewHighlights =
 
 /// The main editor state
 pub struct Editor {
+    language_catalog: std::sync::Arc<crate::language_catalog::LanguageCatalog>,
     /// List of open buffers
     pub(crate) buffers: Vec<Buffer>,
     /// Index of the currently active buffer
@@ -507,9 +508,12 @@ impl Editor {
     /// Creates a new editor with an empty buffer
     /// Starts in Dashboard mode when no file is opened
     pub fn new() -> Self {
-        let buffer = Buffer::new();
+        let language_catalog = crate::language_catalog::LanguageCatalog::built_in();
+        let mut buffer = Buffer::new();
+        buffer.set_language_catalog(language_catalog.clone());
         let (git_tx, git_rx) = tokio::sync::mpsc::channel(4);
         let mut editor = Self {
+            language_catalog,
             buffers: vec![buffer],
             current_buffer_index: 0,
             window_manager: None, // Will be initialized when viewport size is known
@@ -556,9 +560,12 @@ impl Editor {
 
     /// Creates an editor with initial content
     pub fn with_content(content: &str) -> Self {
-        let buffer = Buffer::new_from_str(content);
+        let language_catalog = crate::language_catalog::LanguageCatalog::built_in();
+        let mut buffer = Buffer::new_from_str(content);
+        buffer.set_language_catalog(language_catalog.clone());
         let (git_tx, git_rx) = tokio::sync::mpsc::channel(4);
         let mut editor = Self {
+            language_catalog,
             buffers: vec![buffer],
             current_buffer_index: 0,
             window_manager: None, // Will be initialized when viewport size is known

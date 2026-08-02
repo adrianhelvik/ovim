@@ -117,46 +117,49 @@ async fn main() -> Result<()> {
         ovim_core::log_warn!("main", "Failed to initialize LSP logging: {}", e);
     }
 
+    // Load Lua before the initial file so language plugins participate in
+    // detection, syntax highlighting, LSP startup, and --render.
+    let mut editor = Editor::new();
+    if let Err(e) = editor.enable_lua() {
+        ovim_core::log_error!("main", "Failed to enable Lua support: {}", e);
+    }
+
     // Load file from command line argument if provided
-    let mut editor = if let Some(ref file) = file_arg {
-        let mut ed = Editor::new();
+    if let Some(ref file) = file_arg {
         let path = std::path::Path::new(&file.path);
         if path.is_dir() {
-            ed.open_directory(path)?;
+            editor.open_directory(path)?;
         } else {
-            if let Err(e) = ed.load_file(&file.path) {
+            if let Err(e) = editor.load_file(&file.path) {
                 ovim_core::log_warn!(
                     "main",
                     "Could not load file '{}': {}. Starting with empty buffer.",
                     file.path,
                     e
                 );
-                ed = Editor::new();
-                ed.set_file_path(file.path.clone());
+                editor.set_file_path(file.path.clone());
             }
             // Jump to line:col if specified
             if let Some(line) = file.line {
                 let line_0 = line.saturating_sub(1);
                 let col_0 = file.col.unwrap_or(1).saturating_sub(1);
-                ed.buffer_mut()
+                editor
+                    .buffer_mut()
                     .cursor_mut()
                     .set_position(line_0, ovim_core::unicode::GraphemeCol(col_0));
-                ed.buffer_mut().validate_cursor_position();
+                editor.buffer_mut().validate_cursor_position();
             }
             // Switch from Dashboard to Normal mode when a file is loaded
-            ed.set_mode(Mode::Normal);
+            editor.set_mode(Mode::Normal);
         }
-        ed
-    } else {
-        // No file specified, start with empty buffer (dashboard will show)
-        Editor::new()
-    };
+    }
     editor.set_ai_conversation_resume_enabled(resume_conversations);
     // Set up cat animation (concrete type lives in binary crate)
     editor.ui_panels.cat_animation = Some(Box::new(ovim::ui::CatAnimation::new()));
 
     // Handle --render flag (render to ANSI and exit)
     if render {
+        editor.buffer_mut().enable_syntax_highlighting();
         let (width, height) = dimension.unwrap_or((80, 24));
         match ovim::ui::render_editor_to_ansi(&mut editor, width, height) {
             Ok(ansi) => {
@@ -178,11 +181,6 @@ async fn main() -> Result<()> {
 
     // Enable LSP support
     editor.enable_lsp();
-
-    // Enable Lua support
-    if let Err(e) = editor.enable_lua() {
-        ovim_core::log_error!("main", "Failed to enable Lua support: {}", e);
-    }
 
     // Create channel for Java LSP status updates (needed for both headless and TUI modes)
     let (java_status_tx, java_status_rx) = mpsc::channel(64);

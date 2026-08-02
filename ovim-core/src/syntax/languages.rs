@@ -40,6 +40,43 @@ pub enum Language {
 pub struct LanguageRegistry;
 
 impl LanguageRegistry {
+    /// Resolve a stable built-in language ID to its compatibility enum.
+    pub fn from_id(id: &str) -> Option<Language> {
+        Some(match id {
+            "rust" => Language::Rust,
+            "javascript" => Language::JavaScript,
+            "typescript" => Language::TypeScript,
+            "tsx" => Language::Tsx,
+            "python" => Language::Python,
+            "java" => Language::Java,
+            "kotlin" => Language::Kotlin,
+            "scala" => Language::Scala,
+            "groovy" => Language::Groovy,
+            "go" => Language::Go,
+            "c" => Language::C,
+            "cpp" => Language::Cpp,
+            "ruby" => Language::Ruby,
+            "bash" => Language::Bash,
+            "lua" => Language::Lua,
+            "dockerfile" => Language::Dockerfile,
+            "json" => Language::Json,
+            "yaml" => Language::Yaml,
+            "html" => Language::Html,
+            "astro" => Language::Astro,
+            "css" => Language::Css,
+            "toml" => Language::Toml,
+            "markdown" => Language::Markdown,
+            "zig" => Language::Zig,
+            "sql" => Language::Sql,
+            "csharp" => Language::CSharp,
+            "terraform" => Language::Terraform,
+            "hcl" => Language::Hcl,
+            "wgsl" => Language::Wgsl,
+            "tree-sitter-query" => Language::TreeSitterQuery,
+            _ => return None,
+        })
+    }
+
     /// Detects language from file path/extension
     /// Supports a comprehensive list of file extensions for each language
     pub fn detect_from_path<P: AsRef<Path>>(path: P) -> Option<Language> {

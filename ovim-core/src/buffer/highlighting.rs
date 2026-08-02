@@ -201,7 +201,18 @@ impl Buffer {
             return;
         }
 
-        if let Some(lang) = LanguageRegistry::detect_from_path(path) {
+        if let Some(definition) = self.language_catalog.detect(path) {
+            if let Some(syntax) = &definition.syntax {
+                if let Ok(mut highlighter) =
+                    SyntaxHighlighter::from_definition(definition.id(), syntax)
+                {
+                    highlighter.parse_rope(&self.rope);
+                    self.build_highlight_cache_from_rope(&highlighter);
+                    self.syntax = Some(highlighter);
+                    self.version += 1;
+                }
+            }
+        } else if let Some(lang) = LanguageRegistry::detect_from_path(path) {
             if let Ok(mut highlighter) = SyntaxHighlighter::new(lang) {
                 // Parse and build the cache directly from the rope — no
                 // intermediate `String` copy of the entire buffer.
@@ -228,7 +239,8 @@ impl Buffer {
         }
 
         if let Some(ref path) = self.file_path {
-            LanguageRegistry::detect_from_path(path).is_some()
+            self.language_catalog.detect(path).is_some()
+                || LanguageRegistry::detect_from_path(path).is_some()
         } else {
             false
         }
@@ -307,7 +319,7 @@ impl Buffer {
         // For markdown files, also build code block cache. The code-block
         // builder still needs `&str` for its tree walk; allocate only on the
         // markdown path (much rarer than per-edit rehighlight).
-        if highlighter.language() == Language::Markdown {
+        if highlighter.language_id() == "markdown" {
             if let Some(tree) = highlighter.tree() {
                 let source = self.rope.to_string();
                 let mut cache = CodeBlockCache::new();

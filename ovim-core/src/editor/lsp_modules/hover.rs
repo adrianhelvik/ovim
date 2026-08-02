@@ -141,7 +141,7 @@ impl Editor {
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col().0);
 
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
+        let language_id = match self.language_id_for_path(&file_path) {
             Some(id) => id,
             None => {
                 self.set_lsp_status("Language not supported for LSP".to_string());
@@ -163,7 +163,7 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
 
         // Resolve the server group responsible for this document
-        let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
+        let server_ids = lsp.servers_for_document(&language_id, std::path::Path::new(&file_path));
 
         // Spawn hover request in background (non-blocking)
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -171,7 +171,7 @@ impl Editor {
             let result = if server_ids.len() > 1 {
                 lsp.hover_multi(&uri, line, character, &server_ids).await
             } else {
-                lsp.hover(&uri, line, character, language_id).await
+                lsp.hover(&uri, line, character, &language_id).await
             };
             let _ = tx
                 .send(result.map(|text| crate::editor::lsp_slot::HoverResult { hover_text: text }));

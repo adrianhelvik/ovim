@@ -565,6 +565,15 @@ fn spawn_syntax_highlighting(
                 };
                 let _ = tx.blocking_send((buffer_id, lang, highlights, version));
             });
+        } else if buf
+            .language_catalog()
+            .detect(path)
+            .and_then(|language| language.syntax.clone())
+            .is_some()
+        {
+            // Plugin parsers are already validated at startup. Keep the v1
+            // handoff simple and initialize them on first display.
+            editor.buffer_mut().enable_syntax_highlighting();
         }
     }
 }

@@ -22,6 +22,23 @@ impl Editor {
         &self.buffers[self.current_buffer_index]
     }
 
+    pub fn language_catalog(&self) -> std::sync::Arc<crate::language_catalog::LanguageCatalog> {
+        self.language_catalog.clone()
+    }
+
+    pub fn language_id_for_path(&self, path: &str) -> Option<String> {
+        if let Some(language) = self.language_catalog.detect(path) {
+            let id = if language.lsp_language_id == language.config.id {
+                crate::syntax::LanguageRegistry::get_lsp_language_id(path)
+                    .unwrap_or(&language.lsp_language_id)
+            } else {
+                &language.lsp_language_id
+            };
+            return Some(id.to_string());
+        }
+        crate::syntax::LanguageRegistry::get_lsp_language_id(path).map(str::to_string)
+    }
+
     /// Gets a buffer by ID (index)
     pub fn get_buffer(&self, id: usize) -> Option<&Buffer> {
         self.buffers.get(id)
@@ -65,6 +82,8 @@ impl Editor {
 
     /// Adds a new buffer and returns its index.
     pub fn push_buffer(&mut self, buf: Buffer) -> usize {
+        let mut buf = buf;
+        buf.set_language_catalog(self.language_catalog.clone());
         self.buffers.push(buf);
         self.buffers.len() - 1
     }
@@ -252,7 +271,8 @@ impl Editor {
     }
 
     /// Adds a new buffer and switches to it
-    pub fn add_buffer(&mut self, buffer: Buffer) {
+    pub fn add_buffer(&mut self, mut buffer: Buffer) {
+        buffer.set_language_catalog(self.language_catalog.clone());
         self.buffers.push(buffer);
         self.current_buffer_index = self.buffers.len() - 1;
         self.lsp.state.needs_lsp_init = true;

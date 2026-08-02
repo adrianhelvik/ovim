@@ -1,6 +1,7 @@
 pub mod ai_api;
 pub mod api;
 pub mod editor_bridge;
+pub mod language_api;
 pub mod util;
 
 pub use api::setup_vim_api;
@@ -10,11 +11,13 @@ pub use util::lua_value_to_string;
 use anyhow::Result;
 use mlua::{Lua, Value};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// Lua runtime context for configuration and plugins
 pub struct LuaContext {
     lua: Lua,
     config_loaded: bool,
+    source_context: language_api::LuaSourceContext,
 }
 
 impl LuaContext {
@@ -28,7 +31,12 @@ impl LuaContext {
         Ok(Self {
             lua,
             config_loaded: false,
+            source_context: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub fn source_context(&self) -> language_api::LuaSourceContext {
+        self.source_context.clone()
     }
 
     /// Gets a reference to the underlying Lua VM
@@ -52,11 +60,21 @@ impl LuaContext {
     pub fn execute_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let path = path.as_ref();
         let code = std::fs::read_to_string(path)?;
-        self.lua
+        let source = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        *self
+            .source_context
+            .lock()
+            .expect("Lua source context poisoned") = Some(source);
+        let result = self
+            .lua
             .load(&code)
             .set_name(path.to_string_lossy().as_ref())
-            .exec()?;
-        Ok(())
+            .exec();
+        *self
+            .source_context
+            .lock()
+            .expect("Lua source context poisoned") = None;
+        result.map_err(Into::into)
     }
 
     /// Loads the built-in defaults (builtin.lua) that ship with the binary.

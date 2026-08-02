@@ -22,6 +22,7 @@ use ropey::Rope;
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 pub type BufferId = u64;
 
@@ -63,6 +64,7 @@ pub struct Buffer {
     pub(super) encoding: FileEncoding,
     /// Optional syntax highlighter
     pub(super) syntax: Option<SyntaxHighlighter>,
+    pub(super) language_catalog: Arc<crate::language_catalog::LanguageCatalog>,
     /// True while a background task is computing initial syntax highlights
     pub(super) syntax_loading: bool,
     /// Cached syntax highlights per line (line_idx -> Vec<(range, group)>)
@@ -121,6 +123,7 @@ impl Buffer {
             line_ending: LineEnding::default(),
             encoding: FileEncoding::default(),
             syntax: None,
+            language_catalog: crate::language_catalog::LanguageCatalog::built_in(),
             syntax_loading: false,
             cached_highlights: None,
             highlight_version: 0,
@@ -140,6 +143,14 @@ impl Buffer {
             ai_lock_blocked: false,
             ai_lock_bypass_depth: 0,
         }
+    }
+
+    pub fn set_language_catalog(&mut self, catalog: Arc<crate::language_catalog::LanguageCatalog>) {
+        self.language_catalog = catalog;
+    }
+
+    pub fn language_catalog(&self) -> Arc<crate::language_catalog::LanguageCatalog> {
+        self.language_catalog.clone()
     }
 
     /// Creates a buffer from a string
@@ -218,6 +229,7 @@ impl Buffer {
             line_ending: LineEnding::detect(content.as_bytes()),
             encoding: FileEncoding::Utf8, // from_str always gets valid UTF-8
             syntax: None,
+            language_catalog: crate::language_catalog::LanguageCatalog::built_in(),
             syntax_loading: false,
             cached_highlights: None,
             highlight_version: 0,

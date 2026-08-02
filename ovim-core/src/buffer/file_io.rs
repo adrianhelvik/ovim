@@ -114,6 +114,7 @@ impl Buffer {
             line_ending,
             encoding,
             syntax: None,
+            language_catalog: crate::language_catalog::LanguageCatalog::built_in(),
             syntax_loading: false,
             cached_highlights: None,
             highlight_version: 0,

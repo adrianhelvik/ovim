@@ -18,7 +18,7 @@ impl Editor {
         let Some(file_path) = self.buffer().file_path() else {
             return false;
         };
-        if crate::syntax::LanguageRegistry::get_lsp_language_id(file_path).is_none() {
+        if self.language_id_for_path(file_path).is_none() {
             return false;
         }
         self.lsp.slots.inlay_hints.needs_refresh()
@@ -50,8 +50,7 @@ impl Editor {
             return;
         };
 
-        let Some(language_id) = crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
-        else {
+        let Some(language_id) = self.language_id_for_path(&file_path) else {
             return;
         };
 

@@ -18,6 +18,7 @@ pub mod editor;
 pub mod fold;
 pub mod git;
 pub mod key;
+pub mod language_catalog;
 pub mod language_config;
 pub mod log;
 pub mod lsp;

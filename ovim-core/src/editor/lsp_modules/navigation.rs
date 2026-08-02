@@ -184,9 +184,9 @@ impl Editor {
 
         let language_id = buffer
             .file_path()
-            .and_then(crate::syntax::LanguageRegistry::get_lsp_language_id);
+            .and_then(|path| self.language_id_for_path(path));
 
-        let node_table: &[NodeKindMapping] = match language_id {
+        let node_table: &[NodeKindMapping] = match language_id.as_deref() {
             Some("rust") => RUST_NODE_TABLE,
             Some("typescript" | "typescriptreact" | "javascript" | "javascriptreact") => {
                 TS_NODE_TABLE

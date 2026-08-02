@@ -26,6 +26,11 @@ impl Editor {
             self.sync_lua_bridge(&bridge);
             // Set up vim API with bridge
             crate::lua::setup_vim_api(context.lua(), bridge.clone())?;
+            crate::lua::language_api::setup_ovim_api(
+                context.lua(),
+                self.language_catalog.clone(),
+                context.source_context(),
+            )?;
             // Load built-in defaults (runs before user config)
             context.load_builtin()?;
             // Try to load user config
@@ -49,6 +54,7 @@ impl Editor {
             if let Err(e) = context.load_plugins() {
                 crate::log_error!("lua", "Error loading Lua plugins: {}", e);
             }
+            self.language_catalog.freeze();
             // Process any commands from plugins
             let commands = bridge.drain_commands();
             for cmd in commands {

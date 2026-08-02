@@ -51,13 +51,14 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     }
 
     // Detect language from registry
-    let Some(lang_config) = LanguageRegistry::get().detect(&abs_path) else {
+    let Some(language) = editor.language_catalog().detect(&abs_path) else {
         // No language configuration found - this is fine for unknown file types
         return;
     };
 
     // Check if LSP is configured for this language
-    let Some(lsp_config) = &lang_config.lsp else {
+    let lang_config = &language.config;
+    let Some(lsp_config) = language.lsp() else {
         // Syntax highlighting only, no LSP - this is normal for languages like Markdown
         return;
     };
@@ -200,7 +201,11 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     let root_path = find_project_root(&abs_path, &lsp_config.root_markers);
 
     // Determine language ID (for TypeScript vs JavaScript, use extension-based logic)
-    let language_id = determine_language_id(&lang_config.id, &abs_path);
+    let language_id = if language.lsp_language_id == language.config.id {
+        determine_language_id(&lang_config.id, &abs_path)
+    } else {
+        language.lsp_language_id.clone()
+    };
 
     ovim_core::lsp_info!(
         "LSP",
@@ -754,10 +759,11 @@ pub async fn handle_approved_lsp_install(editor: &mut Editor) {
 
     // Re-detect language config for the file
     let abs_path = Path::new(&approved.file_path);
-    let Some(lang_config) = LanguageRegistry::get().detect(abs_path) else {
+    let Some(language) = editor.language_catalog().detect(abs_path) else {
         return;
     };
-    let Some(lsp_config) = &lang_config.lsp else {
+    let lang_config = &language.config;
+    let Some(lsp_config) = language.lsp() else {
         return;
     };
     let Some(auto_install_config) = &lsp_config.auto_install else {
