@@ -816,7 +816,8 @@ fn read_file_at_path_def() -> ToolDefinition {
         name: "read_file_at_path".to_string(),
         description: "Read a file by path. Use when you need to examine files found via \
             list_files or search_project. Paths may be project-relative or absolute; access \
-            outside the project requires user approval. Returns file contents with line numbers."
+            outside the project requires user approval, except installed skill packages and \
+            Cargo registry dependency sources. Returns file contents with line numbers."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::Project,
@@ -830,7 +831,7 @@ fn read_file_at_path_def() -> ToolDefinition {
                 name: "path".to_string(),
                 param_type: ParamType::String,
                 required: true,
-                description: "Project-relative or absolute file path. Outside-project access requires user approval."
+                description: "Project-relative or absolute file path. Outside-project access requires user approval except for installed skills and Cargo registry sources."
                     .to_string(),
             },
             ToolParam {

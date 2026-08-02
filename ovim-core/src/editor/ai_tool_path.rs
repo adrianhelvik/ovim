@@ -86,16 +86,21 @@ impl Editor {
             });
         }
 
-        // Skill instructions are part of the agent harness, even though they
-        // intentionally live outside the opened project. Let the read-only
-        // file tool consume installed skill packages without turning every
-        // required SKILL.md into an approval prompt. This exception does not
-        // apply to navigation, directory listing, shell, or mutation tools.
+        // Skill instructions and Cargo dependency sources are expected inputs
+        // to code investigation even though they live outside the project.
+        // Keep these exceptions read-only: they do not apply to navigation,
+        // directory listing, shell, or mutation tools.
         if tool_name == "read_file_at_path" && sensitive_path_reason(&requested_path).is_none() {
             if let Some(skill_root) = trusted_codex_skill_package_root(&requested_path) {
                 return Ok(ToolPathResolution::Allowed {
                     absolute_path: requested_path,
                     boundary_root: skill_root,
+                });
+            }
+            if let Some(package_root) = trusted_cargo_registry_package_root(&requested_path) {
+                return Ok(ToolPathResolution::Allowed {
+                    absolute_path: requested_path,
+                    boundary_root: package_root,
                 });
             }
         }
@@ -241,6 +246,49 @@ fn codex_home() -> Option<PathBuf> {
                     .unwrap_or_else(|_| canonicalize_or_normalize(&path))
             }
         })
+}
+
+fn cargo_home() -> Option<PathBuf> {
+    std::env::var_os("CARGO_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".cargo")))
+        .map(|path| {
+            if path.is_absolute() {
+                canonicalize_or_normalize(&path)
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| canonicalize_or_normalize(&cwd.join(&path)))
+                    .unwrap_or_else(|_| canonicalize_or_normalize(&path))
+            }
+        })
+}
+
+fn trusted_cargo_registry_package_root(requested_path: &Path) -> Option<PathBuf> {
+    let home = cargo_home()?;
+    trusted_cargo_registry_package_root_in(&home, requested_path)
+}
+
+/// Return the package root for a file in Cargo's unpacked registry source
+/// cache. Requiring both registry/package path components and Cargo.toml keeps
+/// similarly named directories elsewhere from becoming trusted read roots.
+fn trusted_cargo_registry_package_root_in(
+    cargo_home: &Path,
+    requested_path: &Path,
+) -> Option<PathBuf> {
+    let requested_path = canonicalize_or_normalize(requested_path);
+    let source_root = canonicalize_or_normalize(&cargo_home.join("registry/src"));
+    let relative = requested_path.strip_prefix(&source_root).ok()?;
+    let mut components = relative.components();
+    let std::path::Component::Normal(registry) = components.next()? else {
+        return None;
+    };
+    let std::path::Component::Normal(package) = components.next()? else {
+        return None;
+    };
+    let package_root = source_root.join(registry).join(package);
+    (package_root.join("Cargo.toml").is_file() && requested_path.starts_with(&package_root))
+        .then_some(package_root)
 }
 
 /// Return the root of a genuine installed Codex skill package containing
@@ -448,6 +496,53 @@ mod tests {
         );
         assert_eq!(
             trusted_codex_skill_package_root_in(&codex_home, &incomplete),
+            None
+        );
+    }
+
+    #[test]
+    fn trusts_source_files_in_cargo_registry_packages() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cargo_home = temp.path().join(".cargo");
+        let package_root = cargo_home
+            .join("registry/src/index.crates.io-test")
+            .join("ratatui-image-8.0.1");
+        let source = package_root.join("src/protocol.rs");
+        fs::create_dir_all(source.parent().unwrap()).expect("create package source");
+        fs::write(
+            package_root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("write manifest");
+        fs::write(&source, "pub enum Protocol {}\n").expect("write source");
+
+        assert_eq!(
+            trusted_cargo_registry_package_root_in(&cargo_home, &source),
+            Some(canonicalize_or_normalize(&package_root))
+        );
+    }
+
+    #[test]
+    fn rejects_cargo_registry_lookalikes_and_incomplete_packages() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cargo_home = temp.path().join(".cargo");
+        let lookalike = temp
+            .path()
+            .join("registry/src/index.crates.io-test/fake-1.0.0/src/lib.rs");
+        fs::create_dir_all(lookalike.parent().unwrap()).expect("create lookalike");
+        fs::write(&lookalike, "lookalike\n").expect("write lookalike");
+
+        let incomplete =
+            cargo_home.join("registry/src/index.crates.io-test/incomplete-1.0.0/src/lib.rs");
+        fs::create_dir_all(incomplete.parent().unwrap()).expect("create incomplete package");
+        fs::write(&incomplete, "missing manifest\n").expect("write incomplete source");
+
+        assert_eq!(
+            trusted_cargo_registry_package_root_in(&cargo_home, &lookalike),
+            None
+        );
+        assert_eq!(
+            trusted_cargo_registry_package_root_in(&cargo_home, &incomplete),
             None
         );
     }

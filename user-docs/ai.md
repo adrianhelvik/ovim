@@ -65,10 +65,11 @@ testing as authorized when they are reasonable steps toward your requested
 implementation objective. Elevated privileges, credential access,
 outside-project effects, remote-code pipelines, ambiguous authorization, and
 classifier failures pause for you. Press Enter or Ctrl-Y to allow once, Ctrl-A
-to allow the requested folder for the chat, or Esc/Ctrl-N to deny. To opt out
-of auto mode, set
-`tool_approval_mode = "sensitive_prompt"` or `"always_prompt"` in legacy
-`ai.toml`.
+to allow the requested folder for the chat, or Esc/Ctrl-N to deny. Installed
+skill packages and source files in Cargo's local registry cache are trusted
+read-only inputs and do not trigger outside-project approval prompts. To opt
+out of auto mode, set `tool_approval_mode = "sensitive_prompt"` or
+`"always_prompt"` in legacy `ai.toml`.
 
 For trusted work where approval interruptions are more costly than the safety
 gate, click `YOLO OFF` at the top right of the chat to switch it to `YOLO ON`.
