@@ -7,6 +7,7 @@ use crate::syntax::{HighlightGroup, LanguageRegistry, SyntaxHighlighter, Theme};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::ops::Range;
+use unicode_width::UnicodeWidthStr;
 
 /// Colors for markdown rendering (Catppuccin-inspired)
 pub mod colors {
@@ -41,6 +42,11 @@ pub enum MarkdownElement {
     },
     /// Display math delimited by `$$...$$` or `\[...\]`.
     DisplayMath(String),
+    /// GitHub-flavored Markdown table.
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
     /// Heading (# Title)
     Heading(#[allow(dead_code)] u8, String),
     /// Horizontal rule (---)
@@ -57,7 +63,8 @@ pub fn parse_markdown(text: &str) -> Vec<MarkdownElement> {
     let mut code_block_content = String::new();
     let mut math_block: Option<(&'static str, &'static str, String)> = None;
 
-    for line in text.lines() {
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
         // Handle code blocks
         if math_block.is_none() && line.starts_with("```") {
             if in_code_block {
@@ -80,6 +87,33 @@ pub fn parse_markdown(text: &str) -> Vec<MarkdownElement> {
             }
 
             continue;
+        }
+
+        if let Some(separator) = lines.peek().copied() {
+            let headers = split_table_row(line);
+            let separators = split_table_row(separator);
+            if headers.len() >= 2
+                && headers.len() == separators.len()
+                && separators.iter().all(|cell| is_table_separator(cell))
+            {
+                lines.next();
+                let mut rows = Vec::new();
+                while let Some(candidate) = lines.peek().copied() {
+                    let mut cells = split_table_row(candidate);
+                    if cells.len() < 2 || candidate.trim().is_empty() {
+                        break;
+                    }
+                    lines.next();
+                    if cells.len() > headers.len() {
+                        let overflow = cells.split_off(headers.len() - 1);
+                        cells.push(overflow.join(" | "));
+                    }
+                    cells.resize(headers.len(), String::new());
+                    rows.push(cells);
+                }
+                elements.push(MarkdownElement::Table { headers, rows });
+                continue;
+            }
         }
 
         if in_code_block {
@@ -165,6 +199,43 @@ pub fn parse_markdown(text: &str) -> Vec<MarkdownElement> {
     }
 
     elements
+}
+
+fn split_table_row(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    let inner = trimmed
+        .strip_prefix('|')
+        .unwrap_or(trimmed)
+        .strip_suffix('|')
+        .unwrap_or_else(|| trimmed.strip_prefix('|').unwrap_or(trimmed));
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut chars = inner.chars().peekable();
+    let mut in_code = false;
+    while let Some(character) = chars.next() {
+        match character {
+            '`' => {
+                in_code = !in_code;
+                cell.push(character);
+            }
+            '\\' if chars.peek() == Some(&'|') => {
+                chars.next();
+                cell.push('|');
+            }
+            '|' if !in_code => {
+                cells.push(cell.trim().to_string());
+                cell.clear();
+            }
+            _ => cell.push(character),
+        }
+    }
+    cells.push(cell.trim().to_string());
+    cells
+}
+
+fn is_table_separator(cell: &str) -> bool {
+    let dashes = cell.trim().trim_start_matches(':').trim_end_matches(':');
+    dashes.len() >= 3 && dashes.chars().all(|character| character == '-')
 }
 
 /// Parse inline markdown elements (bold, inline code) from a line
@@ -324,6 +395,138 @@ fn render_code_line_with_highlights(
     Line::from(spans)
 }
 
+fn table_border(left: char, join: char, right: char, widths: &[usize]) -> Line<'static> {
+    let mut border = String::new();
+    border.push(left);
+    for (index, width) in widths.iter().enumerate() {
+        border.push_str(&"─".repeat(width + 2));
+        border.push(if index + 1 == widths.len() {
+            right
+        } else {
+            join
+        });
+    }
+    Line::from(Span::styled(border, Style::default().fg(colors::BORDER)))
+}
+
+fn table_cell_spans(
+    cell: &str,
+    text_style: Style,
+    bold_style: Style,
+    code_style: Style,
+) -> Vec<Span<'static>> {
+    let mut elements = Vec::new();
+    parse_inline_elements(cell, &mut elements);
+    elements
+        .into_iter()
+        .filter_map(|element| match element {
+            MarkdownElement::Text(text) => Some(Span::styled(text, text_style)),
+            MarkdownElement::Bold(text) => Some(Span::styled(text, bold_style)),
+            MarkdownElement::InlineCode(code) => Some(Span::styled(code, code_style)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn table_cell_width(cell: &str) -> usize {
+    let mut elements = Vec::new();
+    parse_inline_elements(cell, &mut elements);
+    elements
+        .iter()
+        .map(|element| match element {
+            MarkdownElement::Text(text)
+            | MarkdownElement::Bold(text)
+            | MarkdownElement::InlineCode(text) => UnicodeWidthStr::width(text.as_str()),
+            _ => 0,
+        })
+        .sum()
+}
+
+fn render_table(
+    headers: &[String],
+    rows: &[Vec<String>],
+    max_width: usize,
+    text_style: Style,
+    bold_style: Style,
+    code_style: Style,
+) -> Vec<Line<'static>> {
+    if headers.is_empty() {
+        return Vec::new();
+    }
+
+    let widths: Vec<usize> = headers
+        .iter()
+        .enumerate()
+        .map(|(column, header)| {
+            rows.iter()
+                .filter_map(|row| row.get(column))
+                .fold(table_cell_width(header), |width, cell| {
+                    width.max(table_cell_width(cell))
+                })
+        })
+        .collect();
+    let table_width = 1 + widths.iter().map(|width| width + 3).sum::<usize>();
+
+    if table_width <= max_width {
+        let mut lines = vec![table_border('┌', '┬', '┐', &widths)];
+        let mut header_spans = vec![Span::styled("│ ", Style::default().fg(colors::BORDER))];
+        for (index, header) in headers.iter().enumerate() {
+            header_spans.extend(table_cell_spans(header, bold_style, bold_style, code_style));
+            let padding = widths[index].saturating_sub(table_cell_width(header));
+            header_spans.push(Span::styled(
+                format!(
+                    "{} │{}",
+                    " ".repeat(padding),
+                    if index + 1 == headers.len() { "" } else { " " }
+                ),
+                Style::default().fg(colors::BORDER),
+            ));
+        }
+        lines.push(Line::from(header_spans));
+        lines.push(table_border('├', '┼', '┤', &widths));
+        for row in rows {
+            let mut spans = vec![Span::styled("│ ", Style::default().fg(colors::BORDER))];
+            for (index, width) in widths.iter().enumerate() {
+                let cell = row.get(index).map_or("", String::as_str);
+                spans.extend(table_cell_spans(cell, text_style, bold_style, code_style));
+                let padding = width.saturating_sub(table_cell_width(cell));
+                spans.push(Span::styled(
+                    format!(
+                        "{} │{}",
+                        " ".repeat(padding),
+                        if index + 1 == widths.len() { "" } else { " " }
+                    ),
+                    Style::default().fg(colors::BORDER),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines.push(table_border('└', '┴', '┘', &widths));
+        return lines;
+    }
+
+    // Narrow layouts become vertical records. Each field remains one logical
+    // line so the caller's style-aware wrapper can adapt it to any width.
+    let mut lines = Vec::new();
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column, header) in headers.iter().enumerate() {
+            let mut spans = table_cell_spans(header, bold_style, bold_style, code_style);
+            spans.push(Span::styled(": ", text_style));
+            spans.extend(table_cell_spans(
+                row.get(column).map_or("", String::as_str),
+                text_style,
+                bold_style,
+                code_style,
+            ));
+            lines.push(Line::from(spans));
+        }
+        if row_index + 1 < rows.len() {
+            lines.push(Line::default());
+        }
+    }
+    lines
+}
+
 /// Convert parsed markdown elements to styled ratatui Lines
 pub fn render_markdown(
     elements: &[MarkdownElement],
@@ -403,6 +606,15 @@ pub fn render_markdown(
                     };
                     lines.push(Line::from(Span::styled(truncated, code_block_style)));
                 }
+            }
+            MarkdownElement::Table { headers, rows } => {
+                if !current_spans.is_empty() {
+                    lines.push(Line::from(current_spans.clone()));
+                    current_spans.clear();
+                }
+                lines.extend(render_table(
+                    headers, rows, max_width, text_style, bold_style, code_style,
+                ));
             }
             MarkdownElement::DisplayMath(math) => {
                 if !current_spans.is_empty() {
@@ -540,6 +752,69 @@ mod tests {
             rendered,
             "So C420 does not produce a contradiction and does not prove existence. It merely narrows the range."
         );
+    }
+
+    #[test]
+    fn parses_github_style_table_and_escaped_pipes() {
+        let elements = parse_markdown(
+            "| Area | Nula | Nushell |\n|:---|---:|---|\n| Primary role | Embedded data transformation | Interactive system shell |\n| Syntax | `a \\| b` | **pipelines** |",
+        );
+        let table = elements
+            .iter()
+            .find_map(|element| match element {
+                MarkdownElement::Table { headers, rows } => Some((headers, rows)),
+                _ => None,
+            })
+            .expect("parsed table");
+        assert_eq!(table.0, &["Area", "Nula", "Nushell"]);
+        assert_eq!(table.1.len(), 2);
+        assert_eq!(table.1[1][1], "`a | b`");
+    }
+
+    #[test]
+    fn table_uses_bordered_columns_when_it_fits() {
+        let elements = parse_markdown(
+            "| Name | Role |\n|---|---|\n| **Nula** | `Data` |\n| Nushell | Shell |",
+        );
+        let lines = render_markdown(&elements, 40, None);
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.first().is_some_and(|line| line.starts_with('┌')));
+        assert!(rendered
+            .iter()
+            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 40));
+        assert!(rendered.iter().any(|line| line.contains("Nushell")));
+    }
+
+    #[test]
+    fn wide_table_becomes_wrappable_vertical_records() {
+        let elements = parse_markdown(
+            "| Area | Nula | Nushell |\n|---|---|---|\n| Primary role | Embedded data transformation | Interactive system shell |",
+        );
+        let lines = render_markdown(&elements, 30, None);
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(rendered.len(), 3);
+        assert_eq!(rendered[0], "Area: Primary role");
+        assert_eq!(rendered[1], "Nula: Embedded data transformation");
+        assert_eq!(rendered[2], "Nushell: Interactive system shell");
+        assert!(rendered.iter().all(|line| !line.contains('│')));
     }
 
     #[test]

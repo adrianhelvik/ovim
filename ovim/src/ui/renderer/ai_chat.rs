@@ -2494,9 +2494,10 @@ mod tests {
     use super::{
         chat_cursor_info, compute_chat_split, highlight_chat_selection,
         is_hidden_tool_only_assistant, render_card_header_line, render_card_styled_line,
-        render_card_text_line, render_queued_input_row, render_tool_event_details,
-        render_tool_event_row, styled_word_wrap_line, text_display_width, truncate_with_ellipsis,
-        word_wrap, LineRenderCache, MessageRowStyle, ACCENT_ASSISTANT_EDIT, BG_ASSISTANT_EDIT_ROW,
+        render_card_text_line, render_chat_bubble, render_queued_input_row,
+        render_tool_event_details, render_tool_event_row, styled_word_wrap_line,
+        text_display_width, truncate_with_ellipsis, word_wrap, LineRenderCache, MessageRowStyle,
+        ACCENT_ASSISTANT_EDIT, BG_ASSISTANT_EDIT_ROW,
     };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ImageAttachment, ToolCallInfo};
     use ovim_core::editor::ai_chat_input::{chat_input_cursor_row_col, wrap_chat_input_rows};
@@ -2752,6 +2753,53 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn assistant_tables_switch_between_grid_and_stacked_layouts() {
+        let message = ChatMessage {
+            role: ChatRole::Assistant,
+            content: "| Area | Nula | Nushell |\n|---|---|---|\n| Primary role | Embedded data transformation | Interactive system shell |".into(),
+            model: Some("model".into()),
+            timestamp: std::time::Instant::now(),
+            images: vec![],
+            tool_calls: vec![],
+            tool_call_id: None,
+            provider_state: vec![],
+        };
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+
+        let narrow = render_chat_bubble(&message, 42, false, false, false, 0, None, &theme, false);
+        let narrow_text = narrow
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(narrow_text
+            .iter()
+            .any(|line| line.contains("Area: Primary role")));
+        assert!(narrow_text
+            .iter()
+            .all(|line| text_display_width(line) == 42));
+
+        let wide = render_chat_bubble(&message, 100, false, false, false, 0, None, &theme, false);
+        let wide_text = wide
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(wide_text.iter().any(|line| line.contains('┌')));
+        assert!(wide_text.iter().all(|line| text_display_width(line) == 100));
     }
 
     #[test]
