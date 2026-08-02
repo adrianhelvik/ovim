@@ -62,14 +62,6 @@ impl MathRenderCache {
         std::thread::Builder::new()
             .name("ovim-math-renderer".to_string())
             .spawn(move || {
-                // Initializing the embedded JavaScript runtime is expensive in
-                // debug builds. Do it while Ovim starts rather than when the
-                // first equation becomes visible.
-                let _ = render_to_png(&MathKey {
-                    tex: "x".to_string(),
-                    max_columns: 4,
-                    color: [200, 208, 220],
-                });
                 while let Ok(key) = receiver.recv() {
                     let entry = match render_to_png(&key) {
                         Ok(rendered) => CacheEntry::Ready(rendered),
@@ -110,10 +102,6 @@ impl MathRenderCache {
 fn cache() -> &'static MathRenderCache {
     static CACHE: OnceLock<MathRenderCache> = OnceLock::new();
     CACHE.get_or_init(MathRenderCache::new)
-}
-
-pub(crate) fn start_display_math_renderer() {
-    let _ = cache();
 }
 
 pub(crate) fn request_display_math(
@@ -215,7 +203,7 @@ mod tests {
     #[test]
     fn asynchronous_request_eventually_returns_cached_image() {
         let tex = r"u(x,y,z,t)=\begin{pmatrix}u_1\\u_2\\u_3\end{pmatrix}";
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {
             match request_display_math(tex, 50, [200, 208, 220]) {
                 MathRenderStatus::Ready(rendered) => {

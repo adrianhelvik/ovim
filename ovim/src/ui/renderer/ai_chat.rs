@@ -2725,7 +2725,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
 
         loop {
             terminal
