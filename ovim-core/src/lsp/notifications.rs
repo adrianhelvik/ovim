@@ -20,6 +20,37 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 
+fn workspace_configuration_values(
+    language: &str,
+    params: Option<&serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let items = params
+        .and_then(|params| params.get("items"))
+        .and_then(serde_json::Value::as_array);
+    let Some(items) = items else {
+        return Vec::new();
+    };
+    if language != "lua" {
+        return vec![serde_json::Value::Null; items.len()];
+    }
+
+    let settings = super::server::workspace_settings_for_language(language)
+        .expect("Lua workspace settings are defined");
+    items
+        .iter()
+        .map(|item| {
+            let Some(section) = item.get("section").and_then(serde_json::Value::as_str) else {
+                return settings.clone();
+            };
+            section
+                .split('.')
+                .try_fold(&settings, |value, key| value.get(key))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        })
+        .collect()
+}
+
 impl LspManager {
     pub async fn did_open(
         &self,
@@ -859,19 +890,12 @@ impl LspManager {
                 }
             }
             "workspace/configuration" => {
-                // Server requests configuration settings. Respond with one
-                // Value::Null per requested item (we don't manage settings).
                 if let Some(id) = request_id {
                     if let Some(server) = self.servers.get(server_id) {
-                        let item_count = request
-                            .params
-                            .as_ref()
-                            .and_then(|p| p.get("items"))
-                            .and_then(|items| items.as_array())
-                            .map(|arr| arr.len())
-                            .unwrap_or(0);
-                        let response_array: Vec<serde_json::Value> =
-                            vec![serde_json::Value::Null; item_count];
+                        let response_array = workspace_configuration_values(
+                            server.language(),
+                            request.params.as_ref(),
+                        );
                         let response_msg =
                             JsonRpcMessage::response(id, serde_json::Value::Array(response_array));
                         if let Err(e) = server.send_response(response_msg).await {
@@ -1567,6 +1591,40 @@ mod tests {
         assert!(
             !versions.contains_key(&uri),
             "claim must be rolled back on failure"
+        );
+    }
+}
+
+#[cfg(test)]
+mod workspace_configuration_tests {
+    use super::workspace_configuration_values;
+
+    #[test]
+    fn lua_configuration_declares_only_the_host_vim_global() {
+        let params = serde_json::json!({
+            "items": [
+                {"section": "Lua"},
+                {"section": "Lua.diagnostics"},
+                {"section": "unmanaged"}
+            ]
+        });
+        let values = workspace_configuration_values("lua", Some(&params));
+
+        assert_eq!(values[0]["runtime"]["version"], "Lua 5.4");
+        assert_eq!(
+            values[0]["diagnostics"]["globals"],
+            serde_json::json!(["vim"])
+        );
+        assert_eq!(values[1]["globals"], serde_json::json!(["vim"]));
+        assert!(values[2].is_null());
+    }
+
+    #[test]
+    fn unconfigured_languages_retain_null_configuration_responses() {
+        let params = serde_json::json!({"items": [{"section": "rust"}]});
+        assert_eq!(
+            workspace_configuration_values("rust", Some(&params)),
+            vec![serde_json::Value::Null]
         );
     }
 }

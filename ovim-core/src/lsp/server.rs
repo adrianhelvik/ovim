@@ -61,6 +61,20 @@ bitflags::bitflags! {
     }
 }
 
+pub(crate) fn workspace_settings_for_language(language: &str) -> Option<serde_json::Value> {
+    match language {
+        // Ovim exposes this Neovim-compatible host table to config/plugins.
+        // Keep the declaration narrow so LuaLS still catches misspelled globals.
+        "lua" => Some(json!({
+            "Lua": {
+                "runtime": { "version": "Lua 5.4" },
+                "diagnostics": { "globals": ["vim"] }
+            }
+        })),
+        _ => None,
+    }
+}
+
 /// Maximum number of pending requests to prevent OOM
 const MAX_PENDING_REQUESTS: usize = 1000;
 
@@ -203,6 +217,10 @@ impl LanguageServerInner {
 }
 
 impl LanguageServer {
+    pub(crate) fn language(&self) -> &str {
+        &self.inner.language
+    }
+
     /// Returns a log prefix with language and command context
     fn log_prefix(&self) -> String {
         self.inner.log_prefix()
@@ -803,6 +821,7 @@ impl LanguageServer {
             // Workspace capabilities
             workspace: Some(lsp_types::WorkspaceClientCapabilities {
                 apply_edit: Some(true),
+                configuration: Some(true),
                 ..Default::default()
             }),
 
@@ -959,6 +978,14 @@ impl LanguageServer {
         self.notify("initialized", serde_json::to_value(InitializedParams {})?)
             .await
             .context("Failed to send initialized notification")?;
+        if let Some(settings) = workspace_settings_for_language(&self.inner.language) {
+            self.notify(
+                "workspace/didChangeConfiguration",
+                json!({ "settings": settings }),
+            )
+            .await
+            .context("Failed to send workspace configuration")?;
+        }
 
         // Transition to Ready state and replay pending operations
         self.transition_to(ServerState::Ready {

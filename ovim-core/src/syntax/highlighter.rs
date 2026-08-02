@@ -868,6 +868,23 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     }
 
     #[test]
+    fn test_lua_highlighter() {
+        let mut highlighter =
+            SyntaxHighlighter::new(Language::Lua).expect("Lua highlighter should be created");
+        let source = "local enabled = true\nvim.keymap.set('n', 'q', ':quit<CR>')\n-- config";
+
+        highlighter.parse(source);
+        let tree = highlighter.tree().expect("Lua parse tree");
+        assert!(!tree.root_node().has_error(), "{}", tree.root_node());
+        let highlights = highlighter.highlights_for_all_lines(source);
+        assert!(highlights.iter().any(|line| !line.is_empty()));
+        assert!(highlights
+            .iter()
+            .flatten()
+            .any(|(_, group)| *group == HighlightGroup::Comment));
+    }
+
+    #[test]
     fn test_typescript_highlighter() {
         let mut h = SyntaxHighlighter::new(Language::TypeScript)
             .expect("TypeScript highlighter should be created");

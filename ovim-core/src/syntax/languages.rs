@@ -17,6 +17,7 @@ pub enum Language {
     Cpp,
     Ruby,
     Bash,
+    Lua,
     Dockerfile,
     Json,
     Yaml,
@@ -104,6 +105,9 @@ impl LanguageRegistry {
 
             // Bash
             "sh" | "bash" | "zsh" | "fish" | "ksh" | "csh" | "tcsh" => Some(Language::Bash),
+
+            // Lua
+            "lua" => Some(Language::Lua),
 
             // JSON
             "json" | "jsonc" | "json5" => Some(Language::Json),
@@ -250,6 +254,7 @@ impl LanguageRegistry {
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
             Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
             Language::Bash => tree_sitter_bash::LANGUAGE.into(),
+            Language::Lua => tree_sitter_lua::LANGUAGE.into(),
             // Dockerfile uses Bash syntax highlighting to avoid tree-sitter version conflicts
             // tree-sitter-dockerfile depends on tree-sitter ^0.20, incompatible with our 0.23
             Language::Dockerfile => tree_sitter_bash::LANGUAGE.into(),
@@ -297,6 +302,7 @@ impl LanguageRegistry {
             Language::Cpp => tree_sitter_cpp::HIGHLIGHT_QUERY,
             Language::Ruby => tree_sitter_ruby::HIGHLIGHTS_QUERY,
             Language::Bash => tree_sitter_bash::HIGHLIGHT_QUERY,
+            Language::Lua => tree_sitter_lua::HIGHLIGHTS_QUERY,
             Language::Dockerfile => tree_sitter_bash::HIGHLIGHT_QUERY, // Use Bash syntax for now
             Language::Json => tree_sitter_json::HIGHLIGHTS_QUERY,
             Language::Html => tree_sitter_html::HIGHLIGHTS_QUERY,
@@ -353,6 +359,7 @@ impl LanguageRegistry {
             Language::Cpp => Some("cpp"),
             Language::Ruby => Some("ruby"),
             Language::Bash => Some("bash"),
+            Language::Lua => Some("lua"),
             Language::Dockerfile => Some("dockerfile"),
             Language::Json => Some("json"),
             Language::Yaml => Some("yaml"),
@@ -422,6 +429,9 @@ impl LanguageRegistry {
             // Bash/Shell
             "bash" | "sh" | "shell" | "zsh" | "fish" | "ksh" => Some(Language::Bash),
 
+            // Lua
+            "lua" => Some(Language::Lua),
+
             // Dockerfile
             "dockerfile" | "docker" => Some(Language::Dockerfile),
 
@@ -485,6 +495,22 @@ mod tests {
         assert_eq!(
             LanguageRegistry::get_lsp_language_id("src/pages/index.astro"),
             Some("astro")
+        );
+    }
+
+    #[test]
+    fn detects_lua_files_and_markdown_fences() {
+        assert_eq!(
+            LanguageRegistry::detect_from_path("plugin/config.lua"),
+            Some(Language::Lua)
+        );
+        assert_eq!(
+            LanguageRegistry::from_info_string("lua"),
+            Some(Language::Lua)
+        );
+        assert_eq!(
+            LanguageRegistry::get_lsp_language_id("plugin/config.lua"),
+            Some("lua")
         );
     }
 
