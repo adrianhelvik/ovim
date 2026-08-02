@@ -922,6 +922,7 @@ impl Default for Renderer {
 impl Renderer {
     /// Creates a new renderer
     pub fn new() -> Self {
+        super::display_math::start_display_math_renderer();
         let backend = CrosstermBackend::new(io::stdout());
         let terminal = RatatuiTerminal::new(backend).expect("Failed to create terminal");
         Self {

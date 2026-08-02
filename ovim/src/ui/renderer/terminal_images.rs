@@ -15,6 +15,12 @@ struct CacheKey {
     height: u16,
 }
 
+fn stable_auto_protocol(term_program: Option<&str>) -> Option<ProtocolType> {
+    term_program
+        .is_some_and(|program| program.eq_ignore_ascii_case("ghostty"))
+        .then_some(ProtocolType::Halfblocks)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ImageProtocolPreference {
     Auto,
@@ -67,7 +73,16 @@ impl TerminalImageRenderer {
             // get stable thumbnails instead of empty image boxes.
             let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
             match image_protocol_preference(std::env::var("OVIM_IMAGE_PROTOCOL").ok().as_deref()) {
-                ImageProtocolPreference::Auto => {}
+                ImageProtocolPreference::Auto => {
+                    // Ghostty's Kitty virtual placements can flicker under a
+                    // frequently redrawn TUI. Prefer stable cell graphics by
+                    // default; users can still opt into Kitty explicitly.
+                    if let Some(protocol) =
+                        stable_auto_protocol(std::env::var("TERM_PROGRAM").ok().as_deref())
+                    {
+                        picker.set_protocol_type(protocol);
+                    }
+                }
                 ImageProtocolPreference::Off => {
                     return Self {
                         picker: None,
@@ -250,6 +265,15 @@ mod tests {
             image_protocol_preference(Some("kitty")),
             ImageProtocolPreference::Force(ProtocolType::Kitty)
         );
+    }
+
+    #[test]
+    fn ghostty_auto_mode_prefers_stable_halfblocks() {
+        assert_eq!(
+            stable_auto_protocol(Some("ghostty")),
+            Some(ProtocolType::Halfblocks)
+        );
+        assert_eq!(stable_auto_protocol(Some("iTerm.app")), None);
     }
 
     #[test]

@@ -501,7 +501,13 @@ fn render_message_history(
     let messages = editor.ai_chat_messages();
     let has_agent_cards = agent_snapshot.is_some_and(|snapshot| !snapshot.agents.is_empty());
     let has_live_shells = !editor.ai_chat_live_shell_tool_ids().is_empty();
-    if messages.is_empty() && !has_agent_cards && !has_live_shells {
+    let has_streaming = editor
+        .ai_chat_streaming_content()
+        .is_some_and(|content| !content.is_empty())
+        || editor
+            .ai_chat_streaming_thinking()
+            .is_some_and(|thinking| !thinking.is_empty());
+    if messages.is_empty() && !has_agent_cards && !has_live_shells && !has_streaming {
         editor.render_cache.ai_chat_last_total_rows = 0;
         editor.render_cache.ai_chat_last_visible_start_row = 0;
         editor.render_cache.ai_chat_last_visible_end_row = 0;
@@ -648,6 +654,7 @@ fn render_message_history(
                             path: image.path,
                         })
                         .collect(),
+                    cacheable: true,
                 }
             } else {
                 let bubble = render_chat_bubble(
@@ -661,23 +668,25 @@ fn render_message_history(
                     theme,
                     terminal_image_support,
                 );
-                cache.insert_chat_bubble(
-                    key,
-                    CachedChatBubble {
-                        lines: bubble.lines.clone(),
-                        images: bubble
-                            .images
-                            .iter()
-                            .map(|image| CachedChatImage {
-                                row: image.row,
-                                x: image.x,
-                                width: image.width,
-                                height: image.height,
-                                path: image.path.clone(),
-                            })
-                            .collect(),
-                    },
-                );
+                if bubble.cacheable {
+                    cache.insert_chat_bubble(
+                        key,
+                        CachedChatBubble {
+                            lines: bubble.lines.clone(),
+                            images: bubble
+                                .images
+                                .iter()
+                                .map(|image| CachedChatImage {
+                                    row: image.row,
+                                    x: image.x,
+                                    width: image.width,
+                                    height: image.height,
+                                    path: image.path.clone(),
+                                })
+                                .collect(),
+                        },
+                    );
+                }
                 bubble
             }
         } else {
@@ -772,8 +781,18 @@ fn render_message_history(
                 0,
                 None,
                 theme,
-                false,
+                editor.render_cache.terminal_image_support,
             );
+            let msg_row_start = rendered_lines.len();
+            for image in bubble.images {
+                inline_images.push(HistoryImagePlacement {
+                    row: msg_row_start + image.row,
+                    x: image.x,
+                    width: image.width,
+                    height: image.height,
+                    path: image.path,
+                });
+            }
             for line in bubble.lines {
                 rendered_lines.push((line, false));
             }
@@ -1383,6 +1402,9 @@ fn chat_bubble_cache_key(
 struct ChatBubbleRender {
     lines: Vec<Line<'static>>,
     images: Vec<BubbleImagePlacement>,
+    /// Pending math images must be polled again instead of freezing the raw
+    /// LaTeX fallback in the chat-bubble cache.
+    cacheable: bool,
 }
 
 fn message_row_style(role: ChatRole, allow_edits: bool, selected: bool) -> MessageRowStyle {
@@ -1627,6 +1649,7 @@ fn render_chat_bubble(
     let text_style = Style::default().fg(row_style.text_fg);
     let mut lines = Vec::new();
     let mut images = Vec::new();
+    let mut cacheable = true;
 
     let label = match message.role {
         ChatRole::User => "You".to_string(),
@@ -1692,22 +1715,20 @@ fn render_chat_bubble(
             text_style,
         ));
     } else if message.role == ChatRole::Assistant {
-        // Markdown-rendered content for assistant messages
         let md_elements = super::markdown::parse_markdown(&message.content);
-        let md_lines = super::markdown::render_markdown(&md_elements, inner_width, Some(theme));
-        for md_line in &md_lines {
-            let content_spans = styled_word_wrap_line(md_line, inner_width);
-            for row_spans in content_spans {
-                lines.push(render_card_styled_line(
-                    panel_width,
-                    accent_glyph,
-                    row_style.accent,
-                    row_style.body_bg,
-                    row_spans,
-                ));
-            }
-        }
-        if md_lines.is_empty() {
+        let content_start = lines.len();
+        cacheable = append_assistant_markdown(
+            &md_elements,
+            &mut lines,
+            &mut images,
+            panel_width,
+            inner_width,
+            accent_glyph,
+            row_style,
+            theme,
+            terminal_image_support,
+        );
+        if lines.len() == content_start {
             lines.push(render_card_text_line(
                 panel_width,
                 accent_glyph,
@@ -1749,7 +1770,132 @@ fn render_chat_bubble(
         ));
     }
 
-    ChatBubbleRender { lines, images }
+    ChatBubbleRender {
+        lines,
+        images,
+        cacheable,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_assistant_markdown(
+    elements: &[super::markdown::MarkdownElement],
+    lines: &mut Vec<Line<'static>>,
+    images: &mut Vec<BubbleImagePlacement>,
+    panel_width: usize,
+    inner_width: usize,
+    accent_glyph: &str,
+    row_style: MessageRowStyle,
+    theme: &Theme,
+    terminal_image_support: bool,
+) -> bool {
+    use super::display_math::{request_display_math, MathRenderStatus};
+    use super::markdown::MarkdownElement;
+
+    let mut cacheable = true;
+    let mut ordinary = Vec::new();
+    for element in elements {
+        let MarkdownElement::DisplayMath(math) = element else {
+            ordinary.push(element.clone());
+            continue;
+        };
+
+        append_ordinary_markdown(
+            &ordinary,
+            lines,
+            panel_width,
+            inner_width,
+            accent_glyph,
+            row_style,
+            theme,
+        );
+        ordinary.clear();
+
+        let status = if terminal_image_support {
+            let color = match row_style.text_fg {
+                Color::Rgb(red, green, blue) => [red, green, blue],
+                _ => [200, 208, 220],
+            };
+            request_display_math(math, inner_width as u16, color)
+        } else {
+            MathRenderStatus::Failed
+        };
+
+        if let MathRenderStatus::Ready(rendered) = status {
+            let image_width = rendered.width.min(inner_width as u16);
+            let x = 2usize
+                .saturating_add(inner_width.saturating_sub(image_width as usize) / 2)
+                .min(u16::MAX as usize) as u16;
+            images.push(BubbleImagePlacement {
+                row: lines.len(),
+                x,
+                width: image_width,
+                height: rendered.height,
+                path: rendered.path,
+            });
+            for _ in 0..rendered.height {
+                lines.push(render_card_text_line(
+                    panel_width,
+                    accent_glyph,
+                    row_style.accent,
+                    row_style.body_bg,
+                    "",
+                    Style::default().fg(row_style.text_fg),
+                ));
+            }
+        } else {
+            if matches!(status, MathRenderStatus::Pending) {
+                cacheable = false;
+            }
+            append_ordinary_markdown(
+                &[MarkdownElement::DisplayMath(math.clone())],
+                lines,
+                panel_width,
+                inner_width,
+                accent_glyph,
+                row_style,
+                theme,
+            );
+        }
+    }
+
+    append_ordinary_markdown(
+        &ordinary,
+        lines,
+        panel_width,
+        inner_width,
+        accent_glyph,
+        row_style,
+        theme,
+    );
+    cacheable
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_ordinary_markdown(
+    elements: &[super::markdown::MarkdownElement],
+    lines: &mut Vec<Line<'static>>,
+    panel_width: usize,
+    inner_width: usize,
+    accent_glyph: &str,
+    row_style: MessageRowStyle,
+    theme: &Theme,
+) {
+    if elements.is_empty() {
+        return;
+    }
+    let markdown_lines = super::markdown::render_markdown(elements, inner_width, Some(theme));
+    for markdown_line in &markdown_lines {
+        for row_spans in styled_word_wrap_line(markdown_line, inner_width) {
+            lines.push(render_card_styled_line(
+                panel_width,
+                accent_glyph,
+                row_style.accent,
+                row_style.body_bg,
+                row_spans,
+            ));
+        }
+    }
 }
 
 fn render_message_image_boxes(
@@ -2564,6 +2710,48 @@ mod tests {
             editor.render_cache.ai_chat_image_thumbnails[0].1,
             std::path::PathBuf::from("/tmp/preview.png")
         );
+    }
+
+    #[test]
+    fn streaming_assistant_display_math_emits_an_image_placement() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        editor.render_cache.terminal_image_support = true;
+        editor.ai_state.chat.as_mut().unwrap().streaming_content =
+            Some("In three dimensions:\n\\[\nu(x,y,z,t)=\\begin{pmatrix}u_1\\\\u_2\\\\u_3\\end{pmatrix}\n\\]\nContinuing".into());
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+
+        loop {
+            terminal
+                .draw(|frame| {
+                    super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+                })
+                .unwrap();
+            if editor
+                .render_cache
+                .ai_chat_image_thumbnails
+                .iter()
+                .any(|(_, path)| path.starts_with(std::env::temp_dir().join("ovim-display-math")))
+            {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!(
+                    "streaming math image was never placed; total={}, visible={}..{}, rows={:?}, images={:?}",
+                    editor.render_cache.ai_chat_last_total_rows,
+                    editor.render_cache.ai_chat_last_visible_start_row,
+                    editor.render_cache.ai_chat_last_visible_end_row,
+                    editor.render_cache.ai_chat_rendered_text_rows,
+                    editor.render_cache.ai_chat_image_thumbnails,
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     #[test]

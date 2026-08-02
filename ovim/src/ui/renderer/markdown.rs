@@ -39,6 +39,8 @@ pub enum MarkdownElement {
         language: Option<String>,
         code: String,
     },
+    /// Display math delimited by `$$...$$` or `\[...\]`.
+    DisplayMath(String),
     /// Heading (# Title)
     Heading(#[allow(dead_code)] u8, String),
     /// Horizontal rule (---)
@@ -50,14 +52,14 @@ pub enum MarkdownElement {
 /// Parse markdown text into elements
 pub fn parse_markdown(text: &str) -> Vec<MarkdownElement> {
     let mut elements = Vec::new();
-    let lines = text.lines().peekable();
     let mut in_code_block = false;
     let mut code_block_lang: Option<String> = None;
     let mut code_block_content = String::new();
+    let mut math_block: Option<(&'static str, &'static str, String)> = None;
 
-    for line in lines {
+    for line in text.lines() {
         // Handle code blocks
-        if line.starts_with("```") {
+        if math_block.is_none() && line.starts_with("```") {
             if in_code_block {
                 // End of code block
                 elements.push(MarkdownElement::CodeBlock {
@@ -76,6 +78,7 @@ pub fn parse_markdown(text: &str) -> Vec<MarkdownElement> {
                     Some(lang.to_string())
                 };
             }
+
             continue;
         }
 
@@ -84,6 +87,39 @@ pub fn parse_markdown(text: &str) -> Vec<MarkdownElement> {
                 code_block_content.push('\n');
             }
             code_block_content.push_str(line);
+            continue;
+        }
+
+        if let Some((opener, closer, mut content)) = math_block.take() {
+            if line.trim() == closer {
+                elements.push(MarkdownElement::DisplayMath(content.trim().to_string()));
+            } else {
+                if !content.is_empty() {
+                    content.push('\n');
+                }
+                content.push_str(line);
+                math_block = Some((opener, closer, content));
+            }
+            continue;
+        }
+
+        let trimmed = line.trim();
+        let delimiter = if trimmed.starts_with("$$") {
+            Some(("$$", "$$"))
+        } else if trimmed.starts_with("\\[") {
+            Some(("\\[", "\\]"))
+        } else {
+            None
+        };
+        if let Some((opener, closer)) = delimiter {
+            let remainder = trimmed.strip_prefix(opener).unwrap_or_default();
+            if let Some(math) = remainder.strip_suffix(closer) {
+                if !math.trim().is_empty() {
+                    elements.push(MarkdownElement::DisplayMath(math.trim().to_string()));
+                }
+            } else {
+                math_block = Some((opener, closer, remainder.to_string()));
+            }
             continue;
         }
 
@@ -118,6 +154,14 @@ pub fn parse_markdown(text: &str) -> Vec<MarkdownElement> {
             language: code_block_lang,
             code: code_block_content,
         });
+    }
+    if let Some((opener, _, content)) = math_block {
+        elements.push(MarkdownElement::Text(opener.to_string()));
+        elements.push(MarkdownElement::LineBreak);
+        for line in content.lines() {
+            elements.push(MarkdownElement::Text(line.to_string()));
+            elements.push(MarkdownElement::LineBreak);
+        }
     }
 
     elements
@@ -288,7 +332,6 @@ pub fn render_markdown(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
-    let mut current_width = 0;
 
     let text_style = Style::default().fg(colors::TEXT);
     let bold_style = Style::default()
@@ -315,23 +358,19 @@ pub fn render_markdown(
                 } else {
                     Span::styled(text.clone(), text_style)
                 };
-                current_width += text.len();
                 current_spans.push(styled_text);
             }
             MarkdownElement::Bold(text) => {
                 current_spans.push(Span::styled(text.clone(), bold_style));
-                current_width += text.len();
             }
             MarkdownElement::InlineCode(code) => {
                 current_spans.push(Span::styled(code.clone(), code_style));
-                current_width += code.len();
             }
             MarkdownElement::CodeBlock { language, code } => {
                 // Flush current line
                 if !current_spans.is_empty() {
                     lines.push(Line::from(current_spans.clone()));
                     current_spans.clear();
-                    current_width = 0;
                 }
 
                 // Try to get syntax highlights if we have a language and theme
@@ -365,12 +404,22 @@ pub fn render_markdown(
                     lines.push(Line::from(Span::styled(truncated, code_block_style)));
                 }
             }
+            MarkdownElement::DisplayMath(math) => {
+                if !current_spans.is_empty() {
+                    lines.push(Line::from(current_spans.clone()));
+                    current_spans.clear();
+                }
+                lines.push(Line::from(Span::styled("\\[", text_style)));
+                for math_line in math.lines() {
+                    lines.push(Line::from(Span::styled(math_line.to_string(), text_style)));
+                }
+                lines.push(Line::from(Span::styled("\\]", text_style)));
+            }
             MarkdownElement::Heading(_, text) => {
                 // Flush current line
                 if !current_spans.is_empty() {
                     lines.push(Line::from(current_spans.clone()));
                     current_spans.clear();
-                    current_width = 0;
                 }
                 lines.push(Line::from(Span::styled(text.clone(), heading_style)));
             }
@@ -379,7 +428,6 @@ pub fn render_markdown(
                 if !current_spans.is_empty() {
                     lines.push(Line::from(current_spans.clone()));
                     current_spans.clear();
-                    current_width = 0;
                 }
                 lines.push(Line::from(Span::styled(
                     "─".repeat(max_width.saturating_sub(2)),
@@ -390,18 +438,10 @@ pub fn render_markdown(
                 if !current_spans.is_empty() {
                     lines.push(Line::from(current_spans.clone()));
                     current_spans.clear();
-                    current_width = 0;
                 } else {
                     lines.push(Line::from("")); // Empty line
                 }
             }
-        }
-
-        // Wrap long lines
-        if current_width > max_width.saturating_sub(2) {
-            lines.push(Line::from(current_spans.clone()));
-            current_spans.clear();
-            current_width = 0;
         }
     }
 
@@ -481,6 +521,50 @@ mod tests {
             MarkdownElement::CodeBlock { language: Some(lang), code }
             if lang == "rust" && code.contains("fn main")
         )));
+    }
+
+    #[test]
+    fn bold_style_boundary_does_not_split_a_logical_line() {
+        let elements = parse_markdown(
+            "So C420 **does not produce a contradiction and does not prove existence**. It merely narrows the range.",
+        );
+        let lines = render_markdown(&elements, 30, None);
+
+        assert_eq!(lines.len(), 1);
+        let rendered = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(
+            rendered,
+            "So C420 does not produce a contradiction and does not prove existence. It merely narrows the range."
+        );
+    }
+
+    #[test]
+    fn parses_multiline_bracket_display_math() {
+        let elements = parse_markdown("Before\n\\[\nF(R) \\le \\theta F(2R)\n\\]\nAfter");
+        assert!(elements.iter().any(|element| {
+            matches!(element, MarkdownElement::DisplayMath(math) if math == "F(R) \\le \\theta F(2R)")
+        }));
+    }
+
+    #[test]
+    fn parses_single_line_dollar_display_math() {
+        let elements = parse_markdown("$$x^2 + y^2 = z^2$$");
+        assert!(matches!(
+            elements.as_slice(),
+            [MarkdownElement::DisplayMath(math)] if math == "x^2 + y^2 = z^2"
+        ));
+    }
+
+    #[test]
+    fn math_delimiters_inside_code_blocks_are_not_parsed() {
+        let elements = parse_markdown("```latex\n$$x^2$$\n```");
+        assert!(elements
+            .iter()
+            .all(|element| !matches!(element, MarkdownElement::DisplayMath(_))));
     }
 
     #[test]
