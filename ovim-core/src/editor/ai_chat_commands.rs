@@ -7,6 +7,7 @@ use super::Editor;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AiChatSlashCommandKind {
     Clear,
+    Compact,
     Exa,
     Model,
     Effort,
@@ -33,6 +34,12 @@ const AI_CHAT_SLASH_COMMANDS: &[AiChatSlashCompletion] = &[
         kind: AiChatSlashCommandKind::Clear,
     },
     AiChatSlashCompletion {
+        command: "/compact",
+        usage: "/compact [balanced|aggressive]",
+        description: "Checkpoint old context and retain a recent tail",
+        kind: AiChatSlashCommandKind::Compact,
+    },
+    AiChatSlashCompletion {
         command: "/exa",
         usage: "/exa",
         description: "Configure Exa web search",
@@ -46,7 +53,7 @@ const AI_CHAT_SLASH_COMMANDS: &[AiChatSlashCompletion] = &[
     },
     AiChatSlashCompletion {
         command: "/effort",
-        usage: "/effort [default|none|low|medium|high|xhigh]",
+        usage: "/effort [default|none|low|medium|high|xhigh|max]",
         description: "Choose the chat reasoning effort",
         kind: AiChatSlashCommandKind::Effort,
     },
@@ -67,6 +74,7 @@ const AI_CHAT_SLASH_COMMANDS: &[AiChatSlashCompletion] = &[
 #[derive(Debug, PartialEq, Eq)]
 enum AiChatSlashCommand {
     Clear,
+    Compact { strategy: Option<String> },
     Exa,
     Model { profile: Option<String> },
     Effort { effort: Option<String> },
@@ -95,6 +103,16 @@ impl AiChatSlashCommand {
         let parsed = match spec.kind {
             AiChatSlashCommandKind::Clear if arguments.is_empty() => Ok(Self::Clear),
             AiChatSlashCommandKind::Clear => Err(format!("Usage: {}", spec.usage)),
+            AiChatSlashCommandKind::Compact if arguments.len() <= 1 => {
+                let strategy = arguments.first().copied();
+                if strategy.is_some_and(|value| !matches!(value, "balanced" | "aggressive")) {
+                    return Some(Err(format!("Usage: {}", spec.usage)));
+                }
+                Ok(Self::Compact {
+                    strategy: strategy.map(str::to_string),
+                })
+            }
+            AiChatSlashCommandKind::Compact => Err(format!("Usage: {}", spec.usage)),
             AiChatSlashCommandKind::Exa if arguments.is_empty() => Ok(Self::Exa),
             AiChatSlashCommandKind::Exa => Err(format!("Usage: {}", spec.usage)),
             AiChatSlashCommandKind::Model if arguments.len() <= 1 => Ok(Self::Model {
@@ -230,8 +248,12 @@ impl Editor {
         let Some(command) = AiChatSlashCommand::parse(input) else {
             return Ok(false);
         };
+        let mut compact_request = None;
         match command {
             Ok(AiChatSlashCommand::Clear) => self.clear_ai_chat_conversation()?,
+            Ok(AiChatSlashCommand::Compact { strategy }) => {
+                compact_request = Some(strategy.unwrap_or_else(|| "balanced".into()));
+            }
             Ok(AiChatSlashCommand::Exa) => {
                 self.clear_ai_chat_input();
                 self.open_exa_setup_dialog(None);
@@ -268,6 +290,14 @@ impl Editor {
                 self.set_ai_chat_yolo_mode(enabled);
             }
             Err(message) => self.set_status_message(message),
+        }
+        if let Some(strategy) = compact_request {
+            let input = format!("/compact {strategy}");
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.input = input;
+                chat.input_cursor = chat.input.len();
+            }
+            self.submit_ai_chat_message_without_slash_dispatch()?;
         }
         Ok(true)
     }
@@ -308,6 +338,7 @@ impl Editor {
             chat.pending_images.clear();
             chat.focus = ChatFocus::TextInput;
             chat.context_generation = chat.context_generation.saturating_add(1);
+            chat.compaction_checkpoint = None;
             chat.viewport = Default::default();
             chat.history = Default::default();
             chat.expanded_thinking.clear();
@@ -352,6 +383,22 @@ mod tests {
             AiChatSlashCommand::parse("/clear"),
             Some(Ok(AiChatSlashCommand::Clear))
         );
+        assert_eq!(
+            AiChatSlashCommand::parse("/effort max"),
+            Some(Ok(AiChatSlashCommand::Effort {
+                effort: Some("max".into())
+            }))
+        );
+        assert_eq!(
+            AiChatSlashCommand::parse("/compact aggressive"),
+            Some(Ok(AiChatSlashCommand::Compact {
+                strategy: Some("aggressive".into())
+            }))
+        );
+        assert!(matches!(
+            AiChatSlashCommand::parse("/compact maximal"),
+            Some(Err(_))
+        ));
         assert_eq!(
             AiChatSlashCommand::parse("/effort high"),
             Some(Ok(AiChatSlashCommand::Effort {
@@ -411,7 +458,7 @@ mod tests {
         let chat = editor.ai_state.chat.as_mut().unwrap();
         chat.input = "/".into();
         chat.input_cursor = 1;
-        assert_eq!(editor.ai_chat_slash_completions().len(), 6);
+        assert_eq!(editor.ai_chat_slash_completions().len(), 7);
 
         let chat = editor.ai_state.chat.as_mut().unwrap();
         chat.input = "/cl".into();

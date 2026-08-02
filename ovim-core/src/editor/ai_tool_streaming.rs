@@ -325,7 +325,12 @@ impl Editor {
 
         let messages: Vec<ChatMessage> = self
             .conversation()
-            .map(|c| c.messages().to_vec())
+            .map(|conversation| {
+                super::ai_compaction::compacted_messages(
+                    conversation,
+                    chat.compaction_checkpoint.as_ref(),
+                )
+            })
             .unwrap_or_default();
 
         // Apply observation masking — only the API-bound copy gets masked;

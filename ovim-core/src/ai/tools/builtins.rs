@@ -55,6 +55,39 @@ pub struct ToolExecutionContext {
     pub lsp_status: String,
 }
 
+fn compact_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "compact".to_string(),
+        description: "Replace older active model context with an agent-authored checkpoint while preserving the durable transcript. Call this when the user requests /compact or when long, stale history is reducing focus. Before calling, synthesize a self-contained summary with these Markdown sections: Objective, Constraints and decisions, Completed work, Current state, Next steps, and Critical references (including exact files, symbols, commands, errors, and user preferences that may matter). Do not claim unverified work. The balanced strategy keeps an approximately 8k-token recent complete-turn tail; aggressive keeps only the compaction tool boundary. Prefer balanced unless context pressure is severe. After the result, continue normally without repeating the summary."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Selection,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        custom_input_schema: None,
+        parameters: vec![
+            ToolParam {
+                name: "summary".to_string(),
+                param_type: ParamType::String,
+                required: true,
+                description: "Self-contained structured checkpoint preserving the objective, constraints, decisions, completed and active work, next steps, and critical references. Maximum 32 KiB."
+                    .to_string(),
+            },
+            ToolParam {
+                name: "strategy".to_string(),
+                param_type: ParamType::StringEnum(
+                    super::StringEnum::new(["balanced", "aggressive"])
+                        .expect("compaction strategies are non-empty"),
+                ),
+                required: false,
+                description: "Retention strategy (default balanced).".to_string(),
+            },
+        ],
+    }
+}
+
 fn record_comprehension_checkpoint_def() -> ToolDefinition {
     ToolDefinition {
         name: "record_comprehension_checkpoint".to_string(),
@@ -230,6 +263,7 @@ pub struct ProjectDiagnosticFile {
 /// Register all built-in tools into the registry.
 pub fn register_builtins(registry: &mut ToolRegistry) {
     // Read tools
+    registry.register(compact_def());
     registry.register(activate_skill_def());
     registry.register(read_file_def());
     registry.register(workspace_context_def());
@@ -285,6 +319,10 @@ pub fn execute_builtin(
     ctx: &ToolExecutionContext,
 ) -> ToolResult {
     match name {
+        "compact" => ToolResult::Error(
+            "'compact' must be dispatched by the editor so it can checkpoint conversation context"
+                .to_string(),
+        ),
         "activate_skill" => ToolResult::Error(
             "'activate_skill' must be dispatched by the editor so it can use the discovered skill catalog"
                 .to_string(),

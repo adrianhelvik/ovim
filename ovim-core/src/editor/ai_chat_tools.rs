@@ -125,6 +125,22 @@ impl Editor {
             })
             .cloned()
             .collect::<Vec<_>>();
+        // Compaction changes only Ovim's model-context projection and grants no
+        // workspace capability, so keep it available even when a profile uses
+        // an explicit operational-tool allowlist. This also makes `/compact`
+        // reliable for narrowly configured profiles.
+        if !tools
+            .iter()
+            .any(|tool| tool.name == super::ai_compaction::COMPACT_TOOL)
+        {
+            if let Some(tool) = self
+                .ai_state
+                .tool_registry
+                .get(super::ai_compaction::COMPACT_TOOL)
+            {
+                tools.push(tool.clone());
+            }
+        }
         if walkthrough_answer {
             tools.retain(|tool| tool.side_effect == SideEffect::Read);
         } else {
@@ -516,6 +532,9 @@ impl Editor {
         }
         if tc.name == ACTIVATE_SKILL_TOOL {
             return ToolDispatchOutcome::Completed(self.execute_activate_skill_tool(&tc.arguments));
+        }
+        if tc.name == super::ai_compaction::COMPACT_TOOL {
+            return ToolDispatchOutcome::Completed(self.execute_compact_tool(&tc.arguments));
         }
         if tc.name == super::ai_comprehension::RECORD_COMPREHENSION_CHECKPOINT_TOOL {
             return ToolDispatchOutcome::Completed(

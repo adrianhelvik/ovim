@@ -7,6 +7,14 @@ use super::Editor;
 impl Editor {
     /// Submit the current chat input as a user message and spawn the AI request.
     pub fn submit_ai_chat_message(&mut self) -> Result<()> {
+        self.submit_ai_chat_message_inner(true)
+    }
+
+    pub(super) fn submit_ai_chat_message_without_slash_dispatch(&mut self) -> Result<()> {
+        self.submit_ai_chat_message_inner(false)
+    }
+
+    fn submit_ai_chat_message_inner(&mut self, dispatch_slash_commands: bool) -> Result<()> {
         let (input, has_pending_images) = match self.ai_state.chat.as_ref() {
             Some(chat) => (
                 chat.input.trim().to_string(),
@@ -35,7 +43,10 @@ impl Editor {
             return Ok(());
         }
 
-        if !has_pending_images && self.try_execute_ai_chat_slash_command(&input)? {
+        if dispatch_slash_commands
+            && !has_pending_images
+            && self.try_execute_ai_chat_slash_command(&input)?
+        {
             return Ok(());
         }
 

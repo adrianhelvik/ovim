@@ -1071,7 +1071,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(editor.ai_chat_input(), "/model");
+        assert_eq!(editor.ai_chat_input(), "/exa");
     }
 
     #[test]

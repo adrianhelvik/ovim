@@ -382,8 +382,13 @@ supported. Enter again executes a completed command.
 - `/model` opens the profile picker.
 - `/model codex_sol` switches directly to a named profile.
 - `/effort` opens the combined picker on reasoning effort.
-- `/effort default|none|low|medium|high|xhigh` sets the per-chat effort.
+- `/effort default|none|low|medium|high|xhigh|max` sets the per-chat effort.
+  Provider support remains model-specific; current Codex models accept `max`.
 - `/clear` clears the current conversation and starts a fresh provider context.
+- `/compact` creates a structured checkpoint for older model context and keeps
+  an approximately 8k-token recent complete-turn tail. `/compact aggressive`
+  keeps only the tool-call boundary when maximum context recovery is needed.
+  Both forms retain the full conversation for display and history.
 - `/exa` opens web-search setup to add or replace an Exa API key.
 - `/comprehension`, `/comprehension publish`, `/comprehension commit`, and
   `/comprehension off` configure the per-chat mastery boundary.

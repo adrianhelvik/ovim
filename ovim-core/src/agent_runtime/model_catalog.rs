@@ -16,7 +16,7 @@ const MAX_REASONING_EFFORT_LEN: usize = 32;
 /// A provider-defined reasoning effort with a stable, validated wire value.
 ///
 /// Ovim recognizes the common `none`, `minimal`, `low`, `medium`, `high`, and
-/// `xhigh` values but deliberately does not close the type over that list.
+/// `xhigh` and `max` values but deliberately does not close the type over that list.
 /// Provider metadata remains authoritative for whether a model accepts a
 /// syntactically valid value.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -60,6 +60,10 @@ impl ReasoningEffort {
 
     pub fn xhigh() -> Self {
         Self("xhigh".into())
+    }
+
+    pub fn max() -> Self {
+        Self("max".into())
     }
 
     pub fn as_str(&self) -> &str {

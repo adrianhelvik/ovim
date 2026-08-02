@@ -1159,7 +1159,7 @@ mod tests {
 
         handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
             .expect("accept completion");
-        assert_eq!(editor.ai_chat_input(), "/exa");
+        assert_eq!(editor.ai_chat_input(), "/compact");
         assert!(editor.ai_chat_messages().is_empty());
     }
 

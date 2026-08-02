@@ -4,7 +4,7 @@ use super::ai_chat_state::{AiChatState, ChatModelPickerSection};
 use super::Editor;
 
 pub const AI_CHAT_REASONING_EFFORTS: &[&str] =
-    &["default", "none", "low", "medium", "high", "xhigh"];
+    &["default", "none", "low", "medium", "high", "xhigh", "max"];
 
 impl Editor {
     /// Get a reference to the active chat state.

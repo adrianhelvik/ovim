@@ -18,6 +18,7 @@ mod ai_chat_turn;
 mod ai_chat_viewport;
 mod ai_code_explanation;
 mod ai_codex_auth;
+mod ai_compaction;
 mod ai_comprehension;
 mod ai_context;
 mod ai_durable_chat;

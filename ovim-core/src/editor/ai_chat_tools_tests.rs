@@ -1016,6 +1016,28 @@ fn editable_codex_chat_advertises_shell_and_mutation_dynamic_tools() {
 }
 
 #[test]
+fn compact_is_advertised_even_with_an_explicit_tool_allowlist() {
+    let mut editor = Editor::default();
+    editor.open_ai_chat(ChatOpts::default()).expect("open chat");
+    let mut profile = editor
+        .ai_state
+        .config
+        .resolve_profile(&editor.ai_state.active_profile)
+        .expect("profile")
+        .clone();
+    profile.tools = vec!["read_file".into()];
+
+    let schemas = editor.build_tool_schemas_for_chat(&profile);
+    let names = schemas
+        .iter()
+        .filter_map(|schema| schema.get("function"))
+        .filter_map(|function| function.get("name"))
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"compact"), "schemas: {schemas:?}");
+}
+
+#[test]
 fn view_image_loads_a_project_image_for_the_tool_result() {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     runtime.block_on(async {

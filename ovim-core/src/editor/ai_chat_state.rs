@@ -646,6 +646,9 @@ pub struct AiChatState {
     pub viewport: ChatViewportState,
     /// Incremented whenever `/clear` starts a fresh provider context.
     pub context_generation: u64,
+    /// Latest successful model-context checkpoint. The durable conversation
+    /// remains intact; request assembly applies this only to its active branch.
+    pub(crate) compaction_checkpoint: Option<super::ai_compaction::CompactionCheckpoint>,
     /// Message-history selection state.
     pub history: ChatHistoryState,
     /// Whether assistant can suggest edits.
@@ -878,6 +881,7 @@ impl AiChatState {
             reasoning_effort_override: None,
             viewport: ChatViewportState::default(),
             context_generation: 0,
+            compaction_checkpoint: None,
             history: ChatHistoryState::default(),
             allow_edits,
             yolo_mode: false,
