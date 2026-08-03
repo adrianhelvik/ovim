@@ -784,20 +784,6 @@ impl Buffer {
         self.pending_rehighlight && self.syntax.is_some()
     }
 
-    /// Gets data needed for re-highlighting (content, version, language)
-    pub fn get_rehighlight_data(&self) -> Option<(String, u64, Language)> {
-        if !self.needs_rehighlight() {
-            return None;
-        }
-
-        let syntax = self.syntax.as_ref()?;
-        let content = self.rope.to_string();
-        let version = self.highlight_version;
-        let language = syntax.language();
-
-        Some((content, version, language))
-    }
-
     /// Rebuilds highlight cache from the existing syntax highlighter
     /// This uses the incrementally-updated parse tree, so it's fast!
     /// The tree-sitter parse tree was already updated incrementally via `update()`,
@@ -813,7 +799,7 @@ impl Buffer {
             return None;
         }
 
-        let language = self.syntax.as_ref()?.language();
+        let is_markdown = self.syntax.as_ref()?.language_id() == "markdown";
         let version = self.highlight_version;
 
         let new_line_count = self.line_count();
@@ -864,7 +850,7 @@ impl Buffer {
 
         // For markdown files, also rebuild code block cache. Still &str-based —
         // markdown is the rarer path; the hot path is non-markdown edits.
-        if language == Language::Markdown {
+        if is_markdown {
             if let Some(syntax) = self.syntax.as_ref() {
                 if let Some(tree) = syntax.tree() {
                     let content = self.rope.to_string();
@@ -922,7 +908,7 @@ impl Buffer {
         // For markdown files, also rebuild the code block cache so that
         // language-specific highlighting inside fenced code blocks is
         // available immediately (not deferred to the debounced full rebuild).
-        if syntax.language() == Language::Markdown && self.code_block_cache.is_none() {
+        if syntax.language_id() == "markdown" && self.code_block_cache.is_none() {
             if let Some(tree) = syntax.tree() {
                 let content = self.rope.to_string();
                 let mut cb_cache = CodeBlockCache::new();
@@ -986,5 +972,34 @@ mod tests {
                 (10..16, HighlightGroup::String),
             ]
         );
+    }
+
+    /// Regression test: the per-keystroke rehighlight paths used to call
+    /// `SyntaxHighlighter::language()`, which panicked for plugin-registered
+    /// languages (no `Language` enum variant).
+    #[test]
+    fn rehighlighting_a_dynamic_language_buffer_does_not_panic() {
+        use crate::language_catalog::SyntaxDefinition;
+        use crate::syntax::LanguageRegistry;
+
+        // A built-in grammar under a plugin-style id: from_definition maps
+        // "nula-like" to no enum variant, exactly like a dynamic language.
+        let definition = SyntaxDefinition {
+            language: LanguageRegistry::get_tree_sitter_language(Language::Rust),
+            highlights: std::sync::Arc::from(LanguageRegistry::get_highlight_query(Language::Rust)),
+        };
+        let mut buffer = Buffer::new_from_str("fn main() {\n  lets x = 1\n}\n");
+        let mut highlighter = SyntaxHighlighter::from_definition("nula-like", &definition).unwrap();
+        highlighter.parse_rope(&buffer.rope);
+        buffer.build_highlight_cache_from_rope(&highlighter);
+        buffer.syntax = Some(highlighter);
+
+        buffer.rebuild_viewport_highlight_cache(0, buffer.line_count());
+        buffer.pending_rehighlight = true;
+        assert!(buffer.rebuild_highlight_cache().is_some());
+        assert!(buffer
+            .cached_highlights
+            .as_ref()
+            .is_some_and(|cache| cache.iter().any(|line| !line.is_empty())));
     }
 }

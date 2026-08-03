@@ -155,7 +155,6 @@ fn rope_chunk_callback<'r>(
 
 /// Syntax highlighter using tree-sitter
 pub struct SyntaxHighlighter {
-    language: Option<Language>,
     language_id: String,
     parser: Parser,
     tree: Option<Tree>,
@@ -185,7 +184,6 @@ impl SyntaxHighlighter {
         let query_source = LanguageRegistry::get_highlight_query(language);
 
         Self::from_parts(
-            Some(language),
             format!("{:?}", language).to_ascii_lowercase(),
             ts_language,
             query_source,
@@ -197,7 +195,6 @@ impl SyntaxHighlighter {
         syntax: &crate::language_catalog::SyntaxDefinition,
     ) -> Result<Self, String> {
         Self::from_parts(
-            LanguageRegistry::from_id(language_id),
             language_id.to_string(),
             syntax.language.clone(),
             &syntax.highlights,
@@ -205,7 +202,6 @@ impl SyntaxHighlighter {
     }
 
     fn from_parts(
-        language: Option<Language>,
         language_id: String,
         ts_language: tree_sitter::Language,
         query_source: &str,
@@ -225,7 +221,6 @@ impl SyntaxHighlighter {
             .collect();
 
         Ok(Self {
-            language,
             language_id,
             parser,
             tree: None,
@@ -792,12 +787,9 @@ impl SyntaxHighlighter {
         HighlightGroup::Other
     }
 
-    /// Gets the language
-    pub fn language(&self) -> Language {
-        self.language
-            .expect("dynamic languages do not have a compatibility enum")
-    }
-
+    /// Stable lowercase language identifier ("rust", "markdown", or a
+    /// plugin-registered id). Dynamic languages have no `Language` enum
+    /// variant, so identity checks must go through this id.
     pub fn language_id(&self) -> &str {
         &self.language_id
     }
