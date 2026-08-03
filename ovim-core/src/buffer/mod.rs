@@ -123,7 +123,7 @@ impl Buffer {
             line_ending: LineEnding::default(),
             encoding: FileEncoding::default(),
             syntax: None,
-            language_catalog: crate::language_catalog::LanguageCatalog::built_in(),
+            language_catalog: crate::language_catalog::LanguageCatalog::shared_built_in(),
             syntax_loading: false,
             cached_highlights: None,
             highlight_version: 0,
@@ -229,7 +229,7 @@ impl Buffer {
             line_ending: LineEnding::detect(content.as_bytes()),
             encoding: FileEncoding::Utf8, // from_str always gets valid UTF-8
             syntax: None,
-            language_catalog: crate::language_catalog::LanguageCatalog::built_in(),
+            language_catalog: crate::language_catalog::LanguageCatalog::shared_built_in(),
             syntax_loading: false,
             cached_highlights: None,
             highlight_version: 0,

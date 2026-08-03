@@ -104,7 +104,7 @@ sysinfo = "0.32"
 tempfile = "3.14"
 
 [features]
-default = []
+default = ["lua"]
 metrics = ["prometheus"]
 lua = ["mlua"]
 # Statically link OpenSSL for portable release binaries

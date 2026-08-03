@@ -14,6 +14,24 @@ use anyhow::Result;
 #[cfg(feature = "lua")]
 use super::InputHandler;
 
+/// Sticky error toast for a failed config or plugin load. Lua errors carry a
+/// multi-line traceback; the toast shows the message line and points at the
+/// log file, which has the full trace.
+#[cfg(feature = "lua")]
+fn lua_failure_toast(title: &str, error: &anyhow::Error) -> super::ToastRequest {
+    let detail = error.to_string();
+    let first_line = detail.lines().next().unwrap_or("unknown error");
+    super::ToastRequest::new(
+        super::ToastSource::System,
+        super::ToastLevel::Error,
+        format!(
+            "{first_line}\nFull trace: {}",
+            crate::log::log_file_path().display()
+        ),
+    )
+    .with_title(title)
+}
+
 #[cfg(feature = "lua")]
 impl Editor {
     /// Enables Lua scripting support
@@ -48,13 +66,20 @@ impl Editor {
                 }
                 Err(e) => {
                     crate::log_error!("lua", "Error loading Lua config: {}", e);
+                    self.push_toast(lua_failure_toast("init.lua failed to load", &e));
                 }
             }
-            // Load plugins from plugin directories
-            if let Err(e) = context.load_plugins() {
-                crate::log_error!("lua", "Error loading Lua plugins: {}", e);
+            // Load plugins from plugin directories (failures are logged inside)
+            for (plugin_path, error) in context.load_plugins() {
+                let plugin = plugin_path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| plugin_path.display().to_string());
+                self.push_toast(lua_failure_toast(
+                    &format!("plugin '{plugin}' failed to load"),
+                    &error,
+                ));
             }
-            self.language_catalog.freeze();
             // Process any commands from plugins
             let commands = bridge.drain_commands();
             for cmd in commands {

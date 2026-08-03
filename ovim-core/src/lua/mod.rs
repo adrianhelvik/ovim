@@ -60,7 +60,16 @@ impl LuaContext {
     pub fn execute_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let path = path.as_ref();
         let code = std::fs::read_to_string(path)?;
-        let source = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        // Keep the literal (symlink-preserving) path: language registration
+        // uses it to classify plugin ownership and to resolve relative asset
+        // paths, falling back to the symlink-resolved location itself.
+        let source = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        };
         *self
             .source_context
             .lock()
@@ -151,42 +160,40 @@ impl LuaContext {
         Ok(())
     }
 
-    /// Loads plugins from plugin directories
-    pub fn load_plugins(&mut self) -> Result<()> {
-        let plugin_paths = Self::get_plugin_paths();
+    /// Loads plugins from plugin directories. Failures are logged and
+    /// returned so the editor can surface them to the user; one broken
+    /// plugin never prevents the others from loading.
+    pub fn load_plugins(&mut self) -> Vec<(std::path::PathBuf, anyhow::Error)> {
+        let mut failures = Vec::new();
+        for plugin_dir in Self::get_plugin_paths() {
+            self.load_plugins_from(&plugin_dir, &mut failures);
+        }
+        failures
+    }
 
-        for plugin_dir in plugin_paths {
-            if !plugin_dir.exists() {
+    fn load_plugins_from(
+        &mut self,
+        plugin_dir: &Path,
+        failures: &mut Vec<(std::path::PathBuf, anyhow::Error)>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(plugin_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            // `entry.path().is_dir()` follows symlinks; a plugin directory is
+            // commonly a symlink into a local checkout.
+            if !entry.path().is_dir() {
                 continue;
             }
-
-            // Iterate through directories in plugin path
-            if let Ok(entries) = std::fs::read_dir(&plugin_dir) {
-                for entry in entries.flatten() {
-                    if let Ok(file_type) = entry.file_type() {
-                        if file_type.is_dir() {
-                            // Try to load init.lua from plugin directory
-                            let mut init_path = entry.path();
-                            init_path.push("init.lua");
-
-                            if init_path.exists() {
-                                // Load the plugin, log errors but continue
-                                if let Err(e) = self.execute_file(&init_path) {
-                                    crate::log_error!(
-                                        "lua",
-                                        "Failed to load plugin {:?}: {}",
-                                        entry.path(),
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+            let init_path = entry.path().join("init.lua");
+            if !init_path.exists() {
+                continue;
+            }
+            if let Err(e) = self.execute_file(&init_path) {
+                crate::log_error!("lua", "Failed to load plugin {:?}: {}", entry.path(), e);
+                failures.push((entry.path(), e));
             }
         }
-
-        Ok(())
     }
 
     /// Gets the list of plugin directories
@@ -246,5 +253,54 @@ impl LuaContext {
 impl Default for LuaContext {
     fn default() -> Self {
         Self::new().expect("Failed to create Lua context")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinked_plugin_dirs_load_and_broken_plugins_are_reported_not_fatal() {
+        let temp = tempfile::tempdir().unwrap();
+        let checkout = temp.path().join("checkout/editors/ovim");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::write(
+            checkout.join("init.lua"),
+            r#"
+                ovim.languages.register({
+                  id = "symtest",
+                  name = "Symtest",
+                  files = { extensions = { "symtest" } },
+                  lsp = { cmd = { "symtest-lsp" } },
+                })
+            "#,
+        )
+        .unwrap();
+
+        let plugins = temp.path().join("plugins");
+        std::fs::create_dir_all(plugins.join("broken")).unwrap();
+        std::fs::write(plugins.join("broken/init.lua"), "error('boom')").unwrap();
+        std::os::unix::fs::symlink(&checkout, plugins.join("symtest-plugin")).unwrap();
+
+        let catalog = crate::language_catalog::LanguageCatalog::built_in();
+        let mut context = LuaContext::new().unwrap();
+        language_api::setup_ovim_api(context.lua(), catalog.clone(), context.source_context())
+            .unwrap();
+        let mut failures = Vec::new();
+        context.load_plugins_from(&plugins, &mut failures);
+
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].0.ends_with("broken"));
+        assert!(failures[0].1.to_string().contains("boom"));
+
+        let language = catalog.detect("main.symtest").unwrap();
+        match &language.owner {
+            crate::language_catalog::RegistrationOwner::Plugin { name, .. } => {
+                assert_eq!(name, "symtest-plugin");
+            }
+            other => panic!("expected plugin owner, got {other:?}"),
+        }
     }
 }

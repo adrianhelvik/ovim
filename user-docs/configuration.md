@@ -99,14 +99,30 @@ ovim.languages.register({
 })
 ```
 
+The plugin directory may be a symlink into a local checkout, which is handy
+while developing a language:
+
+```bash
+ln -s ~/Projects/nula/editors/ovim ~/.config/ovim/plugins/nula
+```
+
 Relative paths are resolved from the `init.lua` that declares the language. If
 the parser path has no extension, ovim adds the platform's native-library
 extension. Registration validates the parser ABI and highlight query before the
 language becomes visible.
 
-Language plugins load once during startup. `:ConfigReload` does not reload or
-unload native parsers; restart ovim after changing a language registration. The
-initial API supports extensions, one highlight query, and one LSP per language.
+Re-registering a language id from the same config file or plugin replaces the
+earlier registration, so `:ConfigReload` and `:source` are idempotent. A
+different owner (another plugin, or the user config vs. a plugin) cannot take
+over an already-registered id. Already-open buffers keep their current
+highlighter; reopen the file (or restart) to pick up a changed parser or query.
+
+If a config or plugin file fails to load, ovim shows a sticky error toast with
+the failing file and writes the full Lua traceback to the log
+(`~/.cache/ovim/ovim.log`, or `~/Library/Caches/ovim/ovim.log` on macOS). Note
+that an error in `init.lua` stops execution at the failing line, so settings
+after it will not apply. The initial API supports extensions, one highlight
+query, and one LSP per language.
 
 ## Session Directory Override (Advanced)
 

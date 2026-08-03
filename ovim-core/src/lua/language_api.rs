@@ -96,9 +96,25 @@ pub fn setup_ovim_api(
                     "ovim.languages.register must be called while loading a config or plugin file",
                 )
             })?;
-        let source_dir = source_file
-            .parent()
-            .ok_or_else(|| mlua::Error::external("declaration source has no parent directory"))?;
+        // Resolve relative assets against the literal directory first (works
+        // when the plugin directory is a symlink into a checkout), then the
+        // symlink-resolved directory (works when init.lua itself is a symlink).
+        let mut source_dirs = Vec::new();
+        if let Some(parent) = source_file.parent() {
+            source_dirs.push(parent.to_path_buf());
+        }
+        if let Ok(canonical) = source_file.canonicalize() {
+            if let Some(parent) = canonical.parent() {
+                if !source_dirs.contains(&parent.to_path_buf()) {
+                    source_dirs.push(parent.to_path_buf());
+                }
+            }
+        }
+        if source_dirs.is_empty() {
+            return Err(mlua::Error::external(
+                "declaration source has no parent directory",
+            ));
+        }
         let owner = plugin_owner(&source_file).unwrap_or_else(|| RegistrationOwner::UserConfig {
             source: source_file.clone(),
         });
@@ -113,7 +129,7 @@ pub fn setup_ovim_api(
                     lsp,
                 },
                 owner,
-                source_dir,
+                &source_dirs,
             )
             .map_err(mlua::Error::external)
     })?;
@@ -197,8 +213,12 @@ mod tests {
         context.execute_file(&init).unwrap();
 
         let language = catalog.detect("sample.ltest").unwrap();
-        assert_eq!(language.source, temp.path().canonicalize().unwrap());
+        assert_eq!(language.source, temp.path());
         assert_eq!(language.lsp().unwrap().args, ["--stdio"]);
+
+        // Re-running the same file (config reload) must be idempotent.
+        context.execute_file(&init).unwrap();
+        assert!(catalog.detect("sample.ltest").is_some());
 
         let bad = temp.path().join("bad.lua");
         std::fs::write(

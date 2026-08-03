@@ -3,14 +3,23 @@ use crate::syntax::LanguageRegistry as SyntaxRegistry;
 use libloading::Library;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegistrationOwner {
     BuiltIn,
     UserConfig { source: PathBuf },
     Plugin { name: String, root: PathBuf },
+}
+
+impl std::fmt::Display for RegistrationOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BuiltIn => write!(f, "the built-in language set"),
+            Self::UserConfig { source } => write!(f, "config file '{}'", source.display()),
+            Self::Plugin { name, .. } => write!(f, "plugin '{name}'"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -21,7 +30,6 @@ mod tests {
         LanguageCatalog {
             entries: RwLock::new(Entries::default()),
             native_libraries: Mutex::new(Vec::new()),
-            frozen: AtomicBool::new(false),
         }
     }
 
@@ -44,7 +52,7 @@ mod tests {
                 RegistrationOwner::UserConfig {
                     source: PathBuf::from("/tmp/init.lua"),
                 },
-                Path::new("/tmp"),
+                &[PathBuf::from("/tmp")],
             )
             .unwrap();
 
@@ -57,35 +65,67 @@ mod tests {
         assert_eq!(lsp.root_markers, ["nula.toml", ".git"]);
     }
 
-    #[test]
-    fn duplicate_id_is_rejected_without_replacing_the_first_entry() {
-        let catalog = empty_catalog();
-        let registration = || DynamicLanguageSpec {
+    fn nula_spec(name: &str, extension: &str) -> DynamicLanguageSpec {
+        DynamicLanguageSpec {
             id: "nula".into(),
-            name: "Nula".into(),
-            extensions: vec!["nula".into()],
+            name: name.into(),
+            extensions: vec![extension.into()],
             parser: None,
             lsp: Some(DynamicLspSpec {
                 command: vec!["nula".into()],
                 language_id: "nula".into(),
                 root_markers: vec![".git".into()],
             }),
+        }
+    }
+
+    #[test]
+    fn same_owner_re_registration_replaces_the_entry() {
+        let catalog = empty_catalog();
+        let owner = RegistrationOwner::UserConfig {
+            source: PathBuf::from("/tmp/init.lua"),
         };
         catalog
             .register_dynamic(
-                registration(),
-                RegistrationOwner::BuiltIn,
-                Path::new("/tmp"),
+                nula_spec("Nula", "nula"),
+                owner.clone(),
+                &[PathBuf::from("/tmp")],
+            )
+            .unwrap();
+        catalog
+            .register_dynamic(nula_spec("Nula v2", "nu"), owner, &[PathBuf::from("/tmp")])
+            .unwrap();
+
+        assert_eq!(catalog.detect("test.nu").unwrap().config.name, "Nula v2");
+        assert!(
+            catalog.detect("test.nula").is_none(),
+            "stale extension mapping must be dropped on replace"
+        );
+    }
+
+    #[test]
+    fn cross_owner_duplicate_id_is_rejected_without_replacing_the_first_entry() {
+        let catalog = empty_catalog();
+        catalog
+            .register_dynamic(
+                nula_spec("Nula", "nula"),
+                RegistrationOwner::UserConfig {
+                    source: PathBuf::from("/tmp/init.lua"),
+                },
+                &[PathBuf::from("/tmp")],
             )
             .unwrap();
         let error = catalog
             .register_dynamic(
-                registration(),
-                RegistrationOwner::BuiltIn,
-                Path::new("/tmp"),
+                nula_spec("Impostor", "nula"),
+                RegistrationOwner::Plugin {
+                    name: "impostor".into(),
+                    root: PathBuf::from("/tmp/plugins/impostor"),
+                },
+                &[PathBuf::from("/tmp/plugins/impostor")],
             )
             .unwrap_err();
-        assert!(error.contains("already registered"));
+        assert!(error.contains("already registered by config file"));
         assert_eq!(catalog.detect("test.nula").unwrap().config.name, "Nula");
     }
 }
@@ -124,6 +164,34 @@ struct Entries {
     by_path_filename: HashMap<(String, String), usize>,
 }
 
+impl Entries {
+    fn rebuild_maps(&mut self) {
+        self.by_id.clear();
+        self.by_extension.clear();
+        self.by_filename.clear();
+        self.by_path_filename.clear();
+        for (index, definition) in self.languages.iter().enumerate() {
+            self.by_id.insert(definition.config.id.clone(), index);
+            for extension in &definition.config.extensions {
+                self.by_extension
+                    .insert(extension.to_ascii_lowercase(), index);
+            }
+            for filename in &definition.config.filenames {
+                self.by_filename
+                    .insert(filename.to_ascii_lowercase(), index);
+            }
+            for path_filename in &definition.config.path_filenames {
+                if let Some((parent, filename)) = path_filename.rsplit_once('/') {
+                    self.by_path_filename.insert(
+                        (parent.to_ascii_lowercase(), filename.to_ascii_lowercase()),
+                        index,
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub struct DynamicLanguageSpec {
     pub id: String,
     pub name: String,
@@ -149,15 +217,21 @@ pub struct DynamicLspSpec {
 pub struct LanguageCatalog {
     entries: RwLock<Entries>,
     native_libraries: Mutex<Vec<Library>>,
-    frozen: AtomicBool,
 }
 
 impl LanguageCatalog {
+    /// Immutable built-in catalog shared as the default for buffers that are
+    /// created outside an `Editor` (which injects its own catalog with any
+    /// user-registered languages).
+    pub fn shared_built_in() -> Arc<Self> {
+        static SHARED: OnceLock<Arc<LanguageCatalog>> = OnceLock::new();
+        SHARED.get_or_init(Self::built_in).clone()
+    }
+
     pub fn built_in() -> Arc<Self> {
         let catalog = Arc::new(Self {
             entries: RwLock::new(Entries::default()),
             native_libraries: Mutex::new(Vec::new()),
-            frozen: AtomicBool::new(false),
         });
 
         let configs = ConfigRegistry::try_get()
@@ -180,27 +254,14 @@ impl LanguageCatalog {
         catalog
     }
 
+    /// Inserts a definition, replacing any existing entry with the same id.
     fn insert(&self, definition: Arc<LanguageDefinition>) {
         let mut entries = self.entries.write().expect("language catalog poisoned");
-        let index = entries.languages.len();
-        entries.by_id.insert(definition.config.id.clone(), index);
-        for extension in &definition.config.extensions {
-            entries.by_extension.insert(extension.clone(), index);
+        match entries.by_id.get(definition.config.id.as_str()).copied() {
+            Some(index) => entries.languages[index] = definition,
+            None => entries.languages.push(definition),
         }
-        for filename in &definition.config.filenames {
-            entries
-                .by_filename
-                .insert(filename.to_ascii_lowercase(), index);
-        }
-        for path_filename in &definition.config.path_filenames {
-            if let Some((parent, filename)) = path_filename.rsplit_once('/') {
-                entries.by_path_filename.insert(
-                    (parent.to_ascii_lowercase(), filename.to_ascii_lowercase()),
-                    index,
-                );
-            }
-        }
-        entries.languages.push(definition);
+        entries.rebuild_maps();
     }
 
     pub fn detect<P: AsRef<Path>>(&self, path: P) -> Option<Arc<LanguageDefinition>> {
@@ -234,15 +295,23 @@ impl LanguageCatalog {
         entries.languages.get(index).cloned()
     }
 
+    /// Registers a language. Relative parser/query paths are resolved against
+    /// `source_dirs` in order (the declaring file's literal directory first,
+    /// then its symlink-resolved directory).
+    ///
+    /// Re-registering an id is allowed when the new owner matches the existing
+    /// entry's owner — the entry is replaced. This keeps config reloads and
+    /// `:source` idempotent. Cross-owner id collisions are rejected so a
+    /// plugin cannot hijack a language the user (or another plugin) declared.
     pub fn register_dynamic(
         &self,
         mut spec: DynamicLanguageSpec,
         owner: RegistrationOwner,
-        source_dir: &Path,
+        source_dirs: &[PathBuf],
     ) -> Result<(), String> {
-        if self.frozen.load(Ordering::Acquire) {
-            return Err("language registration is closed after startup".into());
-        }
+        let Some(source_dir) = source_dirs.first() else {
+            return Err("registration source directory is unknown".into());
+        };
         spec.id = normalize_identifier("id", &spec.id)?;
         if spec.name.trim().is_empty() {
             return Err("name must not be empty".into());
@@ -258,15 +327,20 @@ impl LanguageCatalog {
         if spec.parser.is_none() && spec.lsp.is_none() {
             return Err("at least one of syntax or lsp must be present".into());
         }
-        if self.get_by_id(&spec.id).is_some() {
-            return Err(format!("language id '{}' is already registered", spec.id));
+        if let Some(existing) = self.get_by_id(&spec.id) {
+            if existing.owner != owner {
+                return Err(format!(
+                    "language id '{}' is already registered by {}",
+                    spec.id, existing.owner
+                ));
+            }
         }
 
         // Validate every fallible syntax operation before publishing detection or LSP state.
         let (syntax, library) = match spec.parser {
             Some(parser) => {
-                let parser_path = resolve_library_path(source_dir, &parser.path)?;
-                let query_path = resolve_asset_path(source_dir, &parser.highlights)?;
+                let parser_path = resolve_library_path(source_dirs, &parser.path)?;
+                let query_path = resolve_asset_path(source_dirs, &parser.highlights)?;
                 let highlights = std::fs::read_to_string(&query_path).map_err(|error| {
                     format!(
                         "failed to read syntax.highlights '{}': {error}",
@@ -352,10 +426,6 @@ impl LanguageCatalog {
         self.insert(definition);
         Ok(())
     }
-
-    pub fn freeze(&self) {
-        self.frozen.store(true, Ordering::Release);
-    }
 }
 
 fn normalize_identifier(field: &str, value: &str) -> Result<String, String> {
@@ -372,26 +442,56 @@ fn normalize_identifier(field: &str, value: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
-fn resolve_asset_path(base: &Path, path: &Path) -> Result<PathBuf, String> {
-    let path = if path.is_absolute() {
-        path.to_path_buf()
+fn candidate_paths(bases: &[PathBuf], path: &Path) -> Vec<PathBuf> {
+    if path.is_absolute() {
+        vec![path.to_path_buf()]
     } else {
-        base.join(path)
-    };
-    path.canonicalize()
-        .map_err(|error| format!("asset '{}' was not found: {error}", path.display()))
+        let mut candidates: Vec<PathBuf> = bases.iter().map(|base| base.join(path)).collect();
+        candidates.dedup();
+        candidates
+    }
 }
 
-fn resolve_library_path(base: &Path, path: &Path) -> Result<PathBuf, String> {
-    let mut candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    };
-    if !candidate.exists() && candidate.extension().is_none() {
-        candidate.set_extension(std::env::consts::DLL_EXTENSION);
+fn resolve_asset_path(bases: &[PathBuf], path: &Path) -> Result<PathBuf, String> {
+    let candidates = candidate_paths(bases, path);
+    for candidate in &candidates {
+        if let Ok(resolved) = candidate.canonicalize() {
+            return Ok(resolved);
+        }
     }
-    candidate
-        .canonicalize()
-        .map_err(|error| format!("parser '{}' was not found: {error}", candidate.display()))
+    Err(format!(
+        "asset '{}' was not found (tried {})",
+        path.display(),
+        display_candidates(&candidates)
+    ))
+}
+
+fn resolve_library_path(bases: &[PathBuf], path: &Path) -> Result<PathBuf, String> {
+    let mut candidates = Vec::new();
+    for candidate in candidate_paths(bases, path) {
+        if candidate.extension().is_none() {
+            let mut with_extension = candidate.clone();
+            with_extension.set_extension(std::env::consts::DLL_EXTENSION);
+            candidates.push(with_extension);
+        }
+        candidates.push(candidate);
+    }
+    for candidate in &candidates {
+        if let Ok(resolved) = candidate.canonicalize() {
+            return Ok(resolved);
+        }
+    }
+    Err(format!(
+        "parser '{}' was not found (tried {})",
+        path.display(),
+        display_candidates(&candidates)
+    ))
+}
+
+fn display_candidates(candidates: &[PathBuf]) -> String {
+    candidates
+        .iter()
+        .map(|candidate| format!("'{}'", candidate.display()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

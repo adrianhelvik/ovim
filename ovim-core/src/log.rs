@@ -43,6 +43,11 @@ pub fn init() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Publicly visible log file location, for user-facing "see the log" hints.
+pub fn log_file_path() -> PathBuf {
+    get_log_path()
+}
+
 /// Get the log file path
 fn get_log_path() -> PathBuf {
     let mut path = if let Some(cache_dir) = dirs::cache_dir() {
