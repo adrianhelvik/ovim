@@ -123,6 +123,9 @@ async fn main() -> Result<()> {
     if let Err(e) = editor.enable_lua() {
         ovim_core::log_error!("main", "Failed to enable Lua support: {}", e);
     }
+    // Renderers without editor access (chat markdown, hover previews) resolve
+    // languages through the process-wide catalog.
+    editor.language_catalog().install_as_process_catalog();
 
     // Load file from command line argument if provided
     if let Some(ref file) = file_arg {

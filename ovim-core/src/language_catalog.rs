@@ -104,6 +104,79 @@ mod tests {
     }
 
     #[test]
+    fn info_string_resolution_tries_id_then_alias_then_extension() {
+        let catalog = LanguageCatalog::built_in();
+        // Exact id
+        assert_eq!(
+            catalog.detect_from_info_string("rust").unwrap().id(),
+            "rust"
+        );
+        // Built-in alias table
+        assert_eq!(
+            catalog.detect_from_info_string("js").unwrap().id(),
+            "javascript"
+        );
+        // Case-insensitive
+        assert_eq!(
+            catalog.detect_from_info_string("Rust").unwrap().id(),
+            "rust"
+        );
+        assert!(catalog
+            .detect_from_info_string("no-such-language")
+            .is_none());
+        assert!(catalog.detect_from_info_string("").is_none());
+
+        // Extension fallback for a language the alias table doesn't know.
+        catalog.insert_for_tests(Arc::new(LanguageDefinition {
+            config: crate::language_config::LanguageConfig {
+                id: "exttest".into(),
+                name: "Exttest".into(),
+                extensions: vec!["zzz".into()],
+                filenames: Vec::new(),
+                path_filenames: Vec::new(),
+                syntax: None,
+                lsp: None,
+                dap: None,
+            },
+            lsp_language_id: "exttest".into(),
+            syntax: Some(SyntaxDefinition {
+                language: crate::syntax::LanguageRegistry::get_tree_sitter_language(
+                    crate::syntax::Language::Rust,
+                ),
+                highlights: Arc::from(crate::syntax::LanguageRegistry::get_highlight_query(
+                    crate::syntax::Language::Rust,
+                )),
+            }),
+            owner: RegistrationOwner::UserConfig {
+                source: PathBuf::from("/tmp/init.lua"),
+            },
+            source: PathBuf::from("/tmp"),
+        }));
+        assert_eq!(
+            catalog.detect_from_info_string("zzz").unwrap().id(),
+            "exttest"
+        );
+    }
+
+    #[test]
+    fn info_string_resolution_skips_languages_without_syntax() {
+        let catalog = empty_catalog();
+        catalog
+            .register_dynamic(
+                nula_spec("Nula", "nula"),
+                RegistrationOwner::UserConfig {
+                    source: PathBuf::from("/tmp/init.lua"),
+                },
+                &[PathBuf::from("/tmp")],
+            )
+            .unwrap();
+        // Registered LSP-only: detectable for buffers, but a fence can't be
+        // highlighted with it.
+        assert!(catalog.detect("main.nula").is_some());
+        assert!(catalog.detect_from_info_string("nula").is_none());
+    }
+
+    #[test]
     fn cross_owner_duplicate_id_is_rejected_without_replacing_the_first_entry() {
         let catalog = empty_catalog();
         catalog
@@ -219,6 +292,9 @@ pub struct LanguageCatalog {
     native_libraries: Mutex<Vec<Library>>,
 }
 
+/// The catalog installed by [`LanguageCatalog::install_as_process_catalog`].
+static PROCESS_CATALOG: OnceLock<Arc<LanguageCatalog>> = OnceLock::new();
+
 impl LanguageCatalog {
     /// Immutable built-in catalog shared as the default for buffers that are
     /// created outside an `Editor` (which injects its own catalog with any
@@ -234,6 +310,12 @@ impl LanguageCatalog {
             native_libraries: Mutex::new(Vec::new()),
         });
 
+        // The config registry is normally initialized early in main();
+        // initialize it here for standalone consumers (tests, tools). Losing
+        // an init race is fine — try_get sees the winner's registry.
+        if ConfigRegistry::try_get().is_none() {
+            let _ = ConfigRegistry::init();
+        }
         let configs = ConfigRegistry::try_get()
             .map(|registry| registry.all().to_vec())
             .unwrap_or_default();
@@ -252,6 +334,13 @@ impl LanguageCatalog {
             catalog.insert(Arc::new(definition));
         }
         catalog
+    }
+
+    /// Test-only seam: inserts a prebuilt definition directly, bypassing the
+    /// file-system validation `register_dynamic` performs on real plugins.
+    #[cfg(test)]
+    pub(crate) fn insert_for_tests(&self, definition: Arc<LanguageDefinition>) {
+        self.insert(definition);
     }
 
     /// Inserts a definition, replacing any existing entry with the same id.
@@ -293,6 +382,49 @@ impl LanguageCatalog {
         let entries = self.entries.read().ok()?;
         let index = *entries.by_id.get(id)?;
         entries.languages.get(index).cloned()
+    }
+
+    pub fn get_by_extension(&self, extension: &str) -> Option<Arc<LanguageDefinition>> {
+        let entries = self.entries.read().ok()?;
+        let index = *entries.by_extension.get(&extension.to_ascii_lowercase())?;
+        entries.languages.get(index).cloned()
+    }
+
+    /// Resolves a markdown fence info-string token (` ```rust `, ` ```js `,
+    /// ` ```nula `) to a language that can highlight the block's contents.
+    ///
+    /// Resolution order: exact language id, then built-in aliases ("js",
+    /// "py", …), then file extension. Only languages with syntax support are
+    /// returned — an LSP-only registration can't highlight anything.
+    pub fn detect_from_info_string(&self, token: &str) -> Option<Arc<LanguageDefinition>> {
+        let token = token.trim().to_ascii_lowercase();
+        if token.is_empty() {
+            return None;
+        }
+        self.get_by_id(&token)
+            .or_else(|| {
+                let language = SyntaxRegistry::from_info_string(&token)?;
+                self.get_by_id(&format!("{language:?}").to_ascii_lowercase())
+            })
+            .or_else(|| self.get_by_extension(&token))
+            .filter(|definition| definition.syntax.is_some())
+    }
+
+    /// Installs this catalog as the process-wide catalog. Subsystems without
+    /// a path to the editor (chat markdown, hover previews) resolve languages
+    /// through [`Self::process`]. First install wins; later calls are no-ops,
+    /// which keeps concurrently constructed editors (tests) harmless.
+    pub fn install_as_process_catalog(self: &Arc<Self>) {
+        let _ = PROCESS_CATALOG.set(self.clone());
+    }
+
+    /// The process-wide catalog: the installed editor catalog, or the shared
+    /// built-in catalog when nothing was installed.
+    pub fn process() -> Arc<Self> {
+        PROCESS_CATALOG
+            .get()
+            .cloned()
+            .unwrap_or_else(Self::shared_built_in)
     }
 
     /// Registers a language. Relative parser/query paths are resolved against

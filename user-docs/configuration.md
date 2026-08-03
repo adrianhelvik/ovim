@@ -44,15 +44,15 @@ Examples:
 :set textwidth=80
 ```
 
-See `options.md` for details.
+See [options.md](options.md) for details.
 
 ## Language Configuration (`languages.toml`)
 
-ovim ships with default language config, and you can override/extend it with:
+ovim ships with a default language configuration. Override or extend it in:
 
 `~/.config/ovim/languages.toml`
 
-You can validate detection/LSP setup for a file without starting a session:
+Validate detection and LSP setup for a file without starting a session:
 
 ```bash
 ovim lsp check path/to/file.rs
@@ -66,63 +66,72 @@ ovim lsp languages
 ovim lsp languages --verbose
 ```
 
-See `LANGUAGE_SUPPORT.md` for examples.
+See [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md) for examples.
 
 ## User Language Plugins
 
-Add a child directory containing `init.lua` under the active config directory's
-`plugins` directory. A plugin can register file detection, a native Tree-sitter
-parser, highlight queries, and one LSP command without rebuilding ovim:
+A language plugin adds support for a new language — file detection, a native
+Tree-sitter parser, highlight queries, and an LSP server — without rebuilding
+ovim. It is a directory containing an `init.lua`, placed under `plugins/` in
+your config directory:
 
 ```text
-~/.config/ovim/plugins/nula/
+~/.config/ovim/plugins/mylang/
 ├── init.lua
-├── parser/nula.dylib       # .so on Linux, .dll on Windows
-└── queries/nula/highlights.scm
+├── parser/mylang.dylib       # .so on Linux, .dll on Windows
+└── queries/mylang/highlights.scm
 ```
 
 ```lua
--- ~/.config/ovim/plugins/nula/init.lua
+-- ~/.config/ovim/plugins/mylang/init.lua
 ovim.languages.register({
-  id = "nula",
-  name = "Nula",
-  files = { extensions = { "nula" } },
+  id = "mylang",
+  name = "My Language",
+  files = { extensions = { "myl" } },
   syntax = {
-    parser = { path = "parser/nula", symbol = "tree_sitter_nula" },
-    highlights = "queries/nula/highlights.scm",
+    parser = { path = "parser/mylang", symbol = "tree_sitter_mylang" },
+    highlights = "queries/mylang/highlights.scm",
   },
   lsp = {
-    cmd = { "nula", "lsp" },
-    language_id = "nula",
-    root_markers = { "nula.toml", ".git" },
+    cmd = { "mylang-lsp", "--stdio" },
+    language_id = "mylang",
+    root_markers = { "mylang.toml", ".git" },
   },
 })
 ```
 
-The plugin directory may be a symlink into a local checkout, which is handy
-while developing a language:
+Relative paths resolve from the `init.lua` that declares the language. If the
+parser path has no extension, ovim appends the platform's native-library
+extension. Registration validates the parser ABI and the highlight query up
+front, so a broken plugin never leaves you with a half-registered language.
+
+While developing a language, point the plugin directory at your checkout with a
+symlink, so you don't have to copy files after every grammar rebuild:
 
 ```bash
-ln -s ~/Projects/nula/editors/ovim ~/.config/ovim/plugins/nula
+ln -s ~/src/mylang/editors/ovim ~/.config/ovim/plugins/mylang
 ```
 
-Relative paths are resolved from the `init.lua` that declares the language. If
-the parser path has no extension, ovim adds the platform's native-library
-extension. Registration validates the parser ABI and highlight query before the
-language becomes visible.
+Registered languages work everywhere built-in languages do. Markdown fenced
+code blocks (` ```mylang `), LSP hover previews, and AI chat responses resolve
+fence labels against language ids, built-in aliases, and file extensions, so
+your language also highlights inside documents.
 
-Re-registering a language id from the same config file or plugin replaces the
-earlier registration, so `:ConfigReload` and `:source` are idempotent. A
-different owner (another plugin, or the user config vs. a plugin) cannot take
-over an already-registered id. Already-open buffers keep their current
-highlighter; reopen the file (or restart) to pick up a changed parser or query.
+Reloading is safe. Registering the same language id again from the same config
+file or plugin replaces the earlier registration, which keeps `:ConfigReload`
+and `:source` idempotent. One plugin cannot take over an id that another plugin
+— or your own config — already registered. Already-open buffers keep their
+current highlighter; reopen the file (or restart ovim) to pick up a changed
+parser or query.
 
-If a config or plugin file fails to load, ovim shows a sticky error toast with
-the failing file and writes the full Lua traceback to the log
-(`~/.cache/ovim/ovim.log`, or `~/Library/Caches/ovim/ovim.log` on macOS). Note
-that an error in `init.lua` stops execution at the failing line, so settings
-after it will not apply. The initial API supports extensions, one highlight
-query, and one LSP per language.
+When a config or plugin file fails to load, ovim shows a sticky error toast
+naming the failing file and writes the full Lua traceback to the log
+(`~/.cache/ovim/ovim.log`, or `~/Library/Caches/ovim/ovim.log` on macOS). An
+error in `init.lua` stops execution at the failing line, so settings after that
+line do not apply.
+
+The current API covers file extensions, a single highlight query, and a single
+LSP command per language.
 
 ## Session Directory Override (Advanced)
 

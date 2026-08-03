@@ -3,9 +3,13 @@
 //! This module provides syntax highlighting for fenced code blocks within markdown.
 //! It parses the markdown tree to find code blocks, extracts language info strings,
 //! creates temporary highlighters for each language, and caches the results.
+//!
+//! Info strings resolve through a [`LanguageCatalog`], so fences of
+//! plugin-registered languages highlight the same way built-ins do.
+
+use crate::language_catalog::LanguageCatalog;
 
 use super::highlighter::SyntaxHighlighter;
-use super::languages::{Language, LanguageRegistry};
 use super::theme::HighlightGroup;
 use std::ops::Range;
 use tree_sitter::Tree;
@@ -17,11 +21,11 @@ pub struct CodeBlock {
     pub line_start: usize,
     /// Last line of code content (exclusive)
     pub line_end: usize,
-    /// Language detected from info string. Production code only consumes the
-    /// `highlights` derived from this language, but tests assert on it directly
-    /// to confirm the info-string-to-language mapping works.
+    /// Language id resolved from the info string. Production code only
+    /// consumes the `highlights` derived from this language, but tests assert
+    /// on it directly to confirm the info-string-to-language mapping works.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub language: Language,
+    pub language_id: String,
     /// Syntax highlights for each line within the block
     /// Index 0 = line_start, Index 1 = line_start + 1, etc.
     pub highlights: Vec<Vec<(Range<usize>, HighlightGroup)>>,
@@ -46,7 +50,14 @@ impl CodeBlockCache {
     ///
     /// Walks the tree to find `fenced_code_block` nodes, extracts language info,
     /// parses code content with language-specific highlighter, and caches results.
-    pub fn update_from_tree(&mut self, tree: &Tree, source: &str, version: u64) {
+    /// Info strings resolve against `catalog`, so plugin languages participate.
+    pub fn update_from_tree(
+        &mut self,
+        tree: &Tree,
+        source: &str,
+        version: u64,
+        catalog: &LanguageCatalog,
+    ) {
         self.blocks.clear();
         self.version = version;
 
@@ -54,21 +65,26 @@ impl CodeBlockCache {
         let mut cursor = root.walk();
 
         // Find all fenced_code_block nodes
-        self.visit_node(&mut cursor, source);
+        self.visit_node(&mut cursor, source, catalog);
     }
 
     /// Recursively visit nodes to find fenced code blocks
-    fn visit_node(&mut self, cursor: &mut tree_sitter::TreeCursor, source: &str) {
+    fn visit_node(
+        &mut self,
+        cursor: &mut tree_sitter::TreeCursor,
+        source: &str,
+        catalog: &LanguageCatalog,
+    ) {
         let node = cursor.node();
 
         if node.kind() == "fenced_code_block" {
-            self.process_code_block(node, source);
+            self.process_code_block(node, source, catalog);
         }
 
         // Visit children
         if cursor.goto_first_child() {
             loop {
-                self.visit_node(cursor, source);
+                self.visit_node(cursor, source, catalog);
                 if !cursor.goto_next_sibling() {
                     break;
                 }
@@ -78,7 +94,12 @@ impl CodeBlockCache {
     }
 
     /// Process a single fenced_code_block node
-    fn process_code_block(&mut self, node: tree_sitter::Node, source: &str) {
+    fn process_code_block(
+        &mut self,
+        node: tree_sitter::Node,
+        source: &str,
+        catalog: &LanguageCatalog,
+    ) {
         let mut info_string: Option<&str> = None;
         let mut code_content: Option<&str> = None;
         let mut code_start_line: Option<usize> = None;
@@ -126,12 +147,15 @@ impl CodeBlockCache {
         let lang_token = info.split([' ', '\t', ',']).next().unwrap_or("").trim();
 
         // Try to get a language from the info string
-        let Some(language) = LanguageRegistry::from_info_string(lang_token) else {
+        let Some(language) = catalog.detect_from_info_string(lang_token) else {
+            return;
+        };
+        let Some(syntax) = language.syntax.as_ref() else {
             return;
         };
 
         // Create a temporary highlighter for this language
-        let Ok(mut highlighter) = SyntaxHighlighter::new(language) else {
+        let Ok(mut highlighter) = SyntaxHighlighter::from_definition(language.id(), syntax) else {
             return;
         };
 
@@ -148,7 +172,7 @@ impl CodeBlockCache {
         self.blocks.push(CodeBlock {
             line_start: start_line,
             line_end,
-            language,
+            language_id: language.id().to_string(),
             highlights,
         });
     }
@@ -188,6 +212,7 @@ impl CodeBlockCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn parse_markdown(source: &str) -> Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -195,6 +220,13 @@ mod tests {
             .set_language(&tree_sitter_md::LANGUAGE.into())
             .expect("Failed to set markdown language");
         parser.parse(source, None).expect("Failed to parse")
+    }
+
+    fn cache_for(source: &str, catalog: &LanguageCatalog) -> CodeBlockCache {
+        let tree = parse_markdown(source);
+        let mut cache = CodeBlockCache::new();
+        cache.update_from_tree(&tree, source, 1, catalog);
+        cache
     }
 
     #[test]
@@ -210,12 +242,10 @@ fn main() {
 Some text.
 "#;
 
-        let tree = parse_markdown(source);
-        let mut cache = CodeBlockCache::new();
-        cache.update_from_tree(&tree, source, 1);
+        let cache = cache_for(source, &LanguageCatalog::built_in());
 
         assert_eq!(cache.blocks.len(), 1);
-        assert_eq!(cache.blocks[0].language, Language::Rust);
+        assert_eq!(cache.blocks[0].language_id, "rust");
         assert_eq!(cache.blocks[0].line_start, 3); // Line after ```rust
     }
 
@@ -228,9 +258,7 @@ let x = 42;
 ```
 "#;
 
-        let tree = parse_markdown(source);
-        let mut cache = CodeBlockCache::new();
-        cache.update_from_tree(&tree, source, 1);
+        let cache = cache_for(source, &LanguageCatalog::built_in());
 
         // Line 3 is "let x = 42;" - should have highlights
         let highlights = cache.highlights_for_line(3);
@@ -254,13 +282,71 @@ print("world")
 ```
 "#;
 
-        let tree = parse_markdown(source);
-        let mut cache = CodeBlockCache::new();
-        cache.update_from_tree(&tree, source, 1);
+        let cache = cache_for(source, &LanguageCatalog::built_in());
 
         assert_eq!(cache.blocks.len(), 2);
-        assert_eq!(cache.blocks[0].language, Language::Bash);
-        assert_eq!(cache.blocks[1].language, Language::Python);
+        assert_eq!(cache.blocks[0].language_id, "bash");
+        assert_eq!(cache.blocks[1].language_id, "python");
+    }
+
+    #[test]
+    fn test_alias_info_string_resolves() {
+        let source = r#"```js
+const x = 42;
+```
+"#;
+
+        let cache = cache_for(source, &LanguageCatalog::built_in());
+
+        assert_eq!(cache.blocks.len(), 1);
+        assert_eq!(cache.blocks[0].language_id, "javascript");
+    }
+
+    #[test]
+    fn test_plugin_language_fence_highlights() {
+        use crate::language_catalog::{LanguageDefinition, RegistrationOwner, SyntaxDefinition};
+        use crate::language_config::LanguageConfig;
+        use crate::syntax::{Language, LanguageRegistry};
+
+        // A plugin-style registration reusing a built-in grammar under a
+        // dynamic id, as `register_dynamic` would produce.
+        let catalog = LanguageCatalog::built_in();
+        catalog.insert_for_tests(Arc::new(LanguageDefinition {
+            config: LanguageConfig {
+                id: "nulatest".into(),
+                name: "Nulatest".into(),
+                extensions: vec!["nulatest".into()],
+                filenames: Vec::new(),
+                path_filenames: Vec::new(),
+                syntax: None,
+                lsp: None,
+                dap: None,
+            },
+            lsp_language_id: "nulatest".into(),
+            syntax: Some(SyntaxDefinition {
+                language: LanguageRegistry::get_tree_sitter_language(Language::Rust),
+                highlights: Arc::from(LanguageRegistry::get_highlight_query(Language::Rust)),
+            }),
+            owner: RegistrationOwner::UserConfig {
+                source: "/tmp/init.lua".into(),
+            },
+            source: "/tmp".into(),
+        }));
+
+        let source = r#"# Docs
+
+```nulatest
+fn main() {}
+```
+"#;
+
+        let cache = cache_for(source, &catalog);
+
+        assert_eq!(cache.blocks.len(), 1);
+        assert_eq!(cache.blocks[0].language_id, "nulatest");
+        assert!(cache
+            .highlights_for_line(3)
+            .is_some_and(|line| !line.is_empty()));
     }
 
     #[test]
@@ -270,9 +356,7 @@ some code
 ```
 "#;
 
-        let tree = parse_markdown(source);
-        let mut cache = CodeBlockCache::new();
-        cache.update_from_tree(&tree, source, 1);
+        let cache = cache_for(source, &LanguageCatalog::built_in());
 
         // Unknown language should be skipped
         assert_eq!(cache.blocks.len(), 0);
@@ -284,9 +368,7 @@ some code
 ```
 "#;
 
-        let tree = parse_markdown(source);
-        let mut cache = CodeBlockCache::new();
-        cache.update_from_tree(&tree, source, 1);
+        let cache = cache_for(source, &LanguageCatalog::built_in());
 
         // Empty code block should be skipped
         assert_eq!(cache.blocks.len(), 0);

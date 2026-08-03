@@ -294,11 +294,16 @@ impl Buffer {
             // cache builder still consumes `&str`, so allocate once here. (A
             // future change can move it to a rope-aware path; for now the
             // markdown path is rarer than the hot edit path.)
-            if lang == Language::Markdown {
+            if highlighter.supports_code_fences() {
                 if let Some(tree) = highlighter.tree() {
                     let source = self.rope.to_string();
                     let mut cache = crate::syntax::CodeBlockCache::new();
-                    cache.update_from_tree(tree, &source, self.highlight_version);
+                    cache.update_from_tree(
+                        tree,
+                        &source,
+                        self.highlight_version,
+                        &self.language_catalog,
+                    );
                     self.code_block_cache = Some(cache);
                 }
             }
@@ -316,14 +321,19 @@ impl Buffer {
     pub(super) fn build_highlight_cache_from_rope(&mut self, highlighter: &SyntaxHighlighter) {
         self.cached_highlights = Some(highlighter.highlights_for_all_lines_rope(&self.rope));
 
-        // For markdown files, also build code block cache. The code-block
-        // builder still needs `&str` for its tree walk; allocate only on the
-        // markdown path (much rarer than per-edit rehighlight).
-        if highlighter.language_id() == "markdown" {
+        // For markdown-style files, also build code block cache. The
+        // code-block builder still needs `&str` for its tree walk; allocate
+        // only on the markdown path (much rarer than per-edit rehighlight).
+        if highlighter.supports_code_fences() {
             if let Some(tree) = highlighter.tree() {
                 let source = self.rope.to_string();
                 let mut cache = CodeBlockCache::new();
-                cache.update_from_tree(tree, &source, self.highlight_version);
+                cache.update_from_tree(
+                    tree,
+                    &source,
+                    self.highlight_version,
+                    &self.language_catalog,
+                );
                 self.code_block_cache = Some(cache);
             }
         }
@@ -799,7 +809,7 @@ impl Buffer {
             return None;
         }
 
-        let is_markdown = self.syntax.as_ref()?.language_id() == "markdown";
+        let supports_code_fences = self.syntax.as_ref()?.supports_code_fences();
         let version = self.highlight_version;
 
         let new_line_count = self.line_count();
@@ -848,14 +858,15 @@ impl Buffer {
             }
         }
 
-        // For markdown files, also rebuild code block cache. Still &str-based —
-        // markdown is the rarer path; the hot path is non-markdown edits.
-        if is_markdown {
+        // For markdown-style files, also rebuild code block cache. Still
+        // &str-based — markdown is the rarer path; the hot path is
+        // non-markdown edits.
+        if supports_code_fences {
             if let Some(syntax) = self.syntax.as_ref() {
                 if let Some(tree) = syntax.tree() {
                     let content = self.rope.to_string();
                     let mut cache = CodeBlockCache::new();
-                    cache.update_from_tree(tree, &content, version);
+                    cache.update_from_tree(tree, &content, version, &self.language_catalog);
                     self.code_block_cache = Some(cache);
                 }
             }
@@ -905,14 +916,19 @@ impl Buffer {
             }
         }
 
-        // For markdown files, also rebuild the code block cache so that
+        // For markdown-style files, also rebuild the code block cache so that
         // language-specific highlighting inside fenced code blocks is
         // available immediately (not deferred to the debounced full rebuild).
-        if syntax.language_id() == "markdown" && self.code_block_cache.is_none() {
+        if syntax.supports_code_fences() && self.code_block_cache.is_none() {
             if let Some(tree) = syntax.tree() {
                 let content = self.rope.to_string();
                 let mut cb_cache = CodeBlockCache::new();
-                cb_cache.update_from_tree(tree, &content, self.highlight_version);
+                cb_cache.update_from_tree(
+                    tree,
+                    &content,
+                    self.highlight_version,
+                    &self.language_catalog,
+                );
                 self.code_block_cache = Some(cb_cache);
             }
         }

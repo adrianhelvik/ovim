@@ -156,6 +156,9 @@ fn rope_chunk_callback<'r>(
 /// Syntax highlighter using tree-sitter
 pub struct SyntaxHighlighter {
     language_id: String,
+    /// Whether the grammar produces markdown-style `fenced_code_block` nodes,
+    /// i.e. buffers of this language carry embedded code-block highlighting.
+    supports_code_fences: bool,
     parser: Parser,
     tree: Option<Tree>,
     query: Query,
@@ -206,6 +209,7 @@ impl SyntaxHighlighter {
         ts_language: tree_sitter::Language,
         query_source: &str,
     ) -> Result<Self, String> {
+        let supports_code_fences = ts_language.id_for_node_kind("fenced_code_block", true) != 0;
         let mut parser = Parser::new();
         parser
             .set_language(&ts_language)
@@ -222,6 +226,7 @@ impl SyntaxHighlighter {
 
         Ok(Self {
             language_id,
+            supports_code_fences,
             parser,
             tree: None,
             query,
@@ -794,6 +799,13 @@ impl SyntaxHighlighter {
         &self.language_id
     }
 
+    /// True when this grammar produces markdown-style `fenced_code_block`
+    /// nodes. Derived from the grammar itself, so markdown-like plugin
+    /// languages get embedded code-block highlighting too.
+    pub fn supports_code_fences(&self) -> bool {
+        self.supports_code_fences
+    }
+
     /// Gets the parse tree (if parsed)
     /// Used for extracting code blocks from markdown
     pub fn tree(&self) -> Option<&Tree> {
@@ -804,6 +816,16 @@ impl SyntaxHighlighter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_fence_support_is_derived_from_the_grammar() {
+        assert!(SyntaxHighlighter::new(Language::Markdown)
+            .unwrap()
+            .supports_code_fences());
+        assert!(!SyntaxHighlighter::new(Language::Rust)
+            .unwrap()
+            .supports_code_fences());
+    }
 
     #[test]
     fn test_astro_highlighter_parses_component_syntax() {

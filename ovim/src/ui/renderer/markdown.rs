@@ -3,7 +3,8 @@
 //! Parses LSP hover markdown and converts it to styled text spans for ratatui.
 //! Supports: **bold**, `inline code`, ```code blocks```, and basic structure.
 
-use crate::syntax::{HighlightGroup, LanguageRegistry, SyntaxHighlighter, Theme};
+use crate::syntax::{HighlightGroup, SyntaxHighlighter, Theme};
+use ovim_core::language_catalog::LanguageCatalog;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::ops::Range;
@@ -320,9 +321,20 @@ fn push_bold_elements(text: &str, elements: &mut Vec<MarkdownElement>) {
 /// Returns None if language is unknown or highlighting fails
 type LineHighlights = Vec<Vec<(Range<usize>, HighlightGroup)>>;
 
+/// Resolves the fence language against the process-wide catalog so plugin
+/// languages highlight in chat, hover, and walkthrough markdown too.
 fn highlight_code_block(language: &str, code: &str) -> Option<LineHighlights> {
-    let lang = LanguageRegistry::from_info_string(language)?;
-    let mut highlighter = SyntaxHighlighter::new(lang).ok()?;
+    highlight_code_block_with(&LanguageCatalog::process(), language, code)
+}
+
+fn highlight_code_block_with(
+    catalog: &LanguageCatalog,
+    language: &str,
+    code: &str,
+) -> Option<LineHighlights> {
+    let definition = catalog.detect_from_info_string(language)?;
+    let syntax = definition.syntax.as_ref()?;
+    let mut highlighter = SyntaxHighlighter::from_definition(definition.id(), syntax).ok()?;
     highlighter.parse(code);
     Some(highlighter.highlights_for_all_lines(code))
 }
