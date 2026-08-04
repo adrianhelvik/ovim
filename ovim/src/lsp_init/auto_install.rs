@@ -51,10 +51,14 @@ pub async fn attempt_auto_install(
     config: &AutoInstallConfig,
 ) -> InstallResult {
     match &config.method {
-        InstallMethod::Npm { global, .. } => {
+        InstallMethod::Npm { global, bin, .. } => {
             let packages = config.method.npm_packages();
-            let bin = config.method.npm_bin();
-            install_via_npm(language_name, &packages, bin.as_deref(), *global).await
+            // Verification prefers the explicit `bin`, then the server command
+            // the caller is trying to resolve. The old npm_bin() fallback to
+            // the package name breaks for packages whose binaries are named
+            // differently (vscode-langservers-extracted has no such binary).
+            let verify_bin = bin.clone().unwrap_or_else(|| package_name.to_string());
+            install_via_npm(language_name, &packages, &verify_bin, *global).await
         }
         InstallMethod::Cargo {
             package,
@@ -82,20 +86,43 @@ pub async fn attempt_auto_install(
     }
 }
 
-/// Install language server via npm
+/// Supply-chain guard: refuse to install node package versions published
+/// less than this many days ago. Compromised releases are typically
+/// discovered and yanked within hours; a 3-day quarantine covers that
+/// window without meaningfully delaying legitimate updates. Enforced with
+/// npm's `--before` flag, which restricts resolution to versions published
+/// before the given timestamp.
+const MINIMUM_RELEASE_AGE_DAYS: u64 = 3;
+
+/// The `--before` cutoff: now minus the quarantine window, as an ISO-8601
+/// UTC timestamp npm can parse.
+fn release_age_cutoff() -> String {
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(MINIMUM_RELEASE_AGE_DAYS as i64);
+    cutoff.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// Install a node-ecosystem language server
 ///
-/// Educational Note: Error Handling Strategy
-/// npm can fail in many ways:
-/// 1. npm not installed → PrerequisitesMissing
-/// 2. Network failure → Failed with retry suggestion
-/// 3. Permission denied → Failed with permission fix suggestion
-/// 4. Package not found → Failed with package name check
+/// By default packages install into an ovim-managed sandbox
+/// (`~/.local/share/ovim/lsp/npm/<package>/`), mason-style: a stub
+/// `package.json` is written there, `npm install` runs inside it, and
+/// command resolution searches each sandbox's `node_modules/.bin`. The
+/// user's global package namespace is never touched, and pinned
+/// dependencies (e.g. astro-ls's typescript@6) can't conflict with the
+/// user's versions.
 ///
-/// Each failure mode gets a specific, actionable error message.
+/// Two supply-chain defenses, both free with npm (which ships with node):
+/// `--before` quarantines freshly published versions (a hijacked package
+/// ships malware for the few hours before it's caught), and
+/// `--ignore-scripts` refuses to run install scripts, the usual malware
+/// entry point. Language servers are plain JS and don't need build scripts.
+///
+/// `global = true` in a user's language override keeps the old
+/// `npm install -g` behavior (no sandbox, no supply-chain guards).
 async fn install_via_npm(
     _language_name: &str,
     packages: &[String],
-    bin: Option<&str>,
+    verify_bin: &str,
     global: bool,
 ) -> InstallResult {
     if packages.is_empty() {
@@ -103,19 +130,17 @@ async fn install_via_npm(
     }
 
     let package_list = packages.join(" ");
-    let verify_bin = bin.unwrap_or_else(|| packages.first().map(String::as_str).unwrap_or(""));
     if verify_bin.is_empty() {
         return InstallResult::Failed(
             "No npm binary configured for auto-install verification.".to_string(),
         );
     }
 
-    // Step 1: Check if npm is available
+    // Step 1: Check npm is available
     let npm_ok = Command::new("npm")
         .arg("--version")
         .output()
         .is_ok_and(|o| o.status.success());
-
     if !npm_ok {
         return InstallResult::PrerequisitesMissing(
             "npm not found. Install Node.js first:\n  \
@@ -126,27 +151,78 @@ async fn install_via_npm(
         );
     }
 
-    // Step 2: Construct npm install command
+    // Step 2: Prepare the sandbox (sandboxed by default)
+    let sandbox = if global {
+        None
+    } else {
+        let primary = npm_package_base_name(&packages[0]);
+        let Some(dir) = ovim::language_config::managed_lsp_package_dir("npm", &primary) else {
+            return InstallResult::Failed(
+                "Could not determine home directory for sandboxed install.".to_string(),
+            );
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return InstallResult::Failed(format!(
+                "Failed to create install directory '{}': {}",
+                dir.display(),
+                e
+            ));
+        }
+        // Convert sandboxes laid out by the interim pnpm-based installer:
+        // npm can't reuse pnpm's symlinked node_modules.
+        let pnpm_lock = dir.join("pnpm-lock.yaml");
+        if pnpm_lock.exists() {
+            let _ = std::fs::remove_file(&pnpm_lock);
+            let _ = std::fs::remove_file(dir.join("pnpm-workspace.yaml"));
+            let _ = std::fs::remove_dir_all(dir.join("node_modules"));
+        }
+        // A stub manifest pins npm to this directory; without one it walks
+        // up looking for a project root and could install somewhere else.
+        let manifest = dir.join("package.json");
+        if !manifest.exists() {
+            if let Err(e) = std::fs::write(&manifest, "{\n  \"private\": true\n}\n") {
+                return InstallResult::Failed(format!(
+                    "Failed to write '{}': {}",
+                    manifest.display(),
+                    e
+                ));
+            }
+        }
+        Some(dir)
+    };
+
     let mut args = vec!["install".to_string()];
     if global {
         args.push("-g".to_string());
+    } else {
+        // The supply-chain guards. Only for sandboxed installs: global mode
+        // is the user's explicit legacy escape hatch.
+        args.push(format!("--before={}", release_age_cutoff()));
+        args.push("--ignore-scripts".to_string());
     }
     args.extend(packages.iter().cloned());
 
     ovim_core::lsp_info!(
         "AutoInstall",
-        "Installing {} via npm: npm {}",
+        "Installing {} via npm: npm {}{}",
         package_list,
-        args.join(" ")
+        args.join(" "),
+        sandbox
+            .as_ref()
+            .map(|d| format!(" (sandbox: {})", d.display()))
+            .unwrap_or_default()
     );
 
     // Step 3: Run npm install with output streaming
-    let child = match TokioCommand::new("npm")
+    let mut command = TokioCommand::new("npm");
+    command
         .args(&args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    if let Some(dir) = &sandbox {
+        command.current_dir(dir);
+    }
+    let child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {
             return InstallResult::Failed(format!("Failed to spawn npm process: {}", e));
@@ -168,13 +244,12 @@ async fn install_via_npm(
         // Parse common npm error patterns
         if stderr.contains("EACCES") || stderr.contains("permission denied") {
             return InstallResult::Failed(format!(
-                "Permission denied. Try one of these:\n  \
-                 1. Run with sudo: sudo npm install -g {}\n  \
-                 2. Configure npm to use local directory:\n     \
-                 mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global\n     \
-                 Then add to PATH: export PATH=~/.npm-global/bin:$PATH\n  \
-                 3. Use a version manager like nvm",
-                package_list
+                "Permission denied installing '{}'. Check that {} is writable.",
+                package_list,
+                sandbox
+                    .as_ref()
+                    .map(|d| d.display().to_string())
+                    .unwrap_or_else(|| "the npm global prefix".to_string())
             ));
         }
 
@@ -184,10 +259,12 @@ async fn install_via_npm(
             );
         }
 
-        if stderr.contains("404") || stderr.contains("not found") {
+        if stderr.contains("404") || stderr.contains("not found") || stderr.contains("ETARGET") {
             return InstallResult::Failed(format!(
-                "One or more npm packages were not found: '{}'. Check package names.",
-                package_list
+                "One or more npm packages were not found: '{}'. Check package names. \
+                 Note: versions published in the last {} days are quarantined \
+                 (supply-chain guard).",
+                package_list, MINIMUM_RELEASE_AGE_DAYS
             ));
         }
 
@@ -198,8 +275,16 @@ async fn install_via_npm(
         ));
     }
 
-    // Step 6: Verify installation succeeded
-    let install_path = verify_npm_installation(verify_bin, global).await;
+    // Step 6: Verify the executable exists in the sandbox. It is invoked at
+    // its real location so .bin entries that resolve paths relative to $0
+    // keep working.
+    let install_path = match &sandbox {
+        Some(dir) => {
+            let candidate = dir.join("node_modules").join(".bin").join(verify_bin);
+            candidate.is_file().then_some(candidate)
+        }
+        None => verify_npm_installation(verify_bin, global).await,
+    };
 
     match install_path {
         Some(path) => {
@@ -213,10 +298,21 @@ async fn install_via_npm(
             InstallResult::Success(path)
         }
         None => InstallResult::Failed(format!(
-            "Installation appeared to succeed, but '{}' was not found in PATH. \
-             You may need to restart your shell or update PATH manually.",
+            "Installation appeared to succeed, but '{}' was not found. \
+             Check the package actually provides that executable.",
             verify_bin
         )),
+    }
+}
+
+/// Strip a version specifier from an npm package spec, preserving scopes:
+/// `typescript@6` → `typescript`, `@astrojs/language-server@2` →
+/// `@astrojs/language-server`.
+fn npm_package_base_name(spec: &str) -> String {
+    let search_from = if spec.starts_with('@') { 1 } else { 0 };
+    match spec[search_from..].find('@') {
+        Some(pos) => spec[..search_from + pos].to_string(),
+        None => spec.to_string(),
     }
 }
 
@@ -259,38 +355,11 @@ async fn verify_npm_installation(binary: &str, global: bool) -> Option<PathBuf> 
     None
 }
 
-/// Verify cargo package installation by finding the binary
-///
-/// `cargo install` places binaries in `$CARGO_HOME/bin/` (default `~/.cargo/bin/`).
-/// On some systems (e.g., Arch Linux with pacman-installed Rust), `cargo` itself
-/// is at `/usr/bin/cargo` but `~/.cargo/bin` is not in PATH.
-fn verify_cargo_installation(binary: &str) -> Option<PathBuf> {
-    // Try `which <binary>` first (checks PATH)
-    if let Ok(output) = Command::new("which").arg(binary).output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
-        }
-    }
-
-    // Fallback: Check common cargo install locations
-    // $CARGO_HOME/bin takes priority, then ~/.cargo/bin
-    let candidates: Vec<Option<PathBuf>> = vec![
-        std::env::var("CARGO_HOME")
-            .ok()
-            .map(|h| PathBuf::from(h).join("bin").join(binary)),
-        dirs::home_dir().map(|h| h.join(".cargo/bin").join(binary)),
-    ];
-
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|candidate| candidate.exists())
-}
-
 /// Install via cargo (Rust's package manager)
+///
+/// Installs into an ovim-managed sandbox via `cargo install --root`
+/// (binaries land in `<sandbox>/bin/`, which command resolution searches)
+/// and the user's `~/.cargo/bin` is left alone.
 async fn install_via_cargo(
     _language_name: &str,
     package: &str,
@@ -309,10 +378,26 @@ async fn install_via_cargo(
         );
     }
 
-    ovim_core::lsp_info!("AutoInstall", "Installing {} via cargo install", package);
+    let Some(sandbox) = ovim::language_config::managed_lsp_package_dir("cargo", package) else {
+        return InstallResult::Failed(
+            "Could not determine home directory for sandboxed install.".to_string(),
+        );
+    };
+
+    ovim_core::lsp_info!(
+        "AutoInstall",
+        "Installing {} via cargo install (sandbox: {})",
+        package,
+        sandbox.display()
+    );
 
     // Build cargo install args
-    let mut args = vec!["install".to_string(), package.to_string()];
+    let mut args = vec![
+        "install".to_string(),
+        package.to_string(),
+        "--root".to_string(),
+        sandbox.to_string_lossy().into_owned(),
+    ];
     if !features.is_empty() {
         args.push("--features".to_string());
         args.push(features.join(","));
@@ -346,15 +431,17 @@ async fn install_via_cargo(
         ));
     }
 
-    // Verify installation - use explicit bin name if provided, otherwise package name
+    // Verify the binary landed in the sandbox: explicit bin name if
+    // provided, otherwise package name
     let verify_bin = bin.unwrap_or(package);
-    if let Some(path) = verify_cargo_installation(verify_bin) {
-        return InstallResult::Success(path);
+    let candidate = sandbox.join("bin").join(verify_bin);
+    if candidate.is_file() {
+        return InstallResult::Success(candidate);
     }
 
     InstallResult::Failed(format!(
-        "Installation appeared to succeed, but {} was not found in PATH. \
-         You may need to add ~/.cargo/bin to your PATH.",
+        "Installation appeared to succeed, but '{}' was not found in the \
+         install sandbox. Check the crate actually provides that binary.",
         verify_bin
     ))
 }
@@ -827,6 +914,74 @@ mod tests {
         // We can't assert it's Some because CI might not have node
         // Just ensure it doesn't panic
         eprintln!("node path: {:?}", result);
+    }
+
+    #[test]
+    fn test_release_age_cutoff_format() {
+        let cutoff = release_age_cutoff();
+        // ISO-8601 UTC, e.g. 2026-08-01T15:45:00Z
+        assert_eq!(cutoff.len(), 20);
+        assert!(cutoff.ends_with('Z'));
+        assert_eq!(&cutoff[4..5], "-");
+        assert_eq!(&cutoff[10..11], "T");
+    }
+
+    #[test]
+    fn test_npm_package_base_name() {
+        assert_eq!(npm_package_base_name("typescript"), "typescript");
+        assert_eq!(npm_package_base_name("typescript@6"), "typescript");
+        assert_eq!(
+            npm_package_base_name("@astrojs/language-server"),
+            "@astrojs/language-server"
+        );
+        assert_eq!(
+            npm_package_base_name("@astrojs/language-server@2.16"),
+            "@astrojs/language-server"
+        );
+    }
+
+    // Real npm install into the managed sandbox; network + filesystem side
+    // effects, so ignored by default. Run manually with:
+    //   cargo test -p ovim sandbox_npm_install -- --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn sandbox_npm_install_links_binaries() {
+        let result = install_via_npm(
+            "Astro",
+            &[
+                "@astrojs/language-server".to_string(),
+                "typescript@6".to_string(),
+            ],
+            "astro-ls",
+            false,
+        )
+        .await;
+        let InstallResult::Success(path) = result else {
+            panic!("sandboxed npm install failed: {:?}", result);
+        };
+        // The resolved executable must live inside the sandbox, not in a
+        // global prefix. No bin-dir linking: .bin entries may be shims that
+        // resolve paths relative to $0 and only work at their real location.
+        let sandbox =
+            ovim::language_config::managed_lsp_package_dir("npm", "@astrojs/language-server")
+                .unwrap();
+        assert!(
+            path.starts_with(sandbox.join("node_modules/.bin")),
+            "unexpected path: {:?}",
+            path
+        );
+        // Command resolution must find the same executable by bare name.
+        let resolved = ovim::language_config::find_in_well_known_locations("astro-ls")
+            .expect("resolution should find sandboxed astro-ls");
+        assert_eq!(PathBuf::from(resolved), path);
+        // typescript@6 must be present in the same sandbox so tsdk
+        // resolution finds it next to the server.
+        assert!(sandbox
+            .join("node_modules/typescript/lib/tsserverlibrary.js")
+            .exists());
+        // npm layout, not a leftover pnpm one.
+        assert!(sandbox.join("package-lock.json").exists());
+        assert!(!sandbox.join("pnpm-workspace.yaml").exists());
     }
 
     #[test]

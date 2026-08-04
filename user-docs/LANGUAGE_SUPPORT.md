@@ -52,11 +52,33 @@ These languages have full LSP support and will auto-install the language server 
 When you open a file and its language server isn't installed, ovim will:
 
 1. Show a consent dialog asking if you'd like to install the server
-2. Display the install method (e.g., `npm install -g pyright`)
+2. Display the install method (e.g., `npm install pyright (sandboxed in ~/.local/share/ovim/lsp)`)
 3. Wait for your response:
    - **Enter** — install this time
    - **A** — always auto-install (sets `autoinstall=auto`)
    - **Esc** — skip
+
+### Sandboxed Installs
+
+Node and cargo installs are sandboxed, mason-style: each package gets its own
+directory under `~/.local/share/ovim/lsp/` (e.g. `npm/astrojs-language-server/`),
+and ovim resolves server commands from each sandbox's bin directory. Your
+global npm/cargo namespace is never touched, and pinned dependencies
+(astro-ls needs `typescript@6`) can't conflict with the versions your
+projects use.
+
+Node packages install with two supply-chain guards: `npm install --before`
+restricts resolution to versions published at least 3 days ago (hijacked
+releases are typically caught within hours, well inside that window), and
+`--ignore-scripts` refuses to run install scripts, the usual malware entry
+point. Language servers are plain JavaScript, so neither guard affects
+functionality. A brand-new package with no version older than 3 days won't
+resolve until it ages; that is the quarantine working as intended.
+
+Servers you've installed yourself always win: ovim checks `PATH` and
+project-local `node_modules/.bin` before its own sandbox. To reclaim disk
+space, deleting `~/.local/share/ovim/lsp/` is always safe — ovim reinstalls
+on demand.
 
 ### Configuring Auto-Install Behavior
 
@@ -109,11 +131,12 @@ install_hint = "Install with: ..."  # Shown when server not found
 ### Auto-Install Configuration
 
 ```toml
-# npm-based
+# npm-based (sandboxed under ~/.local/share/ovim/lsp; add global = true
+# to install with `npm install -g` instead)
 [language.lsp.auto_install]
-method = { type = "npm", package = "pyright", bin = "pyright-langserver", global = true }
+method = { type = "npm", package = "pyright", bin = "pyright-langserver" }
 
-# cargo-based
+# cargo-based (sandboxed under ~/.local/share/ovim/lsp)
 [language.lsp.auto_install]
 method = { type = "cargo", package = "taplo-cli", bin = "taplo", features = ["lsp"] }
 

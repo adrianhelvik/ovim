@@ -610,6 +610,28 @@ pub fn find_lsp_command(config: &LspConfig) -> Option<String> {
 pub fn find_in_well_known_locations(binary: &str) -> Option<String> {
     use std::path::PathBuf;
     let home = dirs::home_dir()?;
+    // ovim-managed sandboxed installs (mason-style). Checked first among the
+    // well-known locations: these binaries were installed by ovim
+    // specifically for ovim, so they beat other fallback guesses. PATH and
+    // project-local fallbacks still win in find_lsp_command.
+    //
+    // Executables are resolved inside each sandbox rather than linked into
+    // a shared bin dir: pnpm's .bin entries are shell shims that resolve
+    // paths relative to $0, so they only work when invoked at their real
+    // location.
+    if let Some(root) = managed_lsp_root() {
+        for (manager, bin_subpath) in [("npm", "node_modules/.bin"), ("cargo", "bin")] {
+            if let Ok(entries) = std::fs::read_dir(root.join(manager)) {
+                for entry in entries.flatten() {
+                    let candidate = entry.path().join(bin_subpath).join(binary);
+                    if candidate.exists() {
+                        return Some(candidate.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+
     let candidates = [
         // cargo install location ($CARGO_HOME/bin or ~/.cargo/bin)
         std::env::var("CARGO_HOME")
@@ -663,6 +685,41 @@ pub fn find_in_well_known_locations(binary: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Root of ovim's managed LSP install area (`~/.local/share/ovim/lsp`).
+///
+/// Mason-style layout: each package manager gets a subdirectory holding one
+/// sandbox per package; executables are resolved inside each sandbox:
+///
+/// ```text
+/// ~/.local/share/ovim/lsp/
+///   npm/astrojs-language-server/{package.json, pnpm-workspace.yaml,
+///                                node_modules/.bin/astro-ls, ...}
+///   cargo/taplo-cli/bin/taplo
+/// ```
+///
+/// Nothing here touches the user's global package-manager namespace.
+pub fn managed_lsp_root() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|h| h.join(".local/share/ovim/lsp"))
+}
+
+/// Sandbox directory for one package installed via one package manager,
+/// e.g. `managed_lsp_package_dir("npm", "@astrojs/language-server")`
+/// → `~/.local/share/ovim/lsp/npm/astrojs-language-server`.
+pub fn managed_lsp_package_dir(manager: &str, package: &str) -> Option<std::path::PathBuf> {
+    let sanitized: String = package
+        .trim_start_matches('@')
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    managed_lsp_root().map(|root| root.join(manager).join(sanitized))
 }
 
 /// Find the DAP server command, trying primary then fallbacks.

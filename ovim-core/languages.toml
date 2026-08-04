@@ -62,7 +62,7 @@ root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"
 install_hint = "Install with: npm install -g typescript-language-server typescript"
 
 [language.lsp.auto_install]
-method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server", global = true }
+method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server" }
 policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
@@ -92,7 +92,7 @@ root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"
 install_hint = "Install with: npm install -g typescript-language-server typescript"
 
 [language.lsp.auto_install]
-method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server", global = true }
+method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server" }
 policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
@@ -119,7 +119,7 @@ root_markers = ["package.json", "node_modules", ".git"]
 install_hint = "Install with: npm install -g typescript-language-server typescript"
 
 [language.lsp.auto_install]
-method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server", global = true }
+method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server" }
 policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
@@ -150,7 +150,7 @@ root_markers = ["pyproject.toml", "setup.py", "requirements.txt", ".git"]
 install_hint = "Install with: pip install pyright (or: pip install python-lsp-server)"
 
 [language.lsp.auto_install]
-method = { type = "npm", package = "pyright", bin = "pyright-langserver", global = true }
+method = { type = "npm", package = "pyright", bin = "pyright-langserver" }
 
 # ============================================================================
 # Java
@@ -299,7 +299,7 @@ root_markers = ["package.json", ".git"]
 install_hint = "Install with: npm install -g vscode-langservers-extracted"
 
 [language.lsp.auto_install]
-method = { type = "npm", package = "vscode-langservers-extracted", global = true }
+method = { type = "npm", package = "vscode-langservers-extracted" }
 
 # ============================================================================
 # YAML
@@ -322,7 +322,7 @@ root_markers = [".git"]
 install_hint = "Install with: npm install -g yaml-language-server"
 
 [language.lsp.auto_install]
-method = { type = "npm", package = "yaml-language-server", global = true }
+method = { type = "npm", package = "yaml-language-server" }
 
 # ============================================================================
 # HTML
@@ -344,7 +344,7 @@ root_markers = ["package.json", ".git"]
 install_hint = "Install with: npm install -g vscode-langservers-extracted"
 
 [language.lsp.auto_install]
-method = { type = "npm", package = "vscode-langservers-extracted", global = true }
+method = { type = "npm", package = "vscode-langservers-extracted" }
 
 # ============================================================================
 # Astro
@@ -369,7 +369,7 @@ install_hint = "Install with: npm install -g @astrojs/language-server typescript
 [language.lsp.auto_install]
 # typescript@6 is pinned: astro-ls loads typescript.js/tsserverlibrary.js,
 # which TypeScript 7.x no longer ships.
-method = { type = "npm", packages = ["@astrojs/language-server", "typescript@6"], bin = "astro-ls", global = true }
+method = { type = "npm", packages = ["@astrojs/language-server", "typescript@6"], bin = "astro-ls" }
 policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
@@ -392,7 +392,7 @@ root_markers = ["package.json", ".git"]
 install_hint = "Install with: npm install -g vscode-langservers-extracted"
 
 [language.lsp.auto_install]
-method = { type = "npm", package = "vscode-langservers-extracted", global = true }
+method = { type = "npm", package = "vscode-langservers-extracted" }
 
 # ============================================================================
 # Go
@@ -499,7 +499,7 @@ root_markers = [".git"]
 install_hint = "Install with: npm install -g bash-language-server"
 
 [language.lsp.auto_install]
-method = { type = "npm", package = "bash-language-server", global = true }
+method = { type = "npm", package = "bash-language-server" }
 
 # ============================================================================
 # TOML
@@ -712,5 +712,5 @@ activation_markers = ["tailwind.config.js", "tailwind.config.ts", "tailwind.conf
 install_hint = "Install with: npm install -g @tailwindcss/language-server"
 
 [companion_lsp.auto_install]
-method = { type = "npm", packages = ["@tailwindcss/language-server"], bin = "tailwindcss-language-server", global = true }
+method = { type = "npm", packages = ["@tailwindcss/language-server"], bin = "tailwindcss-language-server" }
 policy = "auto_on_missing"

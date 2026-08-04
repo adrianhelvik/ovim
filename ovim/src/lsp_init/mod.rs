@@ -276,7 +276,7 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                     break;
                 }
                 Err(e) => {
-                    // {:#} prints the whole context chain — the root cause
+                    // {:#} prints the whole context chain; the root cause
                     // (e.g. a server's initialize error) is otherwise hidden
                     // behind the outermost "Failed to send initialize request".
                     let error = format!("{:#}", e);
@@ -734,8 +734,14 @@ fn describe_install_method(method: &InstallMethod) -> String {
                 .map(String::as_str)
                 .chain(package.as_deref())
                 .collect();
-            let flag = if *global { " -g" } else { "" };
-            format!("npm install{} {}", flag, pkgs.join(" "))
+            if *global {
+                format!("npm install -g {}", pkgs.join(" "))
+            } else {
+                format!(
+                    "pnpm add {} (sandboxed in ~/.local/share/ovim/lsp)",
+                    pkgs.join(" ")
+                )
+            }
         }
         InstallMethod::Cargo {
             package, features, ..
@@ -745,7 +751,10 @@ fn describe_install_method(method: &InstallMethod) -> String {
             } else {
                 format!(" --features {}", features.join(","))
             };
-            format!("cargo install {}{}", package, feat)
+            format!(
+                "cargo install {}{} (sandboxed in ~/.local/share/ovim/lsp)",
+                package, feat
+            )
         }
         InstallMethod::Github { repo, .. } => {
             format!("download from github.com/{}", repo)
