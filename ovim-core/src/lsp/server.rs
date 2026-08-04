@@ -921,6 +921,26 @@ impl LanguageServer {
                     }
                 }))
             }
+            "astro" => {
+                // astro-ls refuses to initialize without `typescript.tsdk`
+                // pointing at a TypeScript lib directory. Resolve it the way
+                // nvim-lspconfig/mason do: workspace TypeScript first, then
+                // one installed near the server binary.
+                match resolve_typescript_tsdk(&root_uri, &self.inner.command) {
+                    Some(tsdk) => Some(json!({
+                        "typescript": { "tsdk": tsdk }
+                    })),
+                    None => {
+                        crate::lsp_warn!(
+                            &self.log_prefix(),
+                            "No TypeScript SDK found for astro-ls (checked workspace \
+                             node_modules and near the server binary). Install one with: \
+                             npm install -g typescript@6"
+                        );
+                        None
+                    }
+                }
+            }
             _ => {
                 // No specific initialization options for other languages
                 None
@@ -1855,6 +1875,65 @@ impl LanguageServer {
 
         Ok(())
     }
+}
+
+/// Locate a TypeScript SDK directory for servers that require the
+/// `typescript.tsdk` initialization option (astro-ls).
+///
+/// Resolution order mirrors nvim-lspconfig/mason:
+/// 1. `node_modules/typescript/lib` in the workspace root or any ancestor
+///    (walks up so pnpm/npm workspaces with hoisted deps are found).
+/// 2. A TypeScript install near the resolved server binary — `npm install -g`
+///    nests dependencies under the package's own `node_modules`, and the
+///    global npm root itself is an ancestor of the server script.
+///
+/// Candidates are validated because TypeScript 7.x dropped the
+/// `typescript.js`/`tsserverlibrary.js` bundles the language server loads;
+/// a 7.x install must be skipped in favor of a usable 6.x one.
+fn resolve_typescript_tsdk(root_uri: &Uri, command: &str) -> Option<String> {
+    if let Some(root) = super::uri_to_file_path(root_uri) {
+        let mut dir: Option<&std::path::Path> = Some(root.as_path());
+        while let Some(d) = dir {
+            let candidate = d.join("node_modules").join("typescript").join("lib");
+            if is_valid_tsdk(&candidate) {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+            dir = d.parent();
+        }
+    }
+
+    let command_path = resolve_command_path(command)?;
+    let canonical = std::fs::canonicalize(&command_path).unwrap_or(command_path);
+    for ancestor in canonical.ancestors() {
+        let candidate = ancestor.join("node_modules").join("typescript").join("lib");
+        if is_valid_tsdk(&candidate) {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+fn is_valid_tsdk(dir: &std::path::Path) -> bool {
+    dir.join("tsserverlibrary.js").exists() || dir.join("typescript.js").exists()
+}
+
+/// Resolve a server command to a filesystem path so tsdk lookup can walk
+/// its ancestors. Bare names are searched in $PATH, then the well-known
+/// package manager locations the LSP finder already trusts.
+fn resolve_command_path(command: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(command);
+    if path.components().count() > 1 {
+        return Some(path.to_path_buf());
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(command);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    crate::language_config::find_in_well_known_locations(command).map(std::path::PathBuf::from)
 }
 
 /// Hover client capabilities advertised at `initialize`.

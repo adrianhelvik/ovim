@@ -276,7 +276,10 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                     break;
                 }
                 Err(e) => {
-                    let error = e.to_string();
+                    // {:#} prints the whole context chain — the root cause
+                    // (e.g. a server's initialize error) is otherwise hidden
+                    // behind the outermost "Failed to send initialize request".
+                    let error = format!("{:#}", e);
                     if !attempted_known_failure_repair
                         && should_attempt_known_failure_repair(
                             &lang_config.id,

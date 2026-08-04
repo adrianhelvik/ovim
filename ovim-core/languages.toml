@@ -364,10 +364,12 @@ command = "astro-ls"
 args = ["--stdio"]
 fallback_commands = ["node_modules/.bin/astro-ls"]
 root_markers = ["astro.config.mjs", "astro.config.ts", "astro.config.js", "package.json", ".git"]
-install_hint = "Install with: npm install -g @astrojs/language-server"
+install_hint = "Install with: npm install -g @astrojs/language-server typescript@6"
 
 [language.lsp.auto_install]
-method = { type = "npm", package = "@astrojs/language-server", bin = "astro-ls", global = true }
+# typescript@6 is pinned: astro-ls loads typescript.js/tsserverlibrary.js,
+# which TypeScript 7.x no longer ships.
+method = { type = "npm", packages = ["@astrojs/language-server", "typescript@6"], bin = "astro-ls", global = true }
 policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
