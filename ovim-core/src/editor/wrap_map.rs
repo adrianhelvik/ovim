@@ -270,14 +270,19 @@ impl WrapMap {
         let base_row = self.logical_to_visual(line);
         let max_width = self.wrap_width;
 
-        // `flat_col` tracks the flat display column (content widths only,
-        // no wrap-boundary padding) — this is the coordinate system `col`
-        // lives in. `row_col` tracks display columns consumed on the
-        // current visual row (used for wrap decisions and tab stops).
+        // `flat_col` tracks the flat display column (content plus decoration
+        // widths, no wrap-boundary padding) — this is the coordinate system
+        // `col` lives in. `row_col` tracks display columns consumed on the
+        // current visual row (used for wrap decisions). `content_col` is the
+        // flat content-only column: the tab-stop base, since the renderer
+        // expands tabs against the raw line before splicing decorations or
+        // splitting rows.
         let mut flat_col: usize = 0;
+        let mut content_col: usize = 0;
         let mut row_col: usize = 0;
         let mut sub_line: usize = 0;
         let mut dec_idx: usize = 0;
+        let tab_width = self.tab_width.max(1);
 
         for (_char_idx, ch) in line_text.chars().enumerate() {
             // Decoration widths at this char position, added column-by-column
@@ -298,30 +303,46 @@ impl WrapMap {
                 dec_idx += 1;
             }
 
-            let ch_width = if ch == '\t' {
-                self.tab_width - (row_col % self.tab_width)
+            if ch == '\t' {
+                // Tabs expand before row-splitting, so a row break can land
+                // mid-tab. Consume the tab column-by-column, mirroring
+                // compute_wrap_points_with_decorations.
+                let ch_width = tab_width - (content_col % tab_width);
+                for _ in 0..ch_width {
+                    if flat_col == col {
+                        return (base_row + sub_line, row_col);
+                    }
+                    flat_col += 1;
+                    content_col += 1;
+                    row_col += 1;
+                    if row_col >= max_width {
+                        sub_line += 1;
+                        row_col = 0;
+                    }
+                }
             } else {
-                crate::display::char_display_width(ch)
-            };
+                let ch_width = crate::display::char_display_width(ch);
 
-            // Wide char that doesn't fit on current row → push to next row.
-            // Padding is NOT added to flat_col (it's a rendering artifact,
-            // not content width).
-            if row_col + ch_width > max_width {
-                sub_line += 1;
-                row_col = 0;
-            }
+                // Wide char that doesn't fit on current row → push to next row.
+                // Padding is NOT added to flat_col (it's a rendering artifact,
+                // not content width).
+                if row_col + ch_width > max_width {
+                    sub_line += 1;
+                    row_col = 0;
+                }
 
-            if flat_col == col {
-                return (base_row + sub_line, row_col);
-            }
+                if flat_col == col {
+                    return (base_row + sub_line, row_col);
+                }
 
-            flat_col += ch_width;
-            row_col += ch_width;
+                flat_col += ch_width;
+                content_col += ch_width;
+                row_col += ch_width;
 
-            if row_col >= max_width {
-                sub_line += 1;
-                row_col = 0;
+                if row_col >= max_width {
+                    sub_line += 1;
+                    row_col = 0;
+                }
             }
         }
 
@@ -388,33 +409,36 @@ impl WrapMap {
         line_text: &str,
         sub_line: usize,
     ) -> Option<(usize, usize)> {
-        let wrap_points =
-            crate::wrap::compute_wrap_points(line_text, self.wrap_width, self.tab_width);
-        if wrap_points.is_empty() {
-            if sub_line == 0 {
-                let end = crate::display::display_width(line_text, self.tab_width.max(1));
-                return Some((0, end));
-            }
-            return None;
-        }
-
-        let mut starts = Vec::with_capacity(wrap_points.len() + 1);
-        starts.push(0);
-        let mut wp_idx = 0;
-        let mut current_display = 0;
+        // Self-contained walk mirroring `compute_wrap_points_with_decorations`
+        // (flat tab stops, tabs consumable column-by-column, wide chars pushed
+        // whole): row starts are recorded in flat display columns, so a row
+        // boundary can fall in the middle of a tab's expanded spaces.
+        let max_width = self.wrap_width.max(1);
         let tab_width = self.tab_width.max(1);
+        let mut starts = vec![0usize];
+        let mut flat_col = 0usize;
+        let mut row_col = 0usize;
 
-        for (char_idx, ch) in line_text.chars().enumerate() {
-            if wp_idx < wrap_points.len() && char_idx == wrap_points[wp_idx] {
-                starts.push(current_display);
-                wp_idx += 1;
-            }
-            let ch_width = if ch == '\t' {
-                tab_width - (current_display % tab_width)
+        for ch in line_text.chars() {
+            if ch == '\t' {
+                let ch_width = tab_width - (flat_col % tab_width);
+                for _ in 0..ch_width {
+                    if row_col >= max_width {
+                        starts.push(flat_col);
+                        row_col = 0;
+                    }
+                    flat_col += 1;
+                    row_col += 1;
+                }
             } else {
-                crate::display::char_display_width(ch)
-            };
-            current_display += ch_width;
+                let ch_width = crate::display::char_display_width(ch);
+                if row_col + ch_width > max_width {
+                    starts.push(flat_col);
+                    row_col = 0;
+                }
+                flat_col += ch_width;
+                row_col += ch_width;
+            }
         }
 
         if sub_line >= starts.len() {
@@ -425,7 +449,7 @@ impl WrapMap {
         let end = if sub_line + 1 < starts.len() {
             starts[sub_line + 1]
         } else {
-            current_display
+            flat_col
         };
 
         Some((start, end))

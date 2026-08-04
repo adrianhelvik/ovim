@@ -655,17 +655,17 @@ fn set_cursor_position(
 
         let tab_width = editor.options.tab_width;
 
-        // Compute the cursor's flat display column: expand tabs, then add
-        // inline decoration widths before the cursor's char position.
-        let exp = super::helpers::expand_tabs_with_mapping(&line_text, tab_width);
+        // Compute the cursor's flat display column: sum of display widths
+        // (tab stops, caret-notation control chars, wide chars) before the
+        // cursor, then add inline decoration widths before the cursor's char
+        // position. This must be a display COLUMN, not an expanded char
+        // index — they agree for tabs and control chars (which expand to
+        // width-1 chars) but diverge for wide chars (1 char, 2 columns),
+        // which previously placed the cursor short of its real column and,
+        // near wrap boundaries, a full visual row too high.
         let char_col = ovim_core::unicode::grapheme_to_char_col(&line_text, cursor_col).0;
-        let expanded_col = if char_col < exp.char_mapping.len() {
-            exp.char_mapping[char_col]
-        } else if !exp.char_mapping.is_empty() {
-            *exp.char_mapping.last().unwrap()
-        } else {
-            char_col
-        };
+        let expanded_col =
+            ovim_core::display::char_col_to_display_col(&line_text, char_col, tab_width);
         let inline_offset = editor.decorations.inline_width_before_projected(
             cursor_line,
             char_col,
@@ -1313,6 +1313,174 @@ mod cursor_screen_position_tests {
             "cursor drawn at terminal row {cursor_y}, expected {expected_y} \
              (abs visual row {abs_row}, viewport top visual row {top}); a value \
              {SUBROW} rows too low means scroll_subrow was ignored"
+        );
+    }
+
+    /// Renders `editor` and returns (screen rows as strings, hardware cursor).
+    fn render_frame(editor: &mut Editor, width: u16, height: u16) -> (Vec<String>, (u16, u16)) {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut line_cache = LineRenderCache::new();
+        terminal
+            .draw(|f| Renderer::render_to_frame(f, editor, &mut line_cache))
+            .unwrap();
+        let position = terminal.get_cursor_position().unwrap();
+        let buf = terminal.backend().buffer();
+        let mut rows = Vec::new();
+        for y in 0..buf.area.height {
+            let mut s = String::new();
+            for x in 0..buf.area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            rows.push(s);
+        }
+        (rows, (position.x, position.y))
+    }
+
+    /// Builds a wrapped editor and learns the real layout (text width, buffer
+    /// area, gutter) from a first render pass.
+    fn wrapped_editor_layout(
+        content: &str,
+        width: u16,
+        height: u16,
+    ) -> (Editor, usize, ovim_core::Rect, usize) {
+        let mut editor = Editor::with_content(content);
+        editor.init_window_manager(width, height);
+        editor.set_viewport_height(height as usize);
+        editor.options.wrap = true;
+        editor.options.scrolloff = 0;
+        render_frame(&mut editor, width, height);
+        let tw = editor.render_cache.last_text_width;
+        let area = editor.render_cache.last_buffer_area.unwrap();
+        let gutter = editor.render_cache.last_gutter_width;
+        assert!(tw > 4, "layout must yield a usable text width");
+        (editor, tw, area, gutter)
+    }
+
+    #[test]
+    fn cursor_on_wrapped_last_char_sits_on_second_visual_row() {
+        const WIDTH: u16 = 30;
+        const HEIGHT: u16 = 8;
+        let (probe, tw, ..) = wrapped_editor_layout("x", WIDTH, HEIGHT);
+        drop(probe);
+
+        // "h" + filler + "l": one char wider than the text width, so the
+        // final 'l' wraps to the second visual row.
+        let content = format!("h{}l", "a".repeat(tw - 1));
+        let (mut editor, tw2, area, gutter) = wrapped_editor_layout(&content, WIDTH, HEIGHT);
+        assert_eq!(tw, tw2);
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(0, ovim_core::unicode::CharCol(tw));
+
+        let (rows, (cx, cy)) = render_frame(&mut editor, WIDTH, HEIGHT);
+        let text_x = area.x as usize + gutter;
+        let row0: String = rows[area.y as usize]
+            .chars()
+            .skip(text_x)
+            .take(tw)
+            .collect();
+        let row1: String = rows[area.y as usize + 1]
+            .chars()
+            .skip(text_x)
+            .take(tw)
+            .collect();
+        assert!(
+            row0.starts_with('h'),
+            "first visual row must start with 'h', got {row0:?}"
+        );
+        assert!(
+            row1.starts_with('l'),
+            "wrapped 'l' must be on the second visual row, got {row1:?}"
+        );
+        assert_eq!(
+            (cx, cy),
+            (text_x as u16, area.y + 1),
+            "cursor on the wrapped 'l' must sit on the second visual row"
+        );
+    }
+
+    #[test]
+    fn cursor_after_wide_chars_uses_display_columns() {
+        const WIDTH: u16 = 30;
+        const HEIGHT: u16 = 8;
+        let (probe, tw, ..) = wrapped_editor_layout("x", WIDTH, HEIGHT);
+        drop(probe);
+        let half = tw / 2;
+
+        // Wide chars exactly fill the first visual row; two ASCII chars wrap.
+        // Cursor on the last 'a' (flat display col tw + 1) → row 1, col 1.
+        let content = format!("{}aa", "世".repeat(half));
+        let (mut editor, _, area, gutter) = wrapped_editor_layout(&content, WIDTH, HEIGHT);
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(0, ovim_core::unicode::CharCol(half + 1));
+
+        let (_, (cx, cy)) = render_frame(&mut editor, WIDTH, HEIGHT);
+        let text_x = area.x as usize + gutter;
+        assert_eq!(
+            (cx, cy),
+            (text_x as u16 + 1, area.y + 1),
+            "cursor on last 'a' after {half} wide chars must be at row 1 col 1"
+        );
+    }
+
+    #[test]
+    fn cursor_on_wrapped_wide_char_lands_on_wrapped_row() {
+        const WIDTH: u16 = 30;
+        const HEIGHT: u16 = 8;
+        let (probe, tw, ..) = wrapped_editor_layout("x", WIDTH, HEIGHT);
+        drop(probe);
+        let half = tw / 2;
+
+        // half+1 wide chars: first `half` fill row 0, the last one wraps.
+        let content = "世".repeat(half + 1);
+        let (mut editor, _, area, gutter) = wrapped_editor_layout(&content, WIDTH, HEIGHT);
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(0, ovim_core::unicode::CharCol(half));
+
+        let (_, (cx, cy)) = render_frame(&mut editor, WIDTH, HEIGHT);
+        let text_x = area.x as usize + gutter;
+        assert_eq!(
+            (cx, cy),
+            (text_x as u16, area.y + 1),
+            "cursor on the wrapped wide char must be at row 1 col 0"
+        );
+    }
+
+    #[test]
+    fn tabs_past_wrap_boundary_keep_cursor_and_content_aligned() {
+        // Width chosen so text_width is NOT a multiple of tab_width — flat
+        // tab expansion (renderer) and row-relative tab stops (wrap map)
+        // would diverge if either used the wrong coordinate space.
+        const WIDTH: u16 = 31;
+        const HEIGHT: u16 = 12;
+        let (probe, tw, ..) = wrapped_editor_layout("x\nz", WIDTH, HEIGHT);
+        drop(probe);
+
+        // Line 0 fills its first visual row, then has tabs on later rows.
+        let content = format!("{}{}\nz", "a".repeat(tw), "\t".repeat(8));
+        let (mut editor, tw2, area, gutter) = wrapped_editor_layout(&content, WIDTH, HEIGHT);
+        assert_eq!(tw, tw2);
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(1, ovim_core::unicode::CharCol(0));
+
+        let (rows, (cx, cy)) = render_frame(&mut editor, WIDTH, HEIGHT);
+        let text_x = area.x as usize + gutter;
+        // Find the screen row where 'z' actually rendered.
+        let z_row = rows
+            .iter()
+            .enumerate()
+            .skip(area.y as usize)
+            .find(|(_, r)| r.chars().nth(text_x) == Some('z'))
+            .map(|(y, _)| y)
+            .expect("line 1's 'z' must be on screen");
+        assert_eq!(
+            (cx as usize, cy as usize),
+            (text_x, z_row),
+            "cursor on line 1 must sit on the screen row where 'z' rendered"
         );
     }
 }

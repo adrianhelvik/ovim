@@ -22,33 +22,7 @@ use crate::display::char_display_width;
 /// * `max_width` — the available width in display columns (must be ≥ 1)
 /// * `tab_width` — how many display columns a tab occupies (tab stops)
 pub fn compute_wrap_points(line: &str, max_width: usize, tab_width: usize) -> Vec<usize> {
-    let max_width = max_width.max(1);
-    let mut wrap_points = Vec::new();
-    let mut current_width: usize = 0;
-
-    for (char_idx, ch) in line.chars().enumerate() {
-        let ch_width = if ch == '\t' {
-            tab_width - (current_width % tab_width)
-        } else {
-            char_display_width(ch)
-        };
-
-        if current_width + ch_width > max_width {
-            // This character doesn't fit on the current row → start a new row
-            wrap_points.push(char_idx);
-            current_width = ch_width;
-        } else {
-            current_width += ch_width;
-        }
-
-        // If we've exactly filled the row and there are more characters coming,
-        // the *next* character starts a new row. We don't push a wrap point
-        // here — it'll be handled when we see the next character overflow.
-        // (If current_width == max_width the next char with width ≥ 1 will
-        // trigger the `current_width + ch_width > max_width` branch above.)
-    }
-
-    wrap_points
+    compute_wrap_points_with_decorations(line, max_width, tab_width, &[])
 }
 
 /// Returns the number of visual rows a line occupies when wrapped.
@@ -86,13 +60,17 @@ pub fn compute_wrap_points_with_decorations(
     tab_width: usize,
     inline_widths: &[(usize, usize)],
 ) -> Vec<usize> {
-    if inline_widths.is_empty() {
-        return compute_wrap_points(line, max_width, tab_width);
-    }
-
     let max_width = max_width.max(1);
+    let tab_width = tab_width.max(1);
     let mut wrap_points = Vec::new();
+    // Columns consumed on the current visual row (content + decorations).
     let mut current_width: usize = 0;
+    // Flat content-only display column — the tab-stop base. The renderer
+    // expands tabs against the raw line BEFORE splicing decoration spans and
+    // BEFORE splitting into rows, so a tab's width depends only on the
+    // content columns before it: never on decoration widths, and never on
+    // the position within the current visual row.
+    let mut content_col: usize = 0;
     let mut dec_idx = 0;
     let mut last_char_idx = 0usize;
 
@@ -110,26 +88,44 @@ pub fn compute_wrap_points_with_decorations(
         while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 <= char_idx {
             let dec_w = inline_widths[dec_idx].1;
             for _ in 0..dec_w {
-                current_width += 1;
+                // Wrap BEFORE consuming the cell: if the row is already full,
+                // this cell starts the next row. (Incrementing first and then
+                // resetting silently dropped one decoration column whenever a
+                // decoration began on an exactly-full row, undercounting
+                // visual rows vs. the rendered line.)
                 if current_width >= max_width {
                     wrap_points.push(char_idx);
                     current_width = 0;
                 }
+                current_width += 1;
             }
             dec_idx += 1;
         }
 
-        let ch_width = if ch == '\t' {
-            tab_width - (current_width % tab_width)
+        if ch == '\t' {
+            // Tabs expand to spaces before row-splitting, so the renderer can
+            // break a row in the middle of a tab's spaces. Consume the tab
+            // column-by-column, wrapping lazily (a row that ends exactly full
+            // doesn't wrap until more content follows), with every mid-tab
+            // wrap recorded at the tab's own char index.
+            let ch_width = tab_width - (content_col % tab_width);
+            for _ in 0..ch_width {
+                if current_width >= max_width {
+                    wrap_points.push(char_idx);
+                    current_width = 0;
+                }
+                current_width += 1;
+                content_col += 1;
+            }
         } else {
-            char_display_width(ch)
-        };
-
-        if current_width + ch_width > max_width {
-            wrap_points.push(char_idx);
-            current_width = ch_width;
-        } else {
-            current_width += ch_width;
+            let ch_width = char_display_width(ch);
+            if current_width + ch_width > max_width {
+                wrap_points.push(char_idx);
+                current_width = ch_width;
+            } else {
+                current_width += ch_width;
+            }
+            content_col += ch_width;
         }
     }
 
@@ -139,23 +135,23 @@ pub fn compute_wrap_points_with_decorations(
     // at `last_char_idx` — i.e., the position one-past the last character —
     // so callers asking "where does this row break?" get a stable answer.
     //
-    // We track `remaining` columns ahead so an exact-fill at the very last
+    // Wrapping lazily BEFORE each cell means an exact-fill at the very last
     // column does NOT push a spurious wrap point. The renderer's
     // `split_line_into_rows` agrees: when content exactly fills a row and
     // nothing more follows, no extra row is emitted (the trailing-row
     // branch only fires when there's more content or no rows yet). Without
-    // this guard, "ab" + a 3-col EOL hint at width 5 would report 2 rows
-    // while the renderer reports 1.
-    let mut remaining: usize = inline_widths[dec_idx..].iter().map(|&(_, w)| w).sum();
+    // this, "ab" + a 3-col EOL hint at width 5 would report 2 rows
+    // while the renderer reports 1. And if the row is already full when a
+    // cell arrives, that cell starts the next row (rather than being lost
+    // to an increment-past-full-then-reset).
     while dec_idx < inline_widths.len() {
         let dec_w = inline_widths[dec_idx].1;
         for _ in 0..dec_w {
-            current_width += 1;
-            remaining -= 1;
-            if current_width >= max_width && remaining > 0 {
+            if current_width >= max_width {
                 wrap_points.push(last_char_idx);
                 current_width = 0;
             }
+            current_width += 1;
         }
         dec_idx += 1;
     }
@@ -396,5 +392,117 @@ mod tests {
                 points
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod flat_tab_expansion_consistency {
+    use super::*;
+
+    fn expand_flat(text: &str, tab_width: usize) -> String {
+        let mut out = String::new();
+        let mut col = 0;
+        for ch in text.chars() {
+            if ch == '\t' {
+                let n = tab_width - (col % tab_width);
+                out.push_str(&" ".repeat(n));
+                col += n;
+            } else {
+                out.push(ch);
+                col += crate::display::char_display_width(ch);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn wrap_count_matches_flat_tab_expansion() {
+        let mut mismatches = Vec::new();
+        let contents: Vec<String> = (0..40)
+            .flat_map(|prefix| {
+                (1..6).map(move |tabs| {
+                    format!(
+                        "{}{}{}",
+                        "a".repeat(prefix),
+                        "\t".repeat(tabs),
+                        "b".repeat(7)
+                    )
+                })
+            })
+            .chain((0..30).map(|p| format!("{}\tx\ty\tz", "世".repeat(p))))
+            .collect();
+        for tab_width in [2usize, 4, 8] {
+            for width in 3usize..30 {
+                for content in &contents {
+                    let rowwise = visual_line_count(content, width, tab_width);
+                    let expanded = expand_flat(content, tab_width);
+                    let flat = visual_line_count(&expanded, width, tab_width);
+                    if rowwise != flat {
+                        mismatches.push(format!(
+                            "width={width} tab={tab_width} content={content:?}: map={rowwise} renderer={flat}"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "{} mismatches, first 10:\n{}",
+            mismatches.len(),
+            mismatches[..mismatches.len().min(10)].join("\n")
+        );
+    }
+}
+
+#[cfg(test)]
+mod decoration_composed_consistency {
+    use super::*;
+
+    /// Reference: what the renderer actually does — splice decoration text
+    /// into the (tab-free) line before the char at its anchor, append
+    /// end-of-line decorations, then split the composed text into rows.
+    fn composed_row_count(line: &str, max_width: usize, decs: &[(usize, usize)]) -> usize {
+        let mut composed = String::new();
+        let mut dec_idx = 0;
+        for (char_idx, ch) in line.chars().enumerate() {
+            while dec_idx < decs.len() && decs[dec_idx].0 <= char_idx {
+                composed.push_str(&"x".repeat(decs[dec_idx].1));
+                dec_idx += 1;
+            }
+            composed.push(ch);
+        }
+        while dec_idx < decs.len() {
+            composed.push_str(&"x".repeat(decs[dec_idx].1));
+            dec_idx += 1;
+        }
+        visual_line_count(&composed, max_width, 4)
+    }
+
+    #[test]
+    fn decoration_row_count_matches_composed_text() {
+        let mut mismatches = Vec::new();
+        for width in 3usize..14 {
+            for line_len in 1usize..3 * width {
+                let line: String = "abcdefghij".chars().cycle().take(line_len).collect();
+                for anchor in 0..=line_len {
+                    for dec_w in 1usize..8 {
+                        let decs = vec![(anchor, dec_w)];
+                        let ours = visual_line_count_with_decorations(&line, width, 4, &decs);
+                        let reference = composed_row_count(&line, width, &decs);
+                        if ours != reference {
+                            mismatches.push(format!(
+                                "width={width} line_len={line_len} anchor={anchor} dec_w={dec_w}: ours={ours} composed={reference}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "{} mismatches, first 10:\n{}",
+            mismatches.len(),
+            mismatches[..mismatches.len().min(10)].join("\n")
+        );
     }
 }
