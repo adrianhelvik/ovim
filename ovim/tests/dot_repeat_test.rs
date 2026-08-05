@@ -1235,19 +1235,21 @@ fn test_dot_repeat_search_and_change_till_undo_redo_isolation_macro_flow() {
 
 #[test]
 fn test_cFX_esc_undo_redo_isolation_macro_flow() {
+    // Backward F is EXCLUSIVE with operators: the cursor char ('!') is not
+    // part of the changed range (OV-00288).
     editor_flow_test! {
         content "aXbXcY\n";
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "aXbXcY!\n");
         }
         step "cFX<Esc>" => |test| {
-            assert_eq!(test.buffer_content(), "aXb\n");
+            assert_eq!(test.buffer_content(), "aXb!\n");
         }
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "aXbXcY!\n");
         }
         step "<C-r>" => |test| {
-            assert_eq!(test.buffer_content(), "aXb\n");
+            assert_eq!(test.buffer_content(), "aXb!\n");
         }
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "aXbXcY!\n");
@@ -1260,19 +1262,21 @@ fn test_cFX_esc_undo_redo_isolation_macro_flow() {
 
 #[test]
 fn test_cTX_esc_undo_redo_isolation_macro_flow() {
+    // Backward T is EXCLUSIVE with operators: only the text strictly between
+    // the target and the cursor is changed (OV-00288).
     editor_flow_test! {
         content "aXbXcY\n";
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "aXbXcY!\n");
         }
         step "cTX<Esc>" => |test| {
-            assert_eq!(test.buffer_content(), "aXbX\n");
+            assert_eq!(test.buffer_content(), "aXbX!\n");
         }
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "aXbXcY!\n");
         }
         step "<C-r>" => |test| {
-            assert_eq!(test.buffer_content(), "aXbX\n");
+            assert_eq!(test.buffer_content(), "aXbX!\n");
         }
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "aXbXcY!\n");
@@ -1290,20 +1294,21 @@ fn test_dot_repeat_search_and_change_backward_find_undo_redo_isolation_macro_flo
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail!\n");
         }
+        // Backward F is exclusive: the 'Y' under the cursor survives (OV-00288).
         step "0/aXbXcY<Enter>fYcFXhi<Esc>" => |test| {
-            assert_eq!(test.buffer_content(), "aXbhi aXbXcY tail!\n");
+            assert_eq!(test.buffer_content(), "aXbhiY aXbXcY tail!\n");
         }
         step "ne." => |test| {
-            assert_eq!(test.buffer_content(), "aXbhi aXbhi tail!\n");
+            assert_eq!(test.buffer_content(), "aXbhiY aXbhiY tail!\n");
         }
         step "u" => |test| {
-            assert_eq!(test.buffer_content(), "aXbhi aXbXcY tail!\n");
+            assert_eq!(test.buffer_content(), "aXbhiY aXbXcY tail!\n");
         }
         step "<C-r>" => |test| {
-            assert_eq!(test.buffer_content(), "aXbhi aXbhi tail!\n");
+            assert_eq!(test.buffer_content(), "aXbhiY aXbhiY tail!\n");
         }
         step "u" => |test| {
-            assert_eq!(test.buffer_content(), "aXbhi aXbXcY tail!\n");
+            assert_eq!(test.buffer_content(), "aXbhiY aXbXcY tail!\n");
         }
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail!\n");
@@ -1321,20 +1326,21 @@ fn test_dot_repeat_search_and_change_backward_till_undo_redo_isolation_macro_flo
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail!\n");
         }
+        // Backward T is exclusive: the 'Y' under the cursor survives (OV-00288).
         step "0/aXbXcY<Enter>fYcTXhi<Esc>" => |test| {
-            assert_eq!(test.buffer_content(), "aXbXhi aXbXcY tail!\n");
+            assert_eq!(test.buffer_content(), "aXbXhiY aXbXcY tail!\n");
         }
         step "ne." => |test| {
-            assert_eq!(test.buffer_content(), "aXbXhi aXbXhi tail!\n");
+            assert_eq!(test.buffer_content(), "aXbXhiY aXbXhiY tail!\n");
         }
         step "u" => |test| {
-            assert_eq!(test.buffer_content(), "aXbXhi aXbXcY tail!\n");
+            assert_eq!(test.buffer_content(), "aXbXhiY aXbXcY tail!\n");
         }
         step "<C-r>" => |test| {
-            assert_eq!(test.buffer_content(), "aXbXhi aXbXhi tail!\n");
+            assert_eq!(test.buffer_content(), "aXbXhiY aXbXhiY tail!\n");
         }
         step "u" => |test| {
-            assert_eq!(test.buffer_content(), "aXbXhi aXbXcY tail!\n");
+            assert_eq!(test.buffer_content(), "aXbXhiY aXbXcY tail!\n");
         }
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail!\n");

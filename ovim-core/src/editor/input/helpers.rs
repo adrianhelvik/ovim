@@ -700,17 +700,24 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                 for (i, block_line) in block_lines.iter().enumerate() {
                     let target_line = line_idx + i;
                     if target_line >= buf.line_count() {
-                        break;
+                        // Vim appends new space-padded lines for block rows
+                        // past the last buffer line; breaking here silently
+                        // dropped those rows (OV-00291).
+                        let last = buf.line_count().saturating_sub(1);
+                        let last_len = buf.line_text(last).map(|l| l.chars().count()).unwrap_or(0);
+                        let padding = " ".repeat(paste_col);
+                        buf.insert_text_at(
+                            last,
+                            CharCol(last_len),
+                            &format!("\n{}{}", padding, block_line),
+                        );
+                        last_line = buf.line_count().saturating_sub(1);
+                        last_text_len = block_line.chars().count();
+                        continue;
                     }
 
                     if let Some(line_text) = buf.line_text(target_line) {
-                        let line_content = line_text;
-
-                        if line_content.is_empty() && target_line == buf.line_count() - 1 {
-                            break;
-                        }
-
-                        let line_len = line_content.chars().count();
+                        let line_len = line_text.chars().count();
 
                         // paste_col is grapheme-space; treat as char index here
                         // (pre-existing approximation — fine for ASCII, drifts at
@@ -903,16 +910,24 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
                 for (i, block_line) in block_lines.iter().enumerate() {
                     let target_line = line_idx + i;
                     if target_line >= buf.line_count() {
-                        break;
+                        // Vim appends new space-padded lines for block rows
+                        // past the last buffer line; breaking here silently
+                        // dropped those rows (OV-00291).
+                        let last = buf.line_count().saturating_sub(1);
+                        let last_len = buf.line_text(last).map(|l| l.chars().count()).unwrap_or(0);
+                        let padding = " ".repeat(paste_col);
+                        buf.insert_text_at(
+                            last,
+                            CharCol(last_len),
+                            &format!("\n{}{}", padding, block_line),
+                        );
+                        last_line = buf.line_count().saturating_sub(1);
+                        last_text_len = block_line.chars().count();
+                        continue;
                     }
 
                     if let Some(line_text) = buf.line_text(target_line) {
-                        let line_content = line_text;
-                        if line_content.is_empty() && target_line == buf.line_count() - 1 {
-                            break;
-                        }
-
-                        let line_len = line_content.chars().count();
+                        let line_len = line_text.chars().count();
 
                         if paste_col > line_len {
                             let padding = " ".repeat(paste_col - line_len);

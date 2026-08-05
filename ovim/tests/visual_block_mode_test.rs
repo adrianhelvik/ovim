@@ -45,12 +45,15 @@ fn test_ctrl_v_yank_paste_block() {
         .keys("G$") // Go to end of last line
         .press('p'); // Paste block
 
+    // Block rows past the last buffer line are appended as new space-padded
+    // lines, like vim (OV-00291).
     assert_eq!(
         test.buffer_content(),
-        "hello world\ntest line\nfoo barhel\n"
+        "hello world\ntest line\nfoo barhel\n       tes\n"
     );
-    // Cursor on last char of pasted text: "hel" at col 7, so last char at col 9
-    test.assert_cursor(2, 9);
+    // Cursor on last char of the final pasted row: "tes" padded to col 7,
+    // last char at col 9
+    test.assert_cursor(3, 9);
 }
 
 #[test]
@@ -344,10 +347,11 @@ fn test_ctrl_v_yank_uppercase() {
         .keys("G")
         .press('p');
 
-    // Pastes first line of block ("HEL") at line 2, col 1 -> "THELEST"
-    // Second block line ("WOR") is skipped (no line 3)
-    assert_eq!(test.buffer_content(), "HELLO\nWORLD\nTHELEST\n");
-    test.assert_cursor(2, 3); // Cursor on last pasted char 'L' (col 1 + 3 - 1)
+    // Pastes first line of block ("HEL") at line 2, col 1 -> "THELEST".
+    // Second block line ("WOR") is appended as a new padded line, like vim
+    // (OV-00291).
+    assert_eq!(test.buffer_content(), "HELLO\nWORLD\nTHELEST\n WOR\n");
+    test.assert_cursor(3, 3); // Cursor on last char of final pasted row
 }
 
 #[test]

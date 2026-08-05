@@ -358,8 +358,10 @@ impl Buffer {
     fn join_lines_impl(&mut self, count: usize, add_space: bool) -> anyhow::Result<()> {
         let start_line = self.cursor.line();
 
-        // Join 'count' times (count = 1 means join current with next)
-        let lines_to_join = count.max(1);
+        // Vim's [count]J joins `count` LINES, which is `count - 1` joins —
+        // with a minimum of one join so plain J still works (3J on
+        // `a\nb\nc\nd` gives `a b c`, leaving `d` untouched) — OV-00290.
+        let lines_to_join = count.saturating_sub(1).max(1);
 
         for _ in 0..lines_to_join {
             if start_line >= self.line_count().saturating_sub(1) {
@@ -699,15 +701,18 @@ impl Buffer {
         };
         let found_col = CharCol(found_idx);
 
+        // Backward F/T are EXCLUSIVE in vim: the cursor character itself is
+        // not deleted (dFx on `axbc` with cursor on `c` leaves `ac`) —
+        // OV-00288, mirrored in the interactive handler in char_motion.rs.
         let (start_col, end_col) = if forward {
             let end_excl = if till { found_col } else { found_col + 1 };
             (col, end_excl)
         } else if till {
-            // Backward till-motion (T): delete from just after target through cursor.
-            (found_col + 1, col + 1)
+            // Backward till-motion (T): delete from just after target up to cursor.
+            (found_col + 1, col)
         } else {
-            // Backward find-motion (F): delete from target through cursor.
-            (found_col, col + 1)
+            // Backward find-motion (F): delete from target up to cursor.
+            (found_col, col)
         };
 
         let deleted = self.delete_range(line_idx, start_col, line_idx, end_col);
@@ -798,25 +803,32 @@ impl Buffer {
         let start_grapheme = self.cursor().col();
         let start_col = self.cursor_char_col();
 
-        Motions::word_forward(self, count);
+        // Vim's eol rule applies only to the LAST word moved over: when the
+        // final `w` crosses a line boundary, the operated range ends at the
+        // eol of the line it crossed FROM — but earlier words (and their
+        // newlines) are deleted in full. Truncating whenever the whole
+        // motion crossed a line made `d2w` discard everything past the
+        // first newline (OV-00289).
+        let (prev_line, prev_col) = if count > 1 {
+            Motions::word_forward(self, count - 1);
+            (self.cursor().line(), self.cursor_char_col())
+        } else {
+            (start_line, start_col)
+        };
+        Motions::word_forward(self, 1);
 
         let end_line = self.cursor().line();
+        let mut del_end_line = end_line;
         let mut end_col = self.cursor_char_col();
 
-        // dw should stop at end of line, not cross newlines
-        if end_line > start_line {
-            if let Some(line) = self.line_text(start_line) {
-                let line_len = line.chars().count();
-                self.cursor_mut().set_position(start_line, start_grapheme);
-                let deleted =
-                    self.delete_range(start_line, start_col, start_line, CharCol(line_len));
-                self.cursor_mut().set_position(start_line, start_grapheme);
-                self.clamp_cursor_col();
-                return deleted;
+        if end_line > prev_line {
+            // Final word motion crossed a newline: stop at eol of the line
+            // holding the last word actually moved over.
+            if let Some(line) = self.line_text(prev_line) {
+                del_end_line = prev_line;
+                end_col = CharCol(line.chars().count());
             }
-        } else if end_line == start_line
-            && end_col == start_col
-            && end_line + 1 >= self.line_count()
+        } else if end_line == prev_line && end_col == prev_col && end_line + 1 >= self.line_count()
         {
             // Motion didn't move — last word on last line. Delete to end of line.
             if let Some(line) = self.line_text(end_line) {
@@ -824,7 +836,7 @@ impl Buffer {
             }
         }
 
-        let deleted = self.delete_range(start_line, start_col, end_line, end_col);
+        let deleted = self.delete_range(start_line, start_col, del_end_line, end_col);
         self.cursor_mut().set_position(start_line, start_grapheme);
         self.clamp_cursor_col();
         deleted
@@ -1239,25 +1251,25 @@ impl Buffer {
         let start_line = self.cursor().line();
         let start_col = self.cursor_char_col();
 
-        Motions::word_forward_big(self, count);
+        // Same last-word-only eol rule as delete_word_forward (OV-00289).
+        let (prev_line, prev_col) = if count > 1 {
+            Motions::word_forward_big(self, count - 1);
+            (self.cursor().line(), self.cursor_char_col())
+        } else {
+            (start_line, start_col)
+        };
+        Motions::word_forward_big(self, 1);
 
         let end_line = self.cursor().line();
+        let mut del_end_line = end_line;
         let mut end_col = self.cursor_char_col();
 
-        // dW should stop at end of line, not cross newlines (same as dw)
-        if end_line > start_line {
-            if let Some(line) = self.line_text(start_line) {
-                let line_len = line.chars().count();
-                self.set_cursor_char_col(start_line, start_col);
-                let deleted =
-                    self.delete_range(start_line, start_col, start_line, CharCol(line_len));
-                self.set_cursor_char_col(start_line, start_col);
-                self.clamp_cursor_col();
-                return deleted;
+        if end_line > prev_line {
+            if let Some(line) = self.line_text(prev_line) {
+                del_end_line = prev_line;
+                end_col = CharCol(line.chars().count());
             }
-        } else if end_line == start_line
-            && end_col == start_col
-            && end_line + 1 >= self.line_count()
+        } else if end_line == prev_line && end_col == prev_col && end_line + 1 >= self.line_count()
         {
             // Motion didn't move — last WORD on last line. Delete to end of line.
             if let Some(line) = self.line_text(end_line) {
@@ -1265,7 +1277,7 @@ impl Buffer {
             }
         }
 
-        let deleted = self.delete_range(start_line, start_col, end_line, end_col);
+        let deleted = self.delete_range(start_line, start_col, del_end_line, end_col);
         self.set_cursor_char_col(start_line, start_col);
         self.clamp_cursor_col();
         deleted

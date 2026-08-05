@@ -159,6 +159,147 @@ pub fn compute_wrap_points_with_decorations(
     wrap_points
 }
 
+/// Returns the visual position `(sub_line, row_col)` of a flat display
+/// column within a wrapped line.
+///
+/// `col` is a **flat display column** — the sum of content widths
+/// (characters plus decorations) from the line start, *without* padding
+/// from wide-char pushes. This matches how callers compute it:
+/// `char_col_to_display_col(..) + inline_width_before(..)`.
+///
+/// Simulates the same walk as [`compute_wrap_points_with_decorations`],
+/// so a `col` that lands inside a split tab or decoration is attributed
+/// to the visual row that actually renders that cell. This is the single
+/// source of truth for cursor-to-visual math: `WrapMap` and scrolloff
+/// calculations both delegate here (OV-00275).
+pub fn visual_position_for_flat_col(
+    line_text: &str,
+    col: usize,
+    max_width: usize,
+    tab_width: usize,
+    inline_widths: &[(usize, usize)],
+) -> (usize, usize) {
+    let max_width = max_width.max(1);
+    let tab_width = tab_width.max(1);
+
+    // `flat_col` tracks the flat display column (content plus decoration
+    // widths, no wrap-boundary padding) — this is the coordinate system
+    // `col` lives in. `row_col` tracks display columns consumed on the
+    // current visual row (used for wrap decisions). `content_col` is the
+    // flat content-only column: the tab-stop base, since the renderer
+    // expands tabs against the raw line before splicing decorations or
+    // splitting rows.
+    let mut flat_col: usize = 0;
+    let mut content_col: usize = 0;
+    let mut row_col: usize = 0;
+    let mut sub_line: usize = 0;
+    let mut dec_idx: usize = 0;
+
+    for (char_idx, ch) in line_text.chars().enumerate() {
+        // Decoration widths at this char position, added column-by-column
+        // to match compute_wrap_points_with_decorations.
+        while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 <= char_idx {
+            let dec_w = inline_widths[dec_idx].1;
+            for _ in 0..dec_w {
+                if flat_col == col {
+                    return (sub_line, row_col);
+                }
+                flat_col += 1;
+                row_col += 1;
+                if row_col >= max_width {
+                    sub_line += 1;
+                    row_col = 0;
+                }
+            }
+            dec_idx += 1;
+        }
+
+        if ch == '\t' {
+            // Tabs expand before row-splitting, so a row break can land
+            // mid-tab. Consume the tab column-by-column, mirroring
+            // compute_wrap_points_with_decorations.
+            let ch_width = tab_width - (content_col % tab_width);
+            for _ in 0..ch_width {
+                if flat_col == col {
+                    return (sub_line, row_col);
+                }
+                flat_col += 1;
+                content_col += 1;
+                row_col += 1;
+                if row_col >= max_width {
+                    sub_line += 1;
+                    row_col = 0;
+                }
+            }
+        } else {
+            let ch_width = char_display_width(ch);
+
+            // Wide char that doesn't fit on current row → push to next row.
+            // Padding is NOT added to flat_col (it's a rendering artifact,
+            // not content width).
+            if row_col + ch_width > max_width {
+                sub_line += 1;
+                row_col = 0;
+            }
+
+            if flat_col == col {
+                return (sub_line, row_col);
+            }
+
+            flat_col += ch_width;
+            content_col += ch_width;
+            row_col += ch_width;
+
+            if row_col >= max_width {
+                sub_line += 1;
+                row_col = 0;
+            }
+        }
+    }
+
+    // Post-loop drain: any decoration anchored at or beyond the end of
+    // the line text is appended after content (mirroring the renderer's
+    // append-after-content fallthrough in `apply_inline_decorations`).
+    // Without this drain, end-of-line inlay hints (e.g. type-after-
+    // identifier) would not be counted in the visual row math here,
+    // and the cursor would land one row above where the renderer
+    // actually drew it. (OV-00257)
+    //
+    // The `remaining > 0` guard mirrors compute_wrap_points_with_decorations:
+    // an exact-fill at the very last column must not advance the visual row,
+    // so the cursor stays on the same row the renderer drew the content on.
+    let mut remaining: usize = inline_widths[dec_idx..].iter().map(|&(_, w)| w).sum();
+    while dec_idx < inline_widths.len() {
+        let dec_w = inline_widths[dec_idx].1;
+        for _ in 0..dec_w {
+            if flat_col == col {
+                return (sub_line, row_col);
+            }
+            flat_col += 1;
+            row_col += 1;
+            remaining -= 1;
+            if row_col >= max_width && remaining > 0 {
+                sub_line += 1;
+                row_col = 0;
+            }
+        }
+        dec_idx += 1;
+    }
+
+    // Col is at or past the end of the line content (and decorations).
+    if col <= flat_col {
+        return (sub_line, row_col);
+    }
+    let past = col - flat_col;
+    let final_col = row_col + past;
+    if final_col >= max_width {
+        let extra = final_col / max_width;
+        (sub_line + extra, final_col % max_width)
+    } else {
+        (sub_line, final_col)
+    }
+}
+
 /// Like [`visual_line_count`] but accounts for inline decorations.
 pub fn visual_line_count_with_decorations(
     line: &str,
@@ -170,6 +311,71 @@ pub fn visual_line_count_with_decorations(
         return 1;
     }
     compute_wrap_points_with_decorations(line, max_width, tab_width, inline_widths).len() + 1
+}
+
+#[cfg(test)]
+mod visual_position_tests {
+    use super::*;
+
+    #[test]
+    fn cursor_at_start_of_split_tab_stays_on_first_row() {
+        // Width 5, tab_width 4: "\t\ta" expands to 8 tab cells + "a".
+        // Row 0 holds cells 0-4, so the second tab's first cell (flat col 4)
+        // renders on row 0 and its remaining cells on row 1. A cursor on the
+        // second tab must be attributed to row 0, col 4 (OV-00275).
+        assert_eq!(visual_position_for_flat_col("\t\ta", 4, 5, 4, &[]), (0, 4));
+        // The "a" (flat col 8) lands on row 1, col 3.
+        assert_eq!(visual_position_for_flat_col("\t\ta", 8, 5, 4, &[]), (1, 3));
+    }
+
+    #[test]
+    fn cursor_on_plain_wrap_boundary() {
+        // "abcdef" at width 5: "f" (flat col 5) starts row 1.
+        assert_eq!(visual_position_for_flat_col("abcdef", 4, 5, 4, &[]), (0, 4));
+        assert_eq!(visual_position_for_flat_col("abcdef", 5, 5, 4, &[]), (1, 0));
+    }
+
+    #[test]
+    fn cursor_on_pushed_wide_char_lands_on_next_row() {
+        // Width 3: "aa世" wraps the wide char to row 1 (flat col 2 = the
+        // wide char, no padding counted in flat cols).
+        assert_eq!(visual_position_for_flat_col("aa世", 2, 3, 4, &[]), (1, 0));
+    }
+
+    #[test]
+    fn agrees_with_wrap_row_count_on_tab_sweep() {
+        // The sub_line of the last content cell must never exceed the row
+        // count implied by compute_wrap_points for the same line.
+        for width in 1..12 {
+            for tab_width in 1..8 {
+                for text in ["\t", "a\tb", "\t\ta", "ab\tcd\te", "\ta\t"] {
+                    let rows = visual_line_count(text, width, tab_width);
+                    let total: usize = {
+                        let mut content = 0usize;
+                        let mut flat = 0usize;
+                        for ch in text.chars() {
+                            let w = if ch == '\t' {
+                                tab_width.max(1) - (content % tab_width.max(1))
+                            } else {
+                                char_display_width(ch)
+                            };
+                            content += w;
+                            flat += w;
+                        }
+                        flat
+                    };
+                    for col in 0..=total {
+                        let (sub, _) =
+                            visual_position_for_flat_col(text, col, width, tab_width, &[]);
+                        assert!(
+                            sub < rows + 1,
+                            "sub_line {sub} out of range for {text:?} col {col} width {width} tab {tab_width} rows {rows}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

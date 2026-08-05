@@ -93,10 +93,11 @@ fn test_tilde_dot_repeat_undo_redo() {
 fn test_join_with_count_dot_repeat() {
     let mut test = EditorTest::new("a\nb\nc\nd\ne\nf");
 
+    // Vim's [count]J joins count LINES (count-1 joins) — OV-00290.
     test.keys("3J"); // Join 3 lines: "a b c"
-    test.press('.'); // Repeat: join 3 more lines: "a b c d e f"
+    test.press('.'); // Repeat: join 3 lines again: "a b c d e"
 
-    assert_eq!(test.buffer_content(), "a b c d e f\n");
+    assert_eq!(test.buffer_content(), "a b c d e\nf\n");
 }
 
 #[test]

@@ -106,11 +106,19 @@ fn wait_for_lsp_ready(client: &OvimClient, timeout_ms: u64) -> Result<()> {
     let start = Instant::now();
     let timeout = Duration::from_millis(timeout_ms);
 
+    // Files whose language has no LSP (markdown, HCL) spawn zero servers.
+    // Requiring a non-empty list forever would stall the full timeout and
+    // then blame the servers (OV-00282) — so give startup a short grace
+    // period to register servers, then treat a still-empty list as ready.
+    let empty_grace = Duration::from_millis(1500.min(timeout_ms));
+
     loop {
         if let Ok(lsp_status) = client.get_lsp_status() {
-            let all_ready = !lsp_status.servers.is_empty()
-                && lsp_status.servers.iter().all(|s| s.has_capabilities);
-            if all_ready {
+            if lsp_status.servers.is_empty() {
+                if start.elapsed() >= empty_grace {
+                    return Ok(());
+                }
+            } else if lsp_status.servers.iter().all(|s| s.has_capabilities) {
                 return Ok(());
             }
         }
@@ -464,12 +472,13 @@ fn cmd_edit_file(file_path: &str, line: Option<usize>, old: &str, new: &str) -> 
         let mut new_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         new_lines[line_num - 1] = new_line;
 
-        let mut new_content = new_lines.join("\n");
+        let sep = line_separator(&content);
+        let mut new_content = new_lines.join(sep);
         if content.ends_with('\n') {
-            new_content.push('\n');
+            new_content.push_str(sep);
         }
 
-        atomic_write(file_path, &new_content)?;
+        overwrite_file(file_path, &new_content)?;
         println!("Replaced on line {}", line_num);
     } else {
         // Replace in whole buffer — must be unique
@@ -494,7 +503,7 @@ fn cmd_edit_file(file_path: &str, line: Option<usize>, old: &str, new: &str) -> 
         }
 
         let new_content = content.replacen(&old_expanded, &new_expanded, 1);
-        atomic_write(file_path, &new_content)?;
+        overwrite_file(file_path, &new_content)?;
         println!("Replaced 1 occurrence");
     }
 
@@ -558,12 +567,13 @@ fn cmd_insert_file(
         anyhow::bail!("Either --after or --before must be specified");
     }
 
-    let mut new_content = lines.join("\n");
+    let sep = line_separator(&content);
+    let mut new_content = lines.join(sep);
     if content.ends_with('\n') {
-        new_content.push('\n');
+        new_content.push_str(sep);
     }
 
-    atomic_write(file_path, &new_content)?;
+    overwrite_file(file_path, &new_content)?;
     Ok(())
 }
 
@@ -598,12 +608,13 @@ fn cmd_delete_lines_file(file_path: &str, from: usize, to: usize) -> Result<()> 
     }
 
     let deleted_count = to - from + 1;
-    let mut new_content = new_lines.join("\n");
+    let sep = line_separator(&content);
+    let mut new_content = new_lines.join(sep);
     if content.ends_with('\n') {
-        new_content.push('\n');
+        new_content.push_str(sep);
     }
 
-    atomic_write(file_path, &new_content)?;
+    overwrite_file(file_path, &new_content)?;
     println!("Deleted {} line(s) ({}-{})", deleted_count, from, to);
     Ok(())
 }
@@ -650,28 +661,35 @@ fn cmd_read_lines_file(file_path: &str, from: usize, to: usize, json_output: boo
     Ok(())
 }
 
-/// Atomic write: write to .tmp file then rename
-fn atomic_write(file_path: &str, content: &str) -> Result<()> {
+/// Overwrite the file in place (truncate + write on the existing inode).
+///
+/// This matches `Buffer::save_as_async`, which deliberately writes in place
+/// to preserve permissions, ownership, ACLs, hard links, and symlink
+/// targets. The previous tmp-then-rename scheme used
+/// `path.with_extension("tmp")`, which REPLACED the extension — silently
+/// destroying any sibling `foo.tmp` the user owned, resetting the target's
+/// permissions, and replacing symlinks with regular files (OV-00278).
+fn overwrite_file(file_path: &str, content: &str) -> Result<()> {
     use std::io::Write;
 
-    let path = std::path::Path::new(file_path);
-    let tmp_path = path.with_extension("tmp");
-
-    let mut f = std::fs::File::create(&tmp_path).context(format!(
-        "Failed to create temp file: {}",
-        tmp_path.display()
-    ))?;
+    let mut f = std::fs::File::create(file_path)
+        .context(format!("Failed to open file for writing: {}", file_path))?;
     f.write_all(content.as_bytes())?;
     f.flush()?;
     f.sync_all()?;
 
-    std::fs::rename(&tmp_path, path).context(format!(
-        "Failed to rename {} -> {}",
-        tmp_path.display(),
-        path.display()
-    ))?;
-
     Ok(())
+}
+
+/// The separator to re-join `str::lines()` output with: preserves CRLF
+/// files instead of silently rewriting every line ending to LF (OV-00280).
+/// Mixed-ending files are normalized to the dominant style.
+fn line_separator(content: &str) -> &'static str {
+    if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
 }
 
 // ─── Session Control ─────────────────────────────────────────────────────────
@@ -703,8 +721,12 @@ fn cmd_sessions() -> Result<()> {
             .file
             .as_ref()
             .map(|f| {
-                if f.len() > 40 {
-                    format!("...{}", &f[f.len() - 37..])
+                // Truncate by chars, not bytes: byte slicing panics when the
+                // cut lands inside a multibyte char (OV-00281).
+                let char_count = f.chars().count();
+                if char_count > 40 {
+                    let tail: String = f.chars().skip(char_count - 37).collect();
+                    format!("...{}", tail)
                 } else {
                     f.clone()
                 }
@@ -1294,12 +1316,14 @@ fn cmd_wait_lsp(session: &SessionInfo, timeout_ms: u64) -> Result<()> {
     }
 }
 
-/// List all configured languages and their LSP status
+/// List all configured languages and their LSP status.
+///
+/// Uses the catalog with user-registered languages (init.lua / plugins) so
+/// the listing agrees with what the editor itself detects, not just the
+/// built-in set.
 fn cmd_list_languages(verbose: bool) -> Result<()> {
-    use crate::language_config::LanguageRegistry;
-
-    let registry = LanguageRegistry::get();
-    let languages = registry.all();
+    let catalog = ovim_core::language_catalog::LanguageCatalog::with_user_languages();
+    let languages = catalog.all();
 
     if languages.is_empty() {
         println!("No languages configured.");
@@ -1308,7 +1332,8 @@ fn cmd_list_languages(verbose: bool) -> Result<()> {
 
     if verbose {
         println!("Configured Languages:\n");
-        for lang in languages {
+        for definition in &languages {
+            let lang = &definition.config;
             println!("Language: {} ({})", lang.name, lang.id);
             println!("  Extensions: {}", lang.extensions.join(", "));
 
@@ -1318,8 +1343,17 @@ fn cmd_list_languages(verbose: bool) -> Result<()> {
 
             if let Some(ref syntax) = lang.syntax {
                 println!("  Syntax: {}", syntax.grammar);
+            } else if definition.syntax.is_some() {
+                println!("  Syntax: user-registered parser");
             } else {
                 println!("  Syntax: None");
+            }
+
+            if !matches!(
+                definition.owner,
+                ovim_core::language_catalog::RegistrationOwner::BuiltIn
+            ) {
+                println!("  Registered by: {}", definition.owner);
             }
 
             if let Some(ref lsp) = lang.lsp {
@@ -1349,7 +1383,8 @@ fn cmd_list_languages(verbose: bool) -> Result<()> {
         println!("{:<15} {:<20} {:<10}", "ID", "Name", "LSP");
         println!("{}", "-".repeat(50));
 
-        for lang in languages {
+        for definition in &languages {
+            let lang = &definition.config;
             let lsp_status = if lang.lsp.is_some() {
                 "Configured"
             } else {
@@ -1365,9 +1400,13 @@ fn cmd_list_languages(verbose: bool) -> Result<()> {
     Ok(())
 }
 
-/// Check language configuration and LSP status for a file
+/// Check language configuration and LSP status for a file.
+///
+/// Uses the catalog with user-registered languages (init.lua / plugins) so
+/// detection agrees with what the editor itself does, not just the
+/// built-in set.
 fn cmd_check_lsp(file_path: &str, verbose: bool) -> Result<()> {
-    use crate::language_config::{find_lsp_command, find_project_root, LanguageRegistry};
+    use crate::language_config::{find_lsp_command, find_project_root};
     use std::path::Path;
 
     let path = Path::new(file_path);
@@ -1380,13 +1419,14 @@ fn cmd_check_lsp(file_path: &str, verbose: bool) -> Result<()> {
     println!("File: {}", abs_path.display());
     println!();
 
-    let registry = LanguageRegistry::get();
-    let lang_config = match registry.detect(&abs_path) {
-        Some(config) => config,
+    let catalog = ovim_core::language_catalog::LanguageCatalog::with_user_languages();
+    let definition = match catalog.detect(&abs_path) {
+        Some(definition) => definition,
         None => {
             println!("No language configuration found for this file");
             println!("\nSupported extensions: ");
-            for lang in registry.all() {
+            for definition in catalog.all() {
+                let lang = &definition.config;
                 if !lang.extensions.is_empty() {
                     println!("  {} -> {}", lang.extensions.join(", "), lang.name);
                 }
@@ -1394,15 +1434,24 @@ fn cmd_check_lsp(file_path: &str, verbose: bool) -> Result<()> {
             return Ok(());
         }
     };
+    let lang_config = &definition.config;
 
     println!(
         "Language Detected: {} ({})",
         lang_config.name, lang_config.id
     );
     println!("  Extensions: {}", lang_config.extensions.join(", "));
+    if !matches!(
+        definition.owner,
+        ovim_core::language_catalog::RegistrationOwner::BuiltIn
+    ) {
+        println!("  Registered by: {}", definition.owner);
+    }
 
     if let Some(ref syntax) = lang_config.syntax {
         println!("\nSyntax Highlighting: {} grammar", syntax.grammar);
+    } else if definition.syntax.is_some() {
+        println!("\nSyntax Highlighting: user-registered parser");
     } else {
         println!("\nSyntax Highlighting: Not configured");
     }

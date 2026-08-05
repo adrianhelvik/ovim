@@ -566,9 +566,13 @@ impl TextObjects {
         let mut tag_name = None;
         let chars: Vec<char> = text.chars().collect();
 
-        // Search backward for opening tag
-        let mut i = cursor_offset.min(chars.len().saturating_sub(1));
-        while i > 0 {
+        // Search backward for opening tag (index 0 included: `while i > 0`
+        // never tested a `<` at buffer start — OV-00287)
+        if chars.is_empty() {
+            return None;
+        }
+        let mut i = cursor_offset.min(chars.len() - 1);
+        loop {
             if chars[i] == '<' && i + 1 < chars.len() && chars[i + 1] != '/' {
                 // Found potential opening tag
                 let mut name_end = i + 1;
@@ -591,7 +595,10 @@ impl TextObjects {
                     }
                 }
             }
-            i = i.saturating_sub(1);
+            if i == 0 {
+                break;
+            }
+            i -= 1;
         }
 
         let tag_start = tag_start?;
@@ -629,10 +636,14 @@ impl TextObjects {
                     if found_name == tag_name {
                         depth -= 1;
                         if depth == 0 {
-                            // Found matching closing tag
+                            // Found matching closing tag. Downstream end_col
+                            // is EXCLUSIVE, so both ends are one-past-last
+                            // (the old inclusive values kept the last content
+                            // char on `dit` and the closing `>` on `dat` —
+                            // OV-00286).
                             let content_start = opening_tag_end + 1;
-                            let content_end = search_pos.saturating_sub(1);
-                            let closing_tag_end = name_end;
+                            let content_end = search_pos;
+                            let closing_tag_end = name_end + 1;
 
                             // Convert char offsets to line/col positions
                             let (start_line, start_col, end_line, end_col) = if include_tags {
@@ -640,7 +651,7 @@ impl TextObjects {
                                 Self::char_offset_to_position(buffer, tag_start, closing_tag_end)
                             } else {
                                 // Inner - just the content between tags
-                                if content_start > content_end {
+                                if content_start >= content_end {
                                     return None; // Empty tag
                                 }
                                 Self::char_offset_to_position(buffer, content_start, content_end)

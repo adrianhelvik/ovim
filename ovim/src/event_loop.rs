@@ -1882,7 +1882,17 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
     // Match positions are char offsets — never byte offsets. CharCol/GraphemeCol
     // are usize-wrapping newtypes, so the type system can't catch byte-offset
     // smuggling.
+    //
+    // Multi-line needles are matched against the whole buffer (per-line
+    // search can never see across terminators — OV-00285), single-line
+    // needles per line as before.
+    let multi_line_old = old.contains('\n');
     let matches: Vec<(usize, usize)> = if let Some(line_idx) = line {
+        if multi_line_old {
+            return ApiResponse::Error(ErrorResponse {
+                error: "Multi-line --old cannot be combined with --line".to_string(),
+            });
+        }
         if line_idx >= total_lines {
             return ApiResponse::Error(ErrorResponse {
                 error: format!(
@@ -1896,6 +1906,15 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
         find_char_positions(&line_content, old)
             .into_iter()
             .map(|c| (line_idx, c))
+            .collect()
+    } else if multi_line_old {
+        let content = rope.to_string();
+        find_char_positions(&content, old)
+            .into_iter()
+            .map(|abs| {
+                let l = rope.char_to_line(abs);
+                (l, abs - rope.line_to_char(l))
+            })
             .collect()
     } else {
         let mut found = Vec::new();
@@ -1914,13 +1933,24 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
         });
     }
 
-    if matches.len() > 1 && line.is_none() {
-        return ApiResponse::Error(ErrorResponse {
-            error: format!(
+    // Multiple matches are ambiguous even when --line was given: file mode
+    // refuses ("Be more specific"), and session mode must honor the same
+    // uniqueness contract instead of silently editing the first hit
+    // (OV-00284).
+    if matches.len() > 1 {
+        let error = if line.is_some() {
+            format!(
+                "Text found {} times on line {}. Be more specific.",
+                matches.len(),
+                matches[0].0 + 1
+            )
+        } else {
+            format!(
                 "Ambiguous: found {} matches. Use --line to specify which line.",
                 matches.len()
-            ),
-        });
+            )
+        };
+        return ApiResponse::Error(ErrorResponse { error });
     }
 
     let (match_line, match_col_chars) = matches[0];
@@ -1939,14 +1969,19 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
 
     // Perform the edit (delete + insert) inside a `record()` session so the
     // edits land on `edit_log` and feed a single `Change::Recorded` undo
-    // entry. Mark buffer modified so LSP didChange fires.
+    // entry. Mark buffer modified so LSP didChange fires. The end position
+    // is derived from absolute char offsets so a multi-line `old` deletes
+    // across line boundaries (OV-00285).
     let old_chars = old.chars().count();
-    let end_col_chars = match_col_chars + old_chars;
+    let start_abs = rope.line_to_char(match_line) + match_col_chars;
+    let end_abs = start_abs + old_chars;
+    let end_line = rope.char_to_line(end_abs);
+    let end_col_chars = end_abs - rope.line_to_char(end_line);
     let ((), edits) = editor.buffer_mut().record(|buf| {
         buf.delete_range(
             match_line,
             ovim_core::unicode::CharCol(match_col_chars),
-            match_line,
+            end_line,
             ovim_core::unicode::CharCol(end_col_chars),
         );
         buf.insert_text_at(
@@ -1957,9 +1992,18 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
     });
 
     if !edits.is_empty() {
-        let cursor_grapheme_col = prefix_graphemes + ovim_core::unicode::grapheme_count(new);
+        let (cursor_line_after, cursor_grapheme_col) = match new.rfind('\n') {
+            Some(pos) => (
+                match_line + new.matches('\n').count(),
+                ovim_core::unicode::grapheme_count(&new[pos + 1..]),
+            ),
+            None => (
+                match_line,
+                prefix_graphemes + ovim_core::unicode::grapheme_count(new),
+            ),
+        };
         let cursor_after = ovim::editor::CursorPos::new(
-            match_line,
+            cursor_line_after,
             ovim_core::unicode::GraphemeCol(cursor_grapheme_col),
         );
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
@@ -1995,8 +2039,16 @@ fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &s
         editor.buffer().rope().line_to_char(line)
     };
 
-    // Ensure text ends with newline
-    let text_with_nl = if text.ends_with('\n') {
+    // Appending past a terminator-less last line must open a NEW line, not
+    // splice into the existing one: for `alpha\nbeta`, inserting `TEXT\n` at
+    // len_chars produced `alpha\nbetaTEXT\n` (OV-00279). Lead with `\n` and
+    // keep the file's missing trailing newline, matching file mode.
+    let rope_end = editor.buffer().rope().len_chars();
+    let appending_after_unterminated_line =
+        char_idx == rope_end && rope_end > 0 && editor.buffer().rope().char(rope_end - 1) != '\n';
+    let text_with_nl = if appending_after_unterminated_line {
+        format!("\n{}", text.strip_suffix('\n').unwrap_or(text))
+    } else if text.ends_with('\n') {
         text.to_string()
     } else {
         format!("{}\n", text)

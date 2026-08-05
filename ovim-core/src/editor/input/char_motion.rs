@@ -206,9 +206,12 @@ fn handle_char_find(
 
     let end = editor.cursor_position();
 
-    // For backward motions the cursor moved before start, so swap the range
+    // For backward motions the cursor moved before start, so swap the range.
+    // Backward F/T are EXCLUSIVE in vim: the original cursor character is
+    // not part of the operated range (dFx on `axbc` with cursor on `c`
+    // leaves `ac`, not `a`) — OV-00288.
     let range = if motion.is_backward() {
-        OperatorRange::inclusive(end, start)
+        OperatorRange::exclusive((end.line, end.col.0), (start.line, start.col.0))
     } else {
         OperatorRange::inclusive(start, end)
     };
@@ -394,7 +397,10 @@ fn apply_linewise_operator(
             let mut yanked = String::new();
             for line_idx in start_line..=end_line {
                 if let Some(line) = editor.buffer().line_text(line_idx) {
+                    // line_text strips terminators — re-add them or the
+                    // register holds one glued line (OV-00292).
                     yanked.push_str(&line);
+                    yanked.push('\n');
                 }
             }
             editor.yank_to_register_with_type(yanked, RegisterType::Line);

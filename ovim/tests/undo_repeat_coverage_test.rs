@@ -591,28 +591,30 @@ fn test_dt_undo_redo() {
 
 #[test]
 fn test_dF_undo_redo() {
+    // Backward F is exclusive: the 'Y' under the cursor survives (OV-00288).
     let mut test = EditorTest::new("aXbXcY");
     test.keys("$dFX");
-    assert_eq!(test.buffer_content(), "aXb\n");
+    assert_eq!(test.buffer_content(), "aXbY\n");
 
     test.keys("u");
     assert_eq!(test.buffer_content(), "aXbXcY\n");
 
     test.keys("<C-r>");
-    assert_eq!(test.buffer_content(), "aXb\n");
+    assert_eq!(test.buffer_content(), "aXbY\n");
 }
 
 #[test]
 fn test_dT_undo_redo() {
+    // Backward T is exclusive: the 'Y' under the cursor survives (OV-00288).
     let mut test = EditorTest::new("aXbXcY");
     test.keys("$dTX");
-    assert_eq!(test.buffer_content(), "aXbX\n");
+    assert_eq!(test.buffer_content(), "aXbXY\n");
 
     test.keys("u");
     assert_eq!(test.buffer_content(), "aXbXcY\n");
 
     test.keys("<C-r>");
-    assert_eq!(test.buffer_content(), "aXbX\n");
+    assert_eq!(test.buffer_content(), "aXbXY\n");
 }
 
 #[test]

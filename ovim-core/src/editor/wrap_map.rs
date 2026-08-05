@@ -268,126 +268,14 @@ impl WrapMap {
         inline_widths: &[(usize, usize)],
     ) -> (usize, usize) {
         let base_row = self.logical_to_visual(line);
-        let max_width = self.wrap_width;
-
-        // `flat_col` tracks the flat display column (content plus decoration
-        // widths, no wrap-boundary padding) — this is the coordinate system
-        // `col` lives in. `row_col` tracks display columns consumed on the
-        // current visual row (used for wrap decisions). `content_col` is the
-        // flat content-only column: the tab-stop base, since the renderer
-        // expands tabs against the raw line before splicing decorations or
-        // splitting rows.
-        let mut flat_col: usize = 0;
-        let mut content_col: usize = 0;
-        let mut row_col: usize = 0;
-        let mut sub_line: usize = 0;
-        let mut dec_idx: usize = 0;
-        let tab_width = self.tab_width.max(1);
-
-        for (_char_idx, ch) in line_text.chars().enumerate() {
-            // Decoration widths at this char position, added column-by-column
-            // to match compute_wrap_points_with_decorations.
-            while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 <= _char_idx {
-                let dec_w = inline_widths[dec_idx].1;
-                for _ in 0..dec_w {
-                    if flat_col == col {
-                        return (base_row + sub_line, row_col);
-                    }
-                    flat_col += 1;
-                    row_col += 1;
-                    if row_col >= max_width {
-                        sub_line += 1;
-                        row_col = 0;
-                    }
-                }
-                dec_idx += 1;
-            }
-
-            if ch == '\t' {
-                // Tabs expand before row-splitting, so a row break can land
-                // mid-tab. Consume the tab column-by-column, mirroring
-                // compute_wrap_points_with_decorations.
-                let ch_width = tab_width - (content_col % tab_width);
-                for _ in 0..ch_width {
-                    if flat_col == col {
-                        return (base_row + sub_line, row_col);
-                    }
-                    flat_col += 1;
-                    content_col += 1;
-                    row_col += 1;
-                    if row_col >= max_width {
-                        sub_line += 1;
-                        row_col = 0;
-                    }
-                }
-            } else {
-                let ch_width = crate::display::char_display_width(ch);
-
-                // Wide char that doesn't fit on current row → push to next row.
-                // Padding is NOT added to flat_col (it's a rendering artifact,
-                // not content width).
-                if row_col + ch_width > max_width {
-                    sub_line += 1;
-                    row_col = 0;
-                }
-
-                if flat_col == col {
-                    return (base_row + sub_line, row_col);
-                }
-
-                flat_col += ch_width;
-                content_col += ch_width;
-                row_col += ch_width;
-
-                if row_col >= max_width {
-                    sub_line += 1;
-                    row_col = 0;
-                }
-            }
-        }
-
-        // Post-loop drain: any decoration anchored at or beyond the end of
-        // the line text is appended after content (mirroring the renderer's
-        // append-after-content fallthrough in `apply_inline_decorations`).
-        // Without this drain, end-of-line inlay hints (e.g. type-after-
-        // identifier) would not be counted in the visual row math here,
-        // and the cursor would land one row above where the renderer
-        // actually drew it. (OV-00257)
-        //
-        // The `remaining > 0` guard mirrors the one in
-        // `compute_wrap_points_with_decorations`: an exact-fill at the very
-        // last column must not advance the visual row, so the cursor stays
-        // on the same row the renderer drew the content on.
-        let mut remaining: usize = inline_widths[dec_idx..].iter().map(|&(_, w)| w).sum();
-        while dec_idx < inline_widths.len() {
-            let dec_w = inline_widths[dec_idx].1;
-            for _ in 0..dec_w {
-                if flat_col == col {
-                    return (base_row + sub_line, row_col);
-                }
-                flat_col += 1;
-                row_col += 1;
-                remaining -= 1;
-                if row_col >= max_width && remaining > 0 {
-                    sub_line += 1;
-                    row_col = 0;
-                }
-            }
-            dec_idx += 1;
-        }
-
-        // Col is at or past the end of the line content (and decorations).
-        if col <= flat_col {
-            return (base_row + sub_line, row_col);
-        }
-        let remaining = col - flat_col;
-        let final_col = row_col + remaining;
-        if final_col >= max_width {
-            let extra = final_col / max_width;
-            (base_row + sub_line + extra, final_col % max_width)
-        } else {
-            (base_row + sub_line, final_col)
-        }
+        let (sub_line, row_col) = crate::wrap::visual_position_for_flat_col(
+            line_text,
+            col,
+            self.wrap_width,
+            self.tab_width,
+            inline_widths,
+        );
+        (base_row + sub_line, row_col)
     }
 
     /// Simpler cursor_to_visual that works like the old API when line text isn't available.

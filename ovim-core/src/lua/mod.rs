@@ -13,6 +13,45 @@ use mlua::{Lua, Value};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// Runs the user's init.lua and plugins against `catalog` so dynamically
+/// registered languages become visible outside a full `Editor` (CLI tools
+/// like `lsp check` and `lsp languages`). Editor-facing side effects
+/// (keymaps, options, queued commands) land in a throwaway bridge and are
+/// discarded. Failures are logged and skipped: a broken config degrades to
+/// whatever registered before the error.
+pub fn register_user_languages(catalog: &Arc<crate::language_catalog::LanguageCatalog>) {
+    let Ok(mut context) = LuaContext::new() else {
+        return;
+    };
+    let bridge = EditorBridge::new();
+    if setup_vim_api(context.lua(), bridge).is_err() {
+        return;
+    }
+    if language_api::setup_ovim_api(context.lua(), catalog.clone(), context.source_context())
+        .is_err()
+    {
+        return;
+    }
+    if let Err(error) = context.load_builtin() {
+        crate::log_warn!("lua", "built-in defaults failed to load: {}", error);
+    }
+    if let Err(error) = context.load_config() {
+        crate::log_warn!(
+            "lua",
+            "init.lua failed while collecting language registrations: {}",
+            error
+        );
+    }
+    for (plugin_path, error) in context.load_plugins() {
+        crate::log_warn!(
+            "lua",
+            "plugin '{}' failed while collecting language registrations: {}",
+            plugin_path.display(),
+            error
+        );
+    }
+}
+
 /// Lua runtime context for configuration and plugins
 pub struct LuaContext {
     lua: Lua,

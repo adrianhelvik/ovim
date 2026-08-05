@@ -1521,45 +1521,18 @@ impl Editor {
         tab_width: usize,
         inline_widths: &[(usize, usize)],
     ) -> usize {
-        let wrap_points = crate::wrap::compute_wrap_points_with_decorations(
+        // Delegate to the shared column-level walk so a cursor sitting inside
+        // a split tab or decoration is attributed to the row that actually
+        // renders it (OV-00275). The old wrap-point re-walk operated at raw
+        // char granularity and could be off by one sub-line there.
+        crate::wrap::visual_position_for_flat_col(
             line_text,
+            cursor_display_col,
             wrap_width,
             tab_width,
             inline_widths,
-        );
-        if wrap_points.is_empty() {
-            return 0;
-        }
-
-        let mut current_display = 0usize;
-        let mut segment_start_display = 0usize;
-        let mut sub_line = 0usize;
-        let mut wp_idx = 0usize;
-
-        for (char_idx, ch) in line_text.chars().enumerate() {
-            // Consume all wrap points at this char_idx (there can be multiple
-            // when a decoration spans several visual rows).
-            while wp_idx < wrap_points.len() && char_idx == wrap_points[wp_idx] {
-                segment_start_display = current_display;
-                sub_line += 1;
-                wp_idx += 1;
-            }
-            if cursor_display_col < current_display {
-                break;
-            }
-            let ch_width = if ch == '\t' {
-                tab_width - (current_display % tab_width)
-            } else {
-                crate::display::char_display_width(ch)
-            };
-            current_display += ch_width;
-        }
-
-        if cursor_display_col >= segment_start_display {
-            sub_line
-        } else {
-            0
-        }
+        )
+        .0
     }
 
     fn top_offset_for_wrapped_cursor(

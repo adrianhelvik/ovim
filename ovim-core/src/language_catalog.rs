@@ -353,6 +353,26 @@ impl LanguageCatalog {
         entries.rebuild_maps();
     }
 
+    /// Snapshot of every registered language, in registration order.
+    pub fn all(&self) -> Vec<Arc<LanguageDefinition>> {
+        self.entries
+            .read()
+            .map(|entries| entries.languages.clone())
+            .unwrap_or_default()
+    }
+
+    /// Built-in languages plus any languages registered by the user's
+    /// init.lua or plugins. For CLI tools (`lsp check`, `lsp languages`)
+    /// that need language detection to agree with the editor without
+    /// constructing one. Config or plugin failures are logged and skipped
+    /// so a broken init.lua degrades to the built-in set.
+    pub fn with_user_languages() -> Arc<Self> {
+        let catalog = Self::built_in();
+        #[cfg(feature = "lua")]
+        crate::lua::register_user_languages(&catalog);
+        catalog
+    }
+
     pub fn detect<P: AsRef<Path>>(&self, path: P) -> Option<Arc<LanguageDefinition>> {
         let path = path.as_ref();
         let entries = self.entries.read().ok()?;

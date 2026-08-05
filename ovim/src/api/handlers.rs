@@ -27,7 +27,7 @@ pub async fn get_snapshot(State(state): State<ApiState>) -> Response {
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to get snapshot"),
     }
 }
@@ -104,7 +104,7 @@ pub async fn paste(
         return error_response("Editor not available");
     }
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to paste text"),
     }
 }
@@ -138,7 +138,7 @@ pub async fn resize(
         return error_response("Editor not available");
     }
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to resize editor"),
     }
 }
@@ -184,7 +184,7 @@ pub async fn get_buffer(State(state): State<ApiState>) -> Response {
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to get buffer"),
     }
 }
@@ -223,7 +223,7 @@ pub async fn set_buffer(
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to set buffer"),
     }
 }
@@ -240,7 +240,7 @@ pub async fn get_cursor(State(state): State<ApiState>) -> Response {
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to get cursor"),
     }
 }
@@ -257,7 +257,7 @@ pub async fn get_mode(State(state): State<ApiState>) -> Response {
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to get mode"),
     }
 }
@@ -287,7 +287,7 @@ pub async fn set_mode(
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to set mode"),
     }
 }
@@ -326,7 +326,7 @@ pub async fn execute_command(
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to execute command"),
     }
 }
@@ -409,7 +409,7 @@ pub async fn get_lsp_status(State(state): State<ApiState>) -> Response {
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to get LSP status"),
     }
 }
@@ -427,7 +427,7 @@ pub async fn get_health(State(state): State<ApiState>) -> Response {
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to get health"),
     }
 }
@@ -445,7 +445,7 @@ pub async fn get_metrics(State(state): State<ApiState>) -> Response {
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to get metrics"),
     }
 }
@@ -491,7 +491,7 @@ pub async fn get_outline(State(state): State<ApiState>) -> Response {
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to get outline"),
     }
 }
@@ -521,7 +521,7 @@ pub async fn search_symbol(
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to search symbols"),
     }
 }
@@ -538,7 +538,7 @@ pub async fn get_trace(State(state): State<ApiState>) -> Response {
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to get trace"),
     }
 }
@@ -555,7 +555,7 @@ pub async fn get_diagnostics(State(state): State<ApiState>) -> Response {
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to get diagnostics"),
     }
 }
@@ -595,7 +595,7 @@ pub async fn edit_line(
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to edit line"),
     }
 }
@@ -644,7 +644,7 @@ pub async fn insert_lines(
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to insert lines"),
     }
 }
@@ -679,7 +679,7 @@ pub async fn delete_lines(
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to delete lines"),
     }
 }
@@ -714,7 +714,7 @@ pub async fn read_lines(
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => json_api_response(response),
         Err(_) => error_response("Failed to read lines"),
     }
 }
@@ -1071,6 +1071,17 @@ fn agent_response(response: ApiResponse) -> Response {
             };
             (status, Json(response)).into_response()
         }
+        _ => Json(response).into_response(),
+    }
+}
+
+/// Serializes an editor `ApiResponse`, mapping the error variant to
+/// HTTP 400 instead of 200. Status-only clients (including ovim's own
+/// `OvimClient::paste/resize/set_mode`) treated 200-with-error-body as
+/// success, so failures exited 0 (OV-00283).
+fn json_api_response(response: ApiResponse) -> Response {
+    match &response {
+        ApiResponse::Error(_) => (StatusCode::BAD_REQUEST, Json(response)).into_response(),
         _ => Json(response).into_response(),
     }
 }
