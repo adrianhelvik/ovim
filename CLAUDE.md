@@ -140,6 +140,8 @@ ovim lsp check test.sql --verbose    # Check language detection
 ovim lsp languages                   # List all languages
 ```
 
+**Vim-semantics tests must be derived from actual vim behavior, not from the implementation** — verify in `nvim --clean` before writing the assertion, and cite the reference in a comment. See [notes/TESTING_VIM_SEMANTICS.md](notes/TESTING_VIM_SEMANTICS.md).
+
 ## Language Support
 
 Run `ovim lsp languages` to see all supported languages.
