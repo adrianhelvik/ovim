@@ -851,6 +851,38 @@ mod tests {
     }
 
     #[test]
+    fn test_groovy_highlighter_parses_gradle_build_script_syntax() {
+        let mut highlighter =
+            SyntaxHighlighter::new(Language::Groovy).expect("Groovy highlighter should be created");
+        let source = r#"
+class Foo {
+  int count = 0
+
+  void greet(String who) {
+    if (this.count != null) {
+      println "hello ${who}"
+    }
+  }
+}
+"#;
+
+        highlighter.parse(source);
+        let highlights = highlighter.highlights_for_all_lines(source);
+        assert!(highlights
+            .iter()
+            .flatten()
+            .any(|(_, group)| *group == HighlightGroup::Keyword));
+        assert!(highlights
+            .iter()
+            .flatten()
+            .any(|(_, group)| *group == HighlightGroup::Type));
+        assert!(highlights
+            .iter()
+            .flatten()
+            .any(|(_, group)| *group == HighlightGroup::String));
+    }
+
+    #[test]
     fn test_astro_highlighter_parses_component_syntax() {
         let mut highlighter =
             SyntaxHighlighter::new(Language::Astro).expect("Astro highlighter should be created");

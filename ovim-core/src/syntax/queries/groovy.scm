@@ -36,16 +36,16 @@
   "static"
   "switch"
   "synchronized"
-  "this"
   "throw"
   "throws"
-  "trait"
   "try"
   "while"
 ] @keyword
 
 ; Modifiers
 (modifiers) @keyword
+
+(this) @keyword
 
 ; Method declarations
 (method_declaration
