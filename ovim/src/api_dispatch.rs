@@ -28,7 +28,7 @@ use ovim::editor::{self, Editor, InputHandler};
 use ovim::mode::Mode;
 use ovim::session::SessionInfo;
 
-use crate::event_loop::{handle_terminal_resize, refresh_after_api_mutation, refresh_after_input};
+use ovim::frontend::{handle_viewport_resize, refresh_after_api_mutation, refresh_after_input};
 
 pub(crate) async fn handle_api_request(
     editor: &mut Editor,
@@ -141,7 +141,7 @@ pub(crate) async fn handle_api_request(
             let _ = tx.send(response);
         }
         ApiRequest::Resize { width, height, tx } => {
-            let response = match handle_terminal_resize(editor, width, height) {
+            let response = match handle_viewport_resize(editor, width, height) {
                 Ok(()) => {
                     editor.mark_dirty();
                     if let Ok(mut session) = session_info.lock() {
