@@ -28,6 +28,7 @@ pub mod markdown_conceal;
 pub mod metrics;
 pub mod mode;
 pub mod modeline;
+pub mod motion_range;
 pub mod navigation_types;
 pub mod number_ops;
 pub mod rect;

@@ -1076,27 +1076,36 @@ fn handle_dk(editor: &mut Editor, count: usize) -> Result<()> {
 }
 
 fn handle_d_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
-    let deleted = editor.record_operation(
+    let (deleted, wise) = editor.record_operation(
         |buf| buf.delete_paragraph_forward(count),
         Some(RepeatAction::DeleteParagraphForward { count }),
     );
     if !deleted.is_empty() {
-        editor.delete_to_register_with_type(deleted, RegisterType::Line);
+        // Register type follows the motion's classification: a mid-line d}
+        // is charwise (OV-00293), a line-start d} is linewise.
+        editor.delete_to_register_with_type(deleted, register_type_for_wise(wise));
     }
     editor.clear_count();
     Ok(())
 }
 
 fn handle_d_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> {
-    let deleted = editor.record_operation(
+    let (deleted, wise) = editor.record_operation(
         |buf| buf.delete_paragraph_backward(count),
         Some(RepeatAction::DeleteParagraphBackward { count }),
     );
     if !deleted.is_empty() {
-        editor.delete_to_register_with_type(deleted, RegisterType::Line);
+        editor.delete_to_register_with_type(deleted, register_type_for_wise(wise));
     }
     editor.clear_count();
     Ok(())
+}
+
+fn register_type_for_wise(wise: crate::motion_range::Wise) -> RegisterType {
+    match wise {
+        crate::motion_range::Wise::Linewise => RegisterType::Line,
+        crate::motion_range::Wise::Charwise => RegisterType::Character,
+    }
 }
 
 fn handle_d_percent(editor: &mut Editor) -> Result<()> {
@@ -1149,78 +1158,96 @@ fn handle_yk(editor: &mut Editor, count: usize) -> Result<()> {
 }
 
 fn handle_y_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
+    use crate::motion_range::{MotionRange, Wise};
+
     let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col().0;
+    let start_grapheme = editor.buffer().cursor().col();
+    let start_col = editor.buffer().cursor_char_col();
 
     Motions::paragraph_forward(editor.buffer_mut(), count);
-    let end_line = editor.buffer().cursor().line();
+    let end = (
+        editor.buffer().cursor().line(),
+        editor.buffer().cursor_char_col(),
+    );
 
-    // Linewise register: every line keeps a terminator so multi-line pastes
-    // don't collapse into one glued line.
-    let mut yanked = String::new();
-    if start_line == end_line {
-        if let Some(line) = editor.buffer().line_text(start_line) {
-            let chars: Vec<char> = line.chars().collect();
-            yanked = chars[start_col..].iter().collect();
-        }
-        yanked.push('\n');
-    } else {
-        for line_idx in start_line..=end_line {
-            if let Some(line) = editor.buffer().line_text(line_idx) {
-                if line_idx == start_line {
-                    let chars: Vec<char> = line.chars().collect();
-                    yanked.push_str(&chars[start_col..].iter().collect::<String>());
-                } else {
-                    yanked.push_str(&line);
-                }
-                yanked.push('\n');
-            }
+    // } is exclusive: a mid-line y} yanks charwise up to the end of the
+    // paragraph's last line; a line-start y} yanks linewise (OV-00293).
+    let range = MotionRange::from_exclusive(editor.buffer(), (start_line, start_col), end);
+    let yanked = editor.buffer().yank_motion_range(range);
+    editor.yank_to_register_with_type(yanked, register_type_for_wise(range.wise));
+    match range.wise {
+        Wise::Linewise => editor.set_yank_flash_lines(range.start.0, range.end.0),
+        Wise::Charwise => {
+            flash_charwise_range(editor, range);
         }
     }
-
-    editor.yank_to_register_with_type(yanked, RegisterType::Line);
-    editor.set_yank_flash_lines(start_line, end_line);
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(start_line, GraphemeCol(start_col));
+        .set_position(start_line, start_grapheme);
     editor.clear_count();
     Ok(())
 }
 
 fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> {
+    use crate::motion_range::{MotionRange, Wise};
+
     let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col().0;
+    let end_col = editor.buffer().cursor_char_col();
 
     Motions::paragraph_backward(editor.buffer_mut(), count);
-    let start_line = editor.buffer().cursor().line();
+    let start = (
+        editor.buffer().cursor().line(),
+        editor.buffer().cursor_char_col(),
+    );
 
-    // Linewise register: keep a terminator on every line.
-    let mut yanked = String::new();
-    for line_idx in start_line..=end_line {
-        if let Some(line) = editor.buffer().line_text(line_idx) {
-            if line_idx == end_line {
-                let chars: Vec<char> = line.chars().collect();
-                yanked.push_str(
-                    &chars[..=end_col.min(chars.len().saturating_sub(1))]
-                        .iter()
-                        .collect::<String>(),
-                );
-            } else {
-                yanked.push_str(&line);
-            }
-            yanked.push('\n');
+    // { is exclusive: the original cursor character is not yanked
+    // (OV-00293).
+    let range = MotionRange::from_exclusive(editor.buffer(), start, (end_line, end_col));
+    let yanked = editor.buffer().yank_motion_range(range);
+    editor.yank_to_register_with_type(yanked, register_type_for_wise(range.wise));
+    match range.wise {
+        Wise::Linewise => editor.set_yank_flash_lines(range.start.0, range.end.0),
+        Wise::Charwise => {
+            flash_charwise_range(editor, range);
         }
     }
-
-    editor.yank_to_register_with_type(yanked, RegisterType::Line);
-    editor.set_yank_flash_lines(start_line, end_line);
+    // Vim leaves the cursor at the start of the yanked region.
+    let start_text = editor
+        .buffer()
+        .line_text(range.start.0)
+        .unwrap_or_default()
+        .to_string();
+    let start_grapheme = crate::unicode::char_to_grapheme_col(&start_text, range.start.1);
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(end_line, GraphemeCol(end_col));
+        .set_position(range.start.0, start_grapheme);
     editor.clear_count();
     Ok(())
+}
+
+/// Flash a charwise motion range, converting its char cols to the
+/// grapheme space the flash API expects.
+fn flash_charwise_range(editor: &mut Editor, range: crate::motion_range::MotionRange) {
+    let start_text = editor
+        .buffer()
+        .line_text(range.start.0)
+        .unwrap_or_default()
+        .to_string();
+    let end_text = editor
+        .buffer()
+        .line_text(range.end.0)
+        .unwrap_or_default()
+        .to_string();
+    let start_grapheme = crate::unicode::char_to_grapheme_col(&start_text, range.start.1);
+    let end_grapheme = crate::unicode::char_to_grapheme_col(&end_text, range.end.1);
+    editor.set_yank_flash_range(
+        range.start.0,
+        start_grapheme,
+        range.end.0,
+        GraphemeCol(end_grapheme.0.saturating_sub(1)),
+    );
 }
 
 /// Shared ceremony for a **charwise** change operator (`cw`, `ce`, `cb`, `c%`,
@@ -1493,7 +1520,7 @@ fn handle_ck(editor: &mut Editor, count: usize) -> Result<()> {
 fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor
+    let ((deleted, wise), edits) = editor
         .buffer_mut()
         .record(|buf| buf.delete_paragraph_forward(count));
     let delete_token = if !edits.is_empty() {
@@ -1502,7 +1529,7 @@ fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     } else {
         None
     };
-    editor.delete_to_register_with_type(deleted, RegisterType::Line);
+    editor.delete_to_register_with_type(deleted, register_type_for_wise(wise));
     editor.mark_buffer_modified();
 
     editor.set_pending_change_repeat(PendingChangeRepeat {
@@ -1519,7 +1546,7 @@ fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
 fn handle_c_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor
+    let ((deleted, wise), edits) = editor
         .buffer_mut()
         .record(|buf| buf.delete_paragraph_backward(count));
     let delete_token = if !edits.is_empty() {
@@ -1528,7 +1555,7 @@ fn handle_c_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
     } else {
         None
     };
-    editor.delete_to_register_with_type(deleted, RegisterType::Line);
+    editor.delete_to_register_with_type(deleted, register_type_for_wise(wise));
     editor.mark_buffer_modified();
 
     editor.set_pending_change_repeat(PendingChangeRepeat {

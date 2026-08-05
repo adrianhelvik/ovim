@@ -126,3 +126,48 @@ fn linewise_yank_to_mark_preserves_newlines() {
     test.keys("p");
     assert_eq!(test.buffer_content(), "aaa\nbbb\nccc\nddd\naaa\nbbb\nccc\n");
 }
+
+// ── OV-00293: d}/d{ exclusive-motion adjustments (vim :help exclusive) ──────
+
+#[test]
+fn d_paragraph_forward_midline_is_charwise_and_keeps_blank_line() {
+    // vim: "foo bar\n\nbaz", cursor (0,4), d} → "foo \n\nbaz"; register
+    // holds charwise "bar", so p splices inline.
+    let mut test = EditorTest::new("foo bar\n\nbaz");
+    test.keys("gg04l");
+    test.keys("d}");
+    assert_eq!(test.buffer_content(), "foo \n\nbaz\n");
+    test.keys("p");
+    assert_eq!(test.buffer_content(), "foo bar\n\nbaz\n");
+}
+
+#[test]
+fn d_paragraph_forward_from_line_start_is_linewise() {
+    // vim: d} at col 0 deletes the paragraph's lines wholesale.
+    let mut test = EditorTest::new("foo bar\n\nbaz");
+    test.keys("gg0");
+    test.keys("d}");
+    assert_eq!(test.buffer_content(), "\nbaz\n");
+}
+
+#[test]
+fn d_paragraph_backward_excludes_cursor_char() {
+    // vim: "foo\n\nbar baz", cursor on 'b' of baz (2,4), d{ deletes from
+    // the blank line up to (not including) the cursor → "foo\nbaz".
+    let mut test = EditorTest::new("foo\n\nbar baz");
+    test.keys("gg");
+    test.keys("2j4l");
+    test.keys("d{");
+    assert_eq!(test.buffer_content(), "foo\nbaz\n");
+}
+
+#[test]
+fn y_paragraph_forward_midline_register_is_charwise() {
+    // vim: y} from (0,4) yanks "bar" charwise; p pastes inline after cursor.
+    let mut test = EditorTest::new("foo bar\n\nbaz");
+    test.keys("gg04l");
+    test.keys("y}");
+    assert_eq!(test.buffer_content(), "foo bar\n\nbaz\n");
+    test.keys("p");
+    assert_eq!(test.buffer_content(), "foo bbarar\n\nbaz\n");
+}
