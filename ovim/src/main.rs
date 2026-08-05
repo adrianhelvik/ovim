@@ -2,6 +2,7 @@
 //! Use log_info!, log_warn!, log_error!, log_debug! instead of println!/eprintln!
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+mod api_dispatch;
 mod event_loop;
 mod lsp_init;
 
