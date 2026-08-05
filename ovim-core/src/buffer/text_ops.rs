@@ -72,6 +72,7 @@ impl Buffer {
         // Invalidate code block cache so stale byte offsets don't override
         // the fresh tree-sitter highlights that viewport rehighlight provides
         self.code_block_cache = None;
+        self.injection_cache = None;
 
         // Publish to edit_log so decoration projection sees this edit
         // immediately, regardless of whether a `record()` / stateful session
@@ -249,6 +250,7 @@ impl Buffer {
         self.highlight_version = self.highlight_version.wrapping_add(1);
         self.pending_rehighlight = true;
         self.code_block_cache = None;
+        self.injection_cache = None;
 
         // Publish to edit_log so decoration projection sees this edit
         // immediately, regardless of whether a recording session is active.
@@ -326,6 +328,7 @@ impl Buffer {
         self.highlight_version = self.highlight_version.wrapping_add(1);
         self.pending_rehighlight = true;
         self.code_block_cache = None;
+        self.injection_cache = None;
 
         // Publish to edit_log so decoration projection sees this edit
         // immediately, regardless of whether a recording session is active.

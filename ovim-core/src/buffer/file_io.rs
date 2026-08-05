@@ -128,6 +128,7 @@ impl Buffer {
             semantic_highlights: None,
             version: 0,
             code_block_cache: None,
+            injection_cache: None,
             recording: None,
             edit_log: crate::edit_log::EditLog::new(),
             ai_locks: Vec::new(),

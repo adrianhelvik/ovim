@@ -163,6 +163,10 @@ pub struct SyntaxHighlighter {
     tree: Option<Tree>,
     query: Query,
     capture_names: Vec<String>,
+    /// Query that locates embedded-language regions (e.g. Astro's
+    /// frontmatter/script/style blocks) that the top-level `query` leaves
+    /// unhighlighted because they belong to a different grammar entirely.
+    injection_query: Option<Query>,
     /// Snapshot of `tree` at the time of the last full highlight cache build
     /// (see `mark_cache_built`). Each `update_rope`/`update` call applies the
     /// same `InputEdit` to this snapshot so its byte coordinates stay in sync
@@ -185,11 +189,13 @@ impl SyntaxHighlighter {
     pub fn new(language: Language) -> Result<Self, String> {
         let ts_language = LanguageRegistry::get_tree_sitter_language(language);
         let query_source = LanguageRegistry::get_highlight_query(language);
+        let injection_query_source = LanguageRegistry::get_injection_query(language);
 
         Self::from_parts(
             format!("{:?}", language).to_ascii_lowercase(),
             ts_language,
             query_source,
+            injection_query_source,
         )
     }
 
@@ -201,6 +207,7 @@ impl SyntaxHighlighter {
             language_id.to_string(),
             syntax.language.clone(),
             &syntax.highlights,
+            None,
         )
     }
 
@@ -208,6 +215,7 @@ impl SyntaxHighlighter {
         language_id: String,
         ts_language: tree_sitter::Language,
         query_source: &str,
+        injection_query_source: Option<&str>,
     ) -> Result<Self, String> {
         let supports_code_fences = ts_language.id_for_node_kind("fenced_code_block", true) != 0;
         let mut parser = Parser::new();
@@ -224,6 +232,13 @@ impl SyntaxHighlighter {
             .map(|s| s.to_string())
             .collect();
 
+        let injection_query = injection_query_source
+            .map(|source| {
+                Query::new(&ts_language, source)
+                    .map_err(|e| format!("Failed to create injection query: {}", e))
+            })
+            .transpose()?;
+
         Ok(Self {
             language_id,
             supports_code_fences,
@@ -231,6 +246,7 @@ impl SyntaxHighlighter {
             tree: None,
             query,
             capture_names,
+            injection_query,
             prev_tree: None,
             dirty_byte_range: None,
         })
@@ -810,6 +826,13 @@ impl SyntaxHighlighter {
     /// Used for extracting code blocks from markdown
     pub fn tree(&self) -> Option<&Tree> {
         self.tree.as_ref()
+    }
+
+    /// Query that locates embedded-language regions (e.g. Astro's
+    /// frontmatter/script/style blocks). `None` for grammars with no such
+    /// split, i.e. most languages.
+    pub fn injection_query(&self) -> Option<&Query> {
+        self.injection_query.as_ref()
     }
 }
 

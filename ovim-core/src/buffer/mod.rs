@@ -15,7 +15,7 @@ use crate::change::ChangeManager;
 use crate::edit::Edit;
 use crate::edit_log::EditLog;
 use crate::git::GitBlame;
-use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
+use crate::syntax::{CodeBlockCache, InjectionCache, SyntaxHighlighter};
 use crate::unicode::{grapheme_count, CharCol, GraphemeCol};
 use crate::GitStatus;
 use ropey::Rope;
@@ -93,6 +93,8 @@ pub struct Buffer {
     pub(super) version: usize,
     /// Code block cache for markdown files (language-specific highlighting inside fenced code blocks)
     pub(super) code_block_cache: Option<CodeBlockCache>,
+    /// Embedded-language injection cache (e.g. Astro frontmatter/script/style blocks)
+    pub(super) injection_cache: Option<InjectionCache>,
     /// When Some, insert_text_at/delete_range append Edit records here.
     /// Used by `record()` and `begin_recording()` to capture buffer
     /// mutations. `origin` is optional — only the stateful insert-session
@@ -137,6 +139,7 @@ impl Buffer {
             semantic_highlights: None,
             version: 0,
             code_block_cache: None,
+            injection_cache: None,
             recording: None,
             edit_log: EditLog::new(),
             ai_locks: Vec::new(),
@@ -243,6 +246,7 @@ impl Buffer {
             semantic_highlights: None,
             version: 0,
             code_block_cache: None,
+            injection_cache: None,
             recording: None,
             edit_log: EditLog::new(),
             ai_locks: Vec::new(),
@@ -906,6 +910,7 @@ impl Buffer {
         self.pending_rehighlight = true;
         self.semantic_highlights = None;
         self.code_block_cache = None;
+        self.injection_cache = None;
 
         // Structural state: fold line ranges are invalid
         self.fold_manager.delete_all();

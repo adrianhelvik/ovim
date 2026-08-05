@@ -363,6 +363,18 @@ impl LanguageRegistry {
         }
     }
 
+    /// Gets the injection query for a language, if the grammar splits
+    /// embedded regions (e.g. Astro's frontmatter/script/style blocks) out
+    /// into raw-text nodes that need a separate language's highlighter.
+    /// Returns `None` for grammars whose top-level highlight query already
+    /// covers the whole file.
+    pub fn get_injection_query(lang: Language) -> Option<&'static str> {
+        match lang {
+            Language::Astro => Some(tree_sitter_astro_next::INJECTIONS_QUERY),
+            _ => None,
+        }
+    }
+
     /// Get LSP language identifier from file path
     /// Returns None if language is not supported by LSP
     pub fn get_lsp_language_id(file_path: &str) -> Option<&'static str> {

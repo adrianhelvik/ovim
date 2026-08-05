@@ -1,6 +1,6 @@
 use super::Buffer;
 use crate::syntax::{
-    CodeBlockCache, HighlightGroup, Language, LanguageRegistry, SyntaxHighlighter,
+    CodeBlockCache, HighlightGroup, InjectionCache, Language, LanguageRegistry, SyntaxHighlighter,
 };
 use std::borrow::Cow;
 use std::ops::Range;
@@ -307,6 +307,7 @@ impl Buffer {
                     self.code_block_cache = Some(cache);
                 }
             }
+            self.rebuild_injection_cache(&highlighter, self.highlight_version);
 
             self.syntax = Some(highlighter);
             self.pending_rehighlight = false;
@@ -314,6 +315,30 @@ impl Buffer {
         }
 
         true
+    }
+
+    /// Rebuilds the embedded-language injection cache (e.g. Astro
+    /// frontmatter/script/style blocks) from `highlighter`'s current tree.
+    /// No-op for grammars without an injection query. Still `&str`-based —
+    /// injection-bearing grammars are rare, so this isn't on the hot edit
+    /// path.
+    fn rebuild_injection_cache(&mut self, highlighter: &SyntaxHighlighter, version: u64) {
+        let Some(injection_query) = highlighter.injection_query() else {
+            return;
+        };
+        let Some(tree) = highlighter.tree() else {
+            return;
+        };
+        let source = self.rope.to_string();
+        let mut cache = InjectionCache::new();
+        cache.update_from_tree(
+            tree,
+            &source,
+            injection_query,
+            version,
+            &self.language_catalog,
+        );
+        self.injection_cache = Some(cache);
     }
 
     /// Rope-aware highlight cache builder. Avoids the per-build `String`
@@ -337,6 +362,7 @@ impl Buffer {
                 self.code_block_cache = Some(cache);
             }
         }
+        self.rebuild_injection_cache(highlighter, self.highlight_version);
     }
 
     /// Shifts highlights after an insertion.
@@ -634,8 +660,9 @@ impl Buffer {
     /// Priority order:
     /// 1. Code block cache (for markdown code fences with known languages)
     /// 2. Tree-sitter cached highlights
-    /// 3. Semantic highlights overlaid only on their covered ranges
+    /// 3. Embedded-language injection overlay (e.g. Astro frontmatter/script/style)
     /// 4. Inline code overlay (for markdown: backtick `code` spans)
+    /// 5. Semantic highlights overlaid only on their covered ranges
     pub fn highlights_for_line(
         &self,
         line_idx: usize,
@@ -655,6 +682,18 @@ impl Buffer {
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
 
+        // Overlay embedded-language injections (e.g. Astro frontmatter/script/
+        // style blocks, which the top-level grammar leaves unhighlighted).
+        let base: Cow<'_, [(Range<usize>, HighlightGroup)]> = match self
+            .injection_cache
+            .as_ref()
+            .and_then(|cache| cache.highlights_for_line(line_idx))
+            .filter(|spans| !spans.is_empty())
+        {
+            Some(injected) => Cow::Owned(overlay_line_highlights(base, injected)),
+            None => Cow::Borrowed(base),
+        };
+
         // For markdown files NOT inside fenced code blocks, overlay inline `code` spans
         if let Some(ref code_cache) = self.code_block_cache {
             if !code_cache.is_line_in_code_block(line_idx) {
@@ -666,7 +705,7 @@ impl Buffer {
                     find_inline_code_spans(&line_text)
                 };
                 if !inline_spans.is_empty() {
-                    let mut highlights = base.to_vec();
+                    let mut highlights = base.into_owned();
                     for span in inline_spans {
                         highlights.push((span, HighlightGroup::MarkupRaw));
                     }
@@ -689,10 +728,10 @@ impl Buffer {
             .and_then(|lines| lines.get(line_idx))
             .filter(|spans| !spans.is_empty())
         {
-            return Cow::Owned(overlay_line_highlights(base, semantic));
+            return Cow::Owned(overlay_line_highlights(&base, semantic));
         }
 
-        Cow::Borrowed(base)
+        base
     }
 
     /// Sets semantic highlights decoded from LSP semantic tokens
@@ -872,6 +911,23 @@ impl Buffer {
             }
         }
 
+        // Likewise for grammars with embedded-language injections (e.g.
+        // Astro frontmatter/script/style blocks).
+        if let Some(syntax) = self.syntax.as_ref() {
+            if let (Some(injection_query), Some(tree)) = (syntax.injection_query(), syntax.tree()) {
+                let content = self.rope.to_string();
+                let mut cache = InjectionCache::new();
+                cache.update_from_tree(
+                    tree,
+                    &content,
+                    injection_query,
+                    version,
+                    &self.language_catalog,
+                );
+                self.injection_cache = Some(cache);
+            }
+        }
+
         // Refresh the baseline so the next call can be incremental.
         if let Some(syntax) = self.syntax.as_mut() {
             syntax.mark_cache_built();
@@ -930,6 +986,24 @@ impl Buffer {
                     &self.language_catalog,
                 );
                 self.code_block_cache = Some(cb_cache);
+            }
+        }
+
+        // Same idea for embedded-language injections (Astro etc.) — build
+        // once eagerly so script/frontmatter regions highlight immediately
+        // rather than waiting for the debounced full rebuild.
+        if self.injection_cache.is_none() {
+            if let (Some(injection_query), Some(tree)) = (syntax.injection_query(), syntax.tree()) {
+                let content = self.rope.to_string();
+                let mut cache = InjectionCache::new();
+                cache.update_from_tree(
+                    tree,
+                    &content,
+                    injection_query,
+                    self.highlight_version,
+                    &self.language_catalog,
+                );
+                self.injection_cache = Some(cache);
             }
         }
     }
@@ -1017,5 +1091,37 @@ mod tests {
             .cached_highlights
             .as_ref()
             .is_some_and(|cache| cache.iter().any(|line| !line.is_empty())));
+    }
+
+    /// Regression test: Astro's top-level highlight query leaves frontmatter
+    /// and `<script>` content entirely unhighlighted (that JS/TS text is
+    /// carved out into raw-text nodes for a separate injected parse) — the
+    /// injection cache built alongside the main highlight cache must fill
+    /// those lines in.
+    #[test]
+    fn astro_frontmatter_and_script_content_are_highlighted() {
+        let source = "---\nconst title = \"Hello\";\n---\n<script>\nconst x = 1;\n</script>\n";
+        let mut buffer = Buffer::new_from_str(source);
+        let mut highlighter = SyntaxHighlighter::new(Language::Astro).unwrap();
+        highlighter.parse_rope(&buffer.rope);
+        buffer.build_highlight_cache_from_rope(&highlighter);
+        buffer.syntax = Some(highlighter);
+
+        assert!(
+            buffer
+                .highlights_for_line(1)
+                .iter()
+                .any(|(_, group)| *group == HighlightGroup::Keyword),
+            "frontmatter line should be highlighted via injection: {:?}",
+            buffer.highlights_for_line(1)
+        );
+        assert!(
+            buffer
+                .highlights_for_line(4)
+                .iter()
+                .any(|(_, group)| *group == HighlightGroup::Keyword),
+            "script content line should be highlighted via injection: {:?}",
+            buffer.highlights_for_line(4)
+        );
     }
 }
