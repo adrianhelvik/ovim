@@ -10,7 +10,6 @@ use crate::editor::{
 };
 use crate::mode::Mode;
 use crate::repeat_action::{CaseTransform, RepeatAction};
-use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -236,13 +235,25 @@ fn apply_yank_operator(
     if reg_type == RegisterType::Line {
         editor.set_yank_flash_lines(range.start_line, range.end_line);
     } else {
-        // range cols are char-space (CharCol); flash range takes grapheme cols.
-        // Use the raw value — phase-15 debt since visual/flash uses grapheme.
+        // range cols are char-space (CharCol); flash range takes grapheme
+        // cols — convert per line (OV-00299).
+        let start_text = editor
+            .buffer()
+            .line_text(range.start_line)
+            .unwrap_or_default()
+            .to_string();
+        let end_text = editor
+            .buffer()
+            .line_text(range.end_line)
+            .unwrap_or_default()
+            .to_string();
+        let start_grapheme = crate::unicode::char_to_grapheme_col(&start_text, range.start_col);
+        let end_grapheme = crate::unicode::char_to_grapheme_col(&end_text, range.end_col);
         editor.set_yank_flash_range(
             range.start_line,
-            GraphemeCol(range.start_col.0),
+            start_grapheme,
             range.end_line,
-            GraphemeCol(range.end_col.0),
+            end_grapheme,
         );
     }
     Ok(())

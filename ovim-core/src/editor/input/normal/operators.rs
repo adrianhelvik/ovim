@@ -1841,8 +1841,15 @@ fn handle_yh(editor: &mut Editor, count: usize) -> Result<()> {
         return Ok(());
     }
     let start_col = col.saturating_sub(count);
-    // Phase-15 debt: cursor cols are grapheme, yank_range needs char.
-    let yanked = yank_range(editor, line_idx, CharCol(start_col), line_idx, CharCol(col));
+    // Cursor cols are grapheme; convert to char for yank_range (OV-00299).
+    let line_text = editor
+        .buffer()
+        .line_text(line_idx)
+        .unwrap_or_default()
+        .to_string();
+    let start_char = crate::unicode::grapheme_to_char_col(&line_text, GraphemeCol(start_col));
+    let end_char = crate::unicode::grapheme_to_char_col(&line_text, GraphemeCol(col));
+    let yanked = yank_range(editor, line_idx, start_char, line_idx, end_char);
     editor.yank_to_register(yanked);
     editor.set_yank_flash_range(
         line_idx,
@@ -1865,8 +1872,9 @@ fn handle_y0(editor: &mut Editor) -> Result<()> {
         editor.clear_count();
         return Ok(());
     }
-    // Phase-15 debt: cursor cols are grapheme, yank_range needs char.
-    let yanked = yank_range(editor, line_idx, CharCol::ZERO, line_idx, CharCol(col));
+    // Cursor cols are grapheme; convert to char for yank_range (OV-00299).
+    let end_char = editor.buffer().cursor_char_col();
+    let yanked = yank_range(editor, line_idx, CharCol::ZERO, line_idx, end_char);
     editor.yank_to_register(yanked);
     editor.set_yank_flash_range(
         line_idx,
@@ -1884,32 +1892,39 @@ fn handle_y0(editor: &mut Editor) -> Result<()> {
 
 fn handle_y_caret(editor: &mut Editor) -> Result<()> {
     let line_idx = editor.buffer().cursor().line();
-    // cursor.col() is grapheme; first_non_blank_col is char. We compare them
-    // as if they were the same space — accurate for ASCII, phase-15 debt for
-    // multi-char graphemes.
-    let col = editor.buffer().cursor().col().0;
+    // Compare in char space: first_non_blank_col is char, so convert the
+    // cursor's grapheme col rather than comparing across spaces (OV-00299).
+    let cursor_char = editor.buffer().cursor_char_col();
     let fnb = editor.buffer().first_non_blank_col(line_idx);
-    if fnb == col {
+    if fnb == cursor_char {
         editor.clear_count();
         return Ok(());
     }
-    let (start, end): (CharCol, CharCol) = if fnb < col {
-        (fnb, CharCol(col))
+    let (start, end): (CharCol, CharCol) = if fnb < cursor_char {
+        (fnb, cursor_char)
     } else {
-        (CharCol(col), fnb)
+        (cursor_char, fnb)
     };
     let yanked = yank_range(editor, line_idx, start, line_idx, end);
     editor.yank_to_register(yanked);
+    // Flash cols are grapheme-space: convert back per line.
+    let line_text = editor
+        .buffer()
+        .line_text(line_idx)
+        .unwrap_or_default()
+        .to_string();
+    let start_grapheme = crate::unicode::char_to_grapheme_col(&line_text, start);
+    let end_grapheme = crate::unicode::char_to_grapheme_col(&line_text, end);
     editor.set_yank_flash_range(
         line_idx,
-        GraphemeCol(start.0),
+        start_grapheme,
         line_idx,
-        GraphemeCol(end.0.saturating_sub(1)),
+        GraphemeCol(end_grapheme.0.saturating_sub(1)),
     );
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(line_idx, GraphemeCol(start.0));
+        .set_position(line_idx, start_grapheme);
     editor.clear_count();
     Ok(())
 }

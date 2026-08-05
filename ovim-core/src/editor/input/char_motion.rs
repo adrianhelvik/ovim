@@ -231,8 +231,8 @@ fn handle_char_find(
 // ---------------------------------------------------------------------------
 
 /// A character-wise text range for operator application.
-/// Stored as grapheme-space `(line, col)` pairs — the delete_range conversion
-/// (treating these as char indices) is pre-existing Class-2 debt.
+/// Stored as grapheme-space `(line, col)` pairs; `apply_charwise_operator`
+/// converts to char space against the live line text (OV-00299).
 struct OperatorRange {
     start: (usize, usize),
     /// The end column, always stored as exclusive (one past last char to affect).
@@ -275,24 +275,27 @@ fn apply_charwise_operator(
     let (start_line, start_col) = range.start;
     let (end_line, end_col_raw) = range.end_col_exclusive;
 
-    // Clamp end_col to the line length to avoid overflow/past-EOL issues.
-    let end_col = if let Some(line) = editor.buffer().line_text(end_line) {
-        let line_len = line.chars().count();
-        end_col_raw.min(line_len)
-    } else {
-        end_col_raw
-    };
+    // Range tuples are grapheme-space. Clamp the end to the line's grapheme
+    // count, then convert both endpoints to char space against their lines
+    // so multi-char graphemes are operated on whole (OV-00299).
+    let start_text = editor
+        .buffer()
+        .line_text(start_line)
+        .unwrap_or_default()
+        .to_string();
+    let end_text = editor
+        .buffer()
+        .line_text(end_line)
+        .unwrap_or_default()
+        .to_string();
+    let end_col = end_col_raw.min(crate::unicode::grapheme_count(&end_text));
+    let start_char_col = crate::unicode::grapheme_to_char_col(&start_text, GraphemeCol(start_col));
+    let end_char_col = crate::unicode::grapheme_to_char_col(&end_text, GraphemeCol(end_col));
 
     match operator {
         Operator::Delete => {
             let (deleted, edits) = editor.buffer_mut().record(|buf| {
-                // Phase-15 debt: range tuples store grapheme cols; treat as char.
-                let d = buf.delete_range(
-                    start_line,
-                    crate::unicode::CharCol(start_col),
-                    end_line,
-                    crate::unicode::CharCol(end_col),
-                );
+                let d = buf.delete_range(start_line, start_char_col, end_line, end_char_col);
                 buf.cursor_mut()
                     .set_position(start_line, GraphemeCol(start_col));
                 d
@@ -311,13 +314,7 @@ fn apply_charwise_operator(
         }
         Operator::Change => {
             let (deleted, edits) = editor.buffer_mut().record(|buf| {
-                // Phase-15 debt: range tuples store grapheme cols; treat as char.
-                let d = buf.delete_range(
-                    start_line,
-                    crate::unicode::CharCol(start_col),
-                    end_line,
-                    crate::unicode::CharCol(end_col),
-                );
+                let d = buf.delete_range(start_line, start_char_col, end_line, end_char_col);
                 buf.cursor_mut()
                     .set_position(start_line, GraphemeCol(start_col));
                 d
@@ -348,8 +345,8 @@ fn apply_charwise_operator(
             editor.set_mode(Mode::Insert);
         }
         Operator::Yank => {
-            let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
-            let end_char = editor.buffer().rope().line_to_char(end_line) + end_col;
+            let start_char = editor.buffer().rope().line_to_char(start_line) + start_char_col.0;
+            let end_char = editor.buffer().rope().line_to_char(end_line) + end_char_col.0;
             if end_char > start_char {
                 let yanked = editor
                     .buffer()

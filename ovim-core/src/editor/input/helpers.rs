@@ -717,17 +717,22 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                     }
 
                     if let Some(line_text) = buf.line_text(target_line) {
-                        let line_len = line_text.chars().count();
-
-                        // paste_col is grapheme-space; treat as char index here
-                        // (pre-existing approximation — fine for ASCII, drifts at
-                        // multi-char graphemes. Covered by phase-15 debt notes.)
-                        if paste_col > line_len {
-                            let padding = " ".repeat(paste_col - line_len);
+                        // paste_col is grapheme-space; convert per line so
+                        // multi-char graphemes (emoji, combining marks) before
+                        // the paste column don't skew the insert position
+                        // (OV-00299).
+                        let line_graphemes = crate::unicode::grapheme_count(&line_text);
+                        if paste_col > line_graphemes {
+                            let line_chars = line_text.chars().count();
+                            let padding = " ".repeat(paste_col - line_graphemes);
                             let padded_text = format!("{}{}", padding, block_line);
-                            buf.insert_text_at(target_line, CharCol(line_len), &padded_text);
+                            buf.insert_text_at(target_line, CharCol(line_chars), &padded_text);
                         } else {
-                            buf.insert_text_at(target_line, CharCol(paste_col), block_line);
+                            let char_col = crate::unicode::grapheme_to_char_col(
+                                &line_text,
+                                GraphemeCol(paste_col),
+                            );
+                            buf.insert_text_at(target_line, char_col, block_line);
                         }
 
                         last_line = target_line;
@@ -840,37 +845,38 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
             }
         }
         RegisterType::Character => {
-            // Character paste - insert after cursor
-            // Clamp col+1 to not exceed line content length (excluding newline)
-            // to avoid inserting past the newline into the next line
-            let line_content_len = editor
+            // Character paste - insert after cursor. The cursor col is
+            // grapheme-space: convert "after this grapheme" to a char index
+            // against the line so clusters before the cursor don't shift
+            // the insert position (OV-00299).
+            let line_text = editor
                 .buffer()
                 .line_text(line_idx)
-                .map(|l| l.chars().count())
-                .unwrap_or(0);
-            let paste_col = (col + 1).min(line_content_len);
+                .unwrap_or_default()
+                .to_string();
+            let line_graphemes = crate::unicode::grapheme_count(&line_text);
+            let paste_grapheme = (col + 1).min(line_graphemes);
+            let paste_col =
+                crate::unicode::grapheme_to_char_col(&line_text, GraphemeCol(paste_grapheme));
 
             let text_clone = text.clone();
             let ((), edits) = editor.buffer_mut().record(|buf| {
-                buf.insert_text_at(line_idx, CharCol(paste_col), &text_clone);
+                buf.insert_text_at(line_idx, paste_col, &text_clone);
             });
 
-            // Calculate end position (char-space) and place cursor on last char.
-            // end_pos.col is char-space; converting to grapheme naïvely preserves
-            // legacy behavior (correct for ASCII, approximate otherwise).
-            let end_pos =
-                calculate_end_position(ApplyPos::new(line_idx, CharCol(paste_col)), &text);
-            if end_pos.col.0 > 0 {
-                editor
-                    .buffer_mut()
-                    .cursor_mut()
-                    .set_position(end_pos.line, GraphemeCol(end_pos.col.0 - 1));
-            } else {
-                editor
-                    .buffer_mut()
-                    .cursor_mut()
-                    .set_position(end_pos.line, GraphemeCol::ZERO);
-            }
+            // Place cursor on the last grapheme of the pasted text: compute
+            // the char-space end, then convert against the post-insert line.
+            let end_pos = calculate_end_position(ApplyPos::new(line_idx, paste_col), &text);
+            let end_line_text = editor
+                .buffer()
+                .line_text(end_pos.line)
+                .unwrap_or_default()
+                .to_string();
+            let end_grapheme = crate::unicode::char_to_grapheme_col(&end_line_text, end_pos.col);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(end_pos.line, GraphemeCol(end_grapheme.0.saturating_sub(1)));
 
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
@@ -927,14 +933,20 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
                     }
 
                     if let Some(line_text) = buf.line_text(target_line) {
-                        let line_len = line_text.chars().count();
-
-                        if paste_col > line_len {
-                            let padding = " ".repeat(paste_col - line_len);
+                        // paste_col is grapheme-space; convert per line
+                        // (OV-00299), mirroring the paste-after branch.
+                        let line_graphemes = crate::unicode::grapheme_count(&line_text);
+                        if paste_col > line_graphemes {
+                            let line_chars = line_text.chars().count();
+                            let padding = " ".repeat(paste_col - line_graphemes);
                             let padded_text = format!("{}{}", padding, block_line);
-                            buf.insert_text_at(target_line, CharCol(line_len), &padded_text);
+                            buf.insert_text_at(target_line, CharCol(line_chars), &padded_text);
                         } else {
-                            buf.insert_text_at(target_line, CharCol(paste_col), block_line);
+                            let char_col = crate::unicode::grapheme_to_char_col(
+                                &line_text,
+                                GraphemeCol(paste_col),
+                            );
+                            buf.insert_text_at(target_line, char_col, block_line);
                         }
 
                         last_line = target_line;
@@ -998,26 +1010,33 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
             }
         }
         RegisterType::Character => {
-            // Character paste before cursor
+            // Character paste before cursor. The cursor col is grapheme-
+            // space; convert to a char index against the line (OV-00299).
+            let line_text = editor
+                .buffer()
+                .line_text(line_idx)
+                .unwrap_or_default()
+                .to_string();
+            let paste_col = crate::unicode::grapheme_to_char_col(&line_text, GraphemeCol(col));
+
             let text_clone = text.clone();
             let ((), edits) = editor.buffer_mut().record(|buf| {
-                buf.insert_text_at(line_idx, CharCol(col), &text_clone);
+                buf.insert_text_at(line_idx, paste_col, &text_clone);
             });
 
-            // Position cursor on last char of pasted text (match paste_after behavior).
-            // end_pos is char-space; treating as grapheme-space is the legacy behavior.
-            let end_pos = calculate_end_position(ApplyPos::new(line_idx, CharCol(col)), &text);
-            if end_pos.col.0 > 0 {
-                editor
-                    .buffer_mut()
-                    .cursor_mut()
-                    .set_position(end_pos.line, GraphemeCol(end_pos.col.0 - 1));
-            } else {
-                editor
-                    .buffer_mut()
-                    .cursor_mut()
-                    .set_position(end_pos.line, GraphemeCol::ZERO);
-            }
+            // Position cursor on the last grapheme of the pasted text
+            // (match paste_after behavior).
+            let end_pos = calculate_end_position(ApplyPos::new(line_idx, paste_col), &text);
+            let end_line_text = editor
+                .buffer()
+                .line_text(end_pos.line)
+                .unwrap_or_default()
+                .to_string();
+            let end_grapheme = crate::unicode::char_to_grapheme_col(&end_line_text, end_pos.col);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(end_pos.line, GraphemeCol(end_grapheme.0.saturating_sub(1)));
 
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
@@ -1045,10 +1064,9 @@ pub fn delete_visual_selection_with_token(
         return Ok(None);
     };
 
-    // Record all deletions in one shot.
-    // NOTE: visual_selection cols are grapheme-space; treating them as
-    // char-space is the pre-existing behavior (correct for ASCII, approximate
-    // for multi-char graphemes). Properly converting is phase-15 debt.
+    // Record all deletions in one shot. visual_selection cols are
+    // grapheme-space; convert per line so multi-char graphemes are deleted
+    // whole instead of being split scalar-by-scalar (OV-00299).
     let (deleted_info, edits) = editor.buffer_mut().record(|buf| {
         match mode {
             Mode::VisualLine => {
@@ -1061,15 +1079,18 @@ pub fn delete_visual_selection_with_token(
                 // Delete from bottom to top to avoid offset shifting
                 for line_idx in (start_line..=end_line).rev() {
                     if let Some(line_text) = buf.line_text(line_idx) {
-                        let line_len = line_text.chars().count();
-                        if start_col < line_len {
-                            let actual_end_col = (end_col + 1).min(line_len);
-                            let deleted = buf.delete_range(
-                                line_idx,
-                                CharCol(start_col),
-                                line_idx,
-                                CharCol(actual_end_col),
+                        let line_graphemes = crate::unicode::grapheme_count(&line_text);
+                        if start_col < line_graphemes {
+                            let start_char = crate::unicode::grapheme_to_char_col(
+                                &line_text,
+                                GraphemeCol(start_col),
                             );
+                            let end_char = crate::unicode::grapheme_to_char_col(
+                                &line_text,
+                                GraphemeCol((end_col + 1).min(line_graphemes)),
+                            );
+                            let deleted =
+                                buf.delete_range(line_idx, start_char, line_idx, end_char);
                             deleted_lines.push(deleted);
                         } else {
                             deleted_lines.push(String::new());
@@ -1080,12 +1101,17 @@ pub fn delete_visual_selection_with_token(
                 (deleted_lines.join("\n"), RegisterType::Block)
             }
             _ => {
-                let deleted = buf.delete_range(
-                    start_line,
-                    CharCol(start_col),
-                    end_line,
-                    CharCol(end_col + 1),
-                );
+                let start_char = buf
+                    .line_text(start_line)
+                    .map(|text| crate::unicode::grapheme_to_char_col(&text, GraphemeCol(start_col)))
+                    .unwrap_or(CharCol(start_col));
+                let end_char = buf
+                    .line_text(end_line)
+                    .map(|text| {
+                        crate::unicode::grapheme_to_char_col(&text, GraphemeCol(end_col + 1))
+                    })
+                    .unwrap_or(CharCol(end_col + 1));
+                let deleted = buf.delete_range(start_line, start_char, end_line, end_char);
                 (deleted, RegisterType::Character)
             }
         }
@@ -1190,22 +1216,28 @@ pub fn yank_visual_selection(editor: &mut Editor) -> Result<()> {
                 editor.yank_to_register_with_type(yanked, RegisterType::Line);
             }
             Mode::VisualBlock => {
-                // Yank rectangular block
+                // Yank rectangular block. Selection cols are grapheme-space;
+                // convert per line so a combining cluster before the block
+                // doesn't shift the extracted columns (OV-00299).
                 let mut yanked_lines = Vec::new();
 
                 for line_idx in start_line..=end_line {
                     if let Some(line_text) = editor.buffer().line_text(line_idx) {
-                        let line_len = line_text.chars().count();
-                        if start_col < line_len {
-                            let actual_end_col = (end_col + 1).min(line_len);
-                            let start_char =
-                                editor.buffer().rope().line_to_char(line_idx) + start_col;
-                            let end_char =
-                                editor.buffer().rope().line_to_char(line_idx) + actual_end_col;
+                        let line_graphemes = crate::unicode::grapheme_count(&line_text);
+                        if start_col < line_graphemes {
+                            let start_char_col = crate::unicode::grapheme_to_char_col(
+                                &line_text,
+                                GraphemeCol(start_col),
+                            );
+                            let end_char_col = crate::unicode::grapheme_to_char_col(
+                                &line_text,
+                                GraphemeCol((end_col + 1).min(line_graphemes)),
+                            );
+                            let line_start = editor.buffer().rope().line_to_char(line_idx);
                             let yanked = editor
                                 .buffer()
                                 .rope()
-                                .slice(start_char..end_char)
+                                .slice(line_start + start_char_col.0..line_start + end_char_col.0)
                                 .to_string();
                             yanked_lines.push(yanked);
                         } else {
@@ -1218,9 +1250,24 @@ pub fn yank_visual_selection(editor: &mut Editor) -> Result<()> {
                 editor.yank_to_register_with_type(yanked, RegisterType::Block);
             }
             _ => {
-                // Character-wise visual mode
-                let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
-                let end_char = editor.buffer().rope().line_to_char(end_line) + end_col + 1;
+                // Character-wise visual mode: grapheme→char per line
+                // (OV-00299), mirroring get_visual_selection_text.
+                let start_text = editor
+                    .buffer()
+                    .line_text(start_line)
+                    .unwrap_or_default()
+                    .to_string();
+                let end_text = editor
+                    .buffer()
+                    .line_text(end_line)
+                    .unwrap_or_default()
+                    .to_string();
+                let start_char_col =
+                    crate::unicode::grapheme_to_char_col(&start_text, GraphemeCol(start_col));
+                let end_char_col =
+                    crate::unicode::grapheme_to_char_col(&end_text, GraphemeCol(end_col + 1));
+                let start_char = editor.buffer().rope().line_to_char(start_line) + start_char_col.0;
+                let end_char = editor.buffer().rope().line_to_char(end_line) + end_char_col.0;
 
                 let yanked = editor
                     .buffer()
@@ -1547,11 +1594,18 @@ pub fn get_visual_selection_text(editor: &Editor) -> Option<String> {
 
     match mode {
         Mode::Visual => {
-            // Character-wise selection.
-            // NOTE: visual cols are grapheme-space; treating them as char-space
-            // is the pre-existing behavior — phase-15 debt.
-            let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
-            let end_char = editor.buffer().rope().line_to_char(end_line) + end_col + 1;
+            // Character-wise selection. Visual cols are grapheme-space:
+            // convert per line so selections containing multi-char graphemes
+            // slice the right range — the end grapheme is included whole,
+            // not just its first scalar (OV-00299).
+            let start_text = editor.buffer().line_text(start_line)?;
+            let end_text = editor.buffer().line_text(end_line)?;
+            let start_char_col =
+                crate::unicode::grapheme_to_char_col(&start_text, GraphemeCol(start_col));
+            let end_char_col =
+                crate::unicode::grapheme_to_char_col(&end_text, GraphemeCol(end_col + 1));
+            let start_char = editor.buffer().rope().line_to_char(start_line) + start_char_col.0;
+            let end_char = editor.buffer().rope().line_to_char(end_line) + end_char_col.0;
             Some(
                 editor
                     .buffer()
