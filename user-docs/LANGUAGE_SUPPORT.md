@@ -111,6 +111,10 @@ ovim lsp languages --verbose  # Detailed configuration
 ovim lsp check src/main.rs    # Check specific file
 ```
 
+Both commands include languages registered dynamically from your
+`init.lua` or plugins (via `ovim.languages.register`), and show which
+config file or plugin registered them.
+
 ## Customizing Language Support
 
 Override or extend language support by creating `~/.config/ovim/languages.toml`. User config merges with the built-in config, with user entries taking priority.
