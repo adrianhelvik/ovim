@@ -8,9 +8,13 @@
 //! not need to touch the binary to embed the editor.
 //!
 //! Each test below is named after, and commented with, the contract step(s)
-//! from `frontend/mod.rs` it exercises. This is a contract smoke test, not a
+//! from `frontend/mod.rs` it exercises. This is a smoke test of contract
+//! steps 1-4 (viewport resize, tick, picker drain, input dispatch), not a
 //! feature test suite; feature coverage belongs in the other files under
-//! `ovim/tests/`.
+//! `ovim/tests/`. Steps 5-7 (debounced rehighlight, external file change
+//! polling, and `close_current_file_lsp` on shutdown) are deliberately out
+//! of scope here: they are exercised by the TUI and headless event loops
+//! instead, not by this lib-only test.
 
 use ovim::api::parse_key_string;
 use ovim::editor::{Editor, InputHandler};
@@ -58,9 +62,11 @@ async fn tick_completes_on_a_default_editor() {
 /// `event_loop.rs`'s `api_keys_match_direct_input_state_and_render` parity
 /// test: `j` moves down a line, `A` appends at end of line and enters
 /// insert mode, and `<Esc>` returns to normal mode with the cursor pulled
-/// back one column onto the last inserted character (that cursor-on-escape
-/// behavior is the same vim semantics the cited parity test already
-/// verifies, not a new assertion invented here).
+/// back one column onto the last inserted character.
+///
+/// vim (nvim --clean, "alpha\nbeta\ngamma"): `jA hello<Esc>` -> line 2 is
+/// "beta hello", col(".") == 10 (1-indexed), i.e. Escape pulls the cursor
+/// back onto the last inserted character.
 #[tokio::test(flavor = "current_thread")]
 async fn key_dispatch_through_input_handler_updates_buffer_cursor_and_mode() {
     let mut editor = Editor::with_content("alpha\nbeta\ngamma\n");
@@ -76,7 +82,11 @@ async fn key_dispatch_through_input_handler_updates_buffer_cursor_and_mode() {
         "alpha\nbeta hello\ngamma\n"
     );
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col().0, "beta hello".len() - 1);
+    assert_eq!(
+        editor.buffer().cursor().col().0,
+        9,
+        "col(\".\") should be 10 (1-indexed) per the nvim citation above"
+    );
     assert_eq!(editor.mode(), Mode::Normal);
 }
 
@@ -105,9 +115,19 @@ fn viewport_resize_reflects_chrome_subtracted_from_raw_height() {
 async fn tick_and_picker_drain_are_a_no_op_without_an_open_picker() {
     let mut editor = Editor::with_content("hello\n");
     let mut channels = test_channels();
+    let version_before = editor.buffer().version();
 
     process_editor_tick(&mut editor, &mut channels).await;
     process_picker_results(&mut editor, &mut channels);
 
     assert_eq!(editor.mode(), Mode::Normal);
+    assert_eq!(
+        editor.buffer().version(),
+        version_before,
+        "a tick and picker drain with no open picker must not mutate the buffer"
+    );
+    assert!(
+        editor.picker().is_none(),
+        "no picker was opened, so none should exist after tick + drain"
+    );
 }

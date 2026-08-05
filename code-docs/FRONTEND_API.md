@@ -18,14 +18,19 @@ suspend/resume, the two event loops themselves) that stays in the binary's
 A frontend embedding the editor core must:
 
 1. Call `handle_viewport_resize` whenever the grid geometry changes
-   (terminal resize, window resize, split/pane changes).
+   (terminal resize, window resize, split/pane changes). It relies on the
+   public helper `compute_text_width` (wrap width = content width minus
+   gutter), kept in sync by hand with
+   `ovim::ui::renderer::layout::BufferLayout::compute`, the authority it
+   mirrors for gutter/layout sizing.
 2. Build a `FrontendChannels` once per `Editor` and run `process_editor_tick`
    on a periodic interval to drive LSP, DAP, syntax highlighting, and other
    background work.
 3. Drain background picker results with `process_picker_results` on the same
-   cadence as the tick — `process_editor_tick` deliberately does not own the
-   preview/file receivers, so a frontend that opens the picker must call
-   this itself (see `event_loop.rs`'s TUI loop; the headless loop instead
+   cadence as the tick — `process_editor_tick` deliberately does not *drain*
+   the preview/file receivers even though it holds them via
+   `FrontendChannels`, so a frontend that opens the picker must call this
+   itself (see `event_loop.rs`'s TUI loop; the headless loop instead
    receives on `FrontendChannels::preview_rx`/`file_rx` directly for lower
    latency).
 4. Call `refresh_after_input` after dispatching input to the editor, then

@@ -18,10 +18,11 @@
 //!    syntax highlighting, and other background work.
 //! 3. Drain background picker results with [`process_picker_results`] on the
 //!    same cadence as the tick — `process_editor_tick` deliberately does not
-//!    own the preview/file receivers, so a frontend that opens the picker
-//!    must call this itself (see `event_loop.rs`'s TUI loop; the headless
-//!    loop instead receives on `FrontendChannels::preview_rx`/`file_rx`
-//!    directly for lower latency).
+//!    *drain* the preview/file receivers even though it holds them via
+//!    `FrontendChannels`, so a frontend that opens the picker must call this
+//!    itself (see `event_loop.rs`'s TUI loop; the headless loop instead
+//!    receives on `FrontendChannels::preview_rx`/`file_rx` directly for
+//!    lower latency).
 //! 4. Call [`refresh_after_input`] after dispatching input to the editor,
 //!    then call `editor.dispatch_pending_intents().await` right after —
 //!    otherwise LSP-triggered work waits for the next tick.

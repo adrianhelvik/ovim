@@ -89,6 +89,9 @@ ovim/src/frontend/
   signature; `process_picker_results(editor, &mut FrontendChannels)` likewise.
 - Both loops in `event_loop.rs` construct one `FrontendChannels` and pass it.
 - Gate: `cargo fmt && cargo clippy && cargo test`.
+- Two extra changes landed under this task: the file-list-cache channel on
+  `FrontendChannels` replaced the `FILE_LIST_CACHE_RESULTS` global static, and
+  `handle_viewport_resize`'s return type changed to `()`.
 
 ### Task 4 — acceptance test + docs
 - `ovim/tests/frontend_api.rs`: simulate a minimal third frontend using ONLY
@@ -106,7 +109,9 @@ ovim/src/frontend/
 - ANSI/indexed `Color` -> RGB palette resolution helper.
 - Feature-gating ratatui out of the lib target for GUI consumers (compile-time
   cost only; revisit when a GUI crate exists).
-- The `FILE_LIST_CACHE_RESULTS` global static is a known wart; moved as-is.
+- The `FILE_LIST_CACHE_RESULTS` global static was resolved in task 3: it was
+  replaced by `FrontendChannels`' file-list-cache channel rather than moved
+  as-is.
 
 ## Process
 - One commit per task once its gate is green (conventional commit style,

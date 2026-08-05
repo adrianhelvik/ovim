@@ -14,22 +14,23 @@ use crate::syntax::Language;
 /// channels keeps their capacities and wiring in one place instead of
 /// duplicated by hand in every event loop.
 ///
-/// Fields are `pub` (rather than accessed only through methods) so a
-/// frontend's `select!` loop can borrow individual channels directly when it
+/// `preview_rx` and `file_rx` are `pub` (rather than accessed only through
+/// methods) so a frontend's `select!` loop can borrow them directly when it
 /// needs lower latency than the tick cadence provides (see
 /// `ovim/src/event_loop.rs::run_headless_loop`, which receives on
 /// `preview_rx`/`file_rx` in dedicated branches instead of waiting for the
-/// next tick).
+/// next tick). The remaining fields have no callers outside the `frontend`
+/// module, so they are `pub(super)`.
 pub struct FrontendChannels {
-    pub preview_tx: mpsc::Sender<(String, editor::PreviewCache)>,
+    pub(super) preview_tx: mpsc::Sender<(String, editor::PreviewCache)>,
     pub preview_rx: mpsc::Receiver<(String, editor::PreviewCache)>,
-    pub file_tx: mpsc::Sender<editor::PickerResult>,
+    pub(super) file_tx: mpsc::Sender<editor::PickerResult>,
     pub file_rx: mpsc::Receiver<editor::PickerResult>,
-    pub syntax_tx: mpsc::Sender<(BufferId, Language, Option<LineHighlights>, u64)>,
-    pub syntax_rx: mpsc::Receiver<(BufferId, Language, Option<LineHighlights>, u64)>,
+    pub(super) syntax_tx: mpsc::Sender<(BufferId, Language, Option<LineHighlights>, u64)>,
+    pub(super) syntax_rx: mpsc::Receiver<(BufferId, Language, Option<LineHighlights>, u64)>,
     pub(super) file_list_cache_tx: mpsc::Sender<(PathBuf, PathBuf, Vec<editor::PickerResult>)>,
     pub(super) file_list_cache_rx: mpsc::Receiver<(PathBuf, PathBuf, Vec<editor::PickerResult>)>,
-    pub java_status_rx: mpsc::Receiver<String>,
+    pub(super) java_status_rx: mpsc::Receiver<String>,
 }
 
 impl FrontendChannels {
