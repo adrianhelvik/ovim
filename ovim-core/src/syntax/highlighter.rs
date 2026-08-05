@@ -1208,4 +1208,101 @@ third line";"#;
             "real-world ternary-with-empty-string-default shape must parse without error"
         );
     }
+
+    #[test]
+    fn groovy_paren_less_multi_param_closure_parses_without_error() {
+        // OV-00308: Groovy closures put an explicit `params ->` prefix
+        // FIRST, immediately after `{`, followed by zero or more statements
+        // sharing the SAME closing brace (e.g. `{ a, b -> stmt1; stmt2 }`).
+        // The grammar's `closure` rule only modeled a single trailing
+        // lambda_expression/expression *after* a repeat of statements, with
+        // no path for a leading arrow followed by multiple statements, and
+        // no path at all for an untyped multi-param list without
+        // surrounding parens. Fixed by adding `bare_closure_parameters`
+        // (see vendor/tree-sitter-groovy/grammar.js).
+        assert!(
+            !groovy_has_error("x = { a, b -> println(a) }\n"),
+            "paren-less two-param closure, single statement body, must parse cleanly"
+        );
+        assert!(
+            !groovy_has_error("x = { a, b ->\n  println(a)\n  println(b)\n}\n"),
+            "paren-less two-param closure, multiple newline-separated statements, must parse cleanly"
+        );
+        assert!(
+            !groovy_has_error(
+                "rules.all { ComponentSelection selection ->\n  selection.reject('nope')\n}\n"
+            ),
+            "single TYPED param without parens (Type name ->) must parse cleanly"
+        );
+        assert!(
+            !groovy_has_error(
+                "configureJavaCompiler = { name, options, projectPath ->\n  def releaseVersion = 1\n  options.foo = releaseVersion\n}\n"
+            ),
+            "three untyped params with multiple statements referencing them must parse cleanly"
+        );
+    }
+
+    #[test]
+    fn groovy_juxt_call_inside_plain_block_parses_without_error() {
+        // OV-00308: Java's `statement` (used inside plain `block`s: method
+        // bodies, if/while/for/try/catch bodies) never gained the
+        // paren-less juxt_function_call alternative that _toplevel_statement
+        // and closure already had, so `println "x"` only worked at the top
+        // level or inside a Groovy closure, not inside an ordinary block
+        // like a catch body.
+        assert!(
+            !groovy_has_error("println \"hello\"\n"),
+            "paren-less call at top level must parse cleanly (regression check)"
+        );
+        assert!(
+            !groovy_has_error(
+                "try {\n  x()\n} catch (Exception e) {\n  println \"failed\"\n  e.printStackTrace()\n}\n"
+            ),
+            "paren-less call inside a catch block body must parse cleanly"
+        );
+    }
+
+    #[test]
+    fn groovy_task_declaration_shorthand_parses_without_error() {
+        // OV-00308: Gradle's `task xyz(type: Foo) { ... }` shorthand needs
+        // two things the grammar lacked: a juxt (paren-less) argument that
+        // is itself a parenthesized call (`xyz(type: Foo)`), and a trailing
+        // closure body attached to the outer juxt call. Fixed via
+        // `juxt_nested_call` and an optional closure body field on
+        // `juxt_function_call`.
+        assert!(
+            !groovy_has_error("task allDeps(type: DependencyReportTask) {}\n"),
+            "task declaration with type arg and closure body must parse cleanly"
+        );
+        assert!(
+            !groovy_has_error("task systemTestLibs(dependsOn: jar)\n"),
+            "task declaration with arg and no closure body must parse cleanly"
+        );
+    }
+
+    #[test]
+    fn groovy_closure_invocation_chaining_parses_without_error() {
+        // OV-00308: Groovy Closures are callable objects (`expr(...)` sugars
+        // to `expr.call(...)`), so a call's return value can itself be
+        // invoked again immediately: `foo.bar(args)()`. Java has no such
+        // "call the result of a call" syntax, so primary_expression never
+        // had a trailing-argument-list alternative. This single construct
+        // was responsible for the largest cascading ERROR span found in a
+        // real build.gradle (thousands of lines).
+        assert!(
+            !groovy_has_error("logTestStdout.rehydrate(delegate, owner, this)()\n"),
+            "invoking the result of a method call must parse cleanly"
+        );
+    }
+
+    #[test]
+    fn groovy_untyped_function_parameters_parse_without_error() {
+        // OV-00308: Groovy `def` functions commonly take untyped parameters
+        // (dynamic typing), e.g. `def foo(eclipse, project) { ... }` -
+        // unlike Java, where formal_parameter required an explicit type.
+        assert!(
+            !groovy_has_error("def fineTuneEclipseClasspathFile(eclipse, project) {\n  x()\n}\n"),
+            "def function with untyped parameters must parse cleanly"
+        );
+    }
 }

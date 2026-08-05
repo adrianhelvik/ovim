@@ -258,6 +258,10 @@
         "named": true
       },
       {
+        "type": "closure_invocation",
+        "named": true
+      },
+      {
         "type": "field_access",
         "named": true
       },
@@ -337,6 +341,10 @@
       },
       {
         "type": "if_statement",
+        "named": true
+      },
+      {
+        "type": "juxt_function_call",
         "named": true
       },
       {
@@ -625,6 +633,10 @@
           "named": true
         },
         {
+          "type": "juxt_nested_call",
+          "named": true
+        },
+        {
           "type": "map_item",
           "named": true
         }
@@ -878,6 +890,71 @@
     "type": "asterisk",
     "named": true,
     "fields": {}
+  },
+  {
+    "type": "bare_closure_parameter",
+    "named": true,
+    "fields": {
+      "dimensions": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "dimensions",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "underscore_pattern",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "_unannotated_type",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "bare_closure_parameters",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "bare_closure_parameter",
+          "named": true
+        }
+      ]
+    }
   },
   {
     "type": "binary_expression",
@@ -1285,7 +1362,18 @@
   {
     "type": "closure",
     "named": true,
-    "fields": {},
+    "fields": {
+      "parameters": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "bare_closure_parameters",
+            "named": true
+          }
+        ]
+      }
+    },
     "children": {
       "multiple": true,
       "required": false,
@@ -1295,14 +1383,36 @@
           "named": true
         },
         {
-          "type": "juxt_function_call",
-          "named": true
-        },
-        {
           "type": "statement",
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "closure_invocation",
+    "named": true,
+    "fields": {
+      "arguments": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "argument_list",
+            "named": true
+          }
+        ]
+      },
+      "function": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "primary_expression",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {
@@ -2134,7 +2244,7 @@
       },
       "type": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "_unannotated_type",
@@ -2525,6 +2635,16 @@
           }
         ]
       },
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "closure",
+            "named": true
+          }
+        ]
+      },
       "name": {
         "multiple": false,
         "required": true,
@@ -2535,6 +2655,32 @@
           },
           {
             "type": "string_literal",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "juxt_nested_call",
+    "named": true,
+    "fields": {
+      "arguments": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "argument_list",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
             "named": true
           }
         ]
@@ -3158,10 +3304,6 @@
       "types": [
         {
           "type": "function_definition",
-          "named": true
-        },
-        {
-          "type": "juxt_function_call",
           "named": true
         },
         {

@@ -75,7 +75,16 @@ module.exports = grammar(Java, {
     [$._literal, $._juxt_function_name],
     [$.array_access, $._juxt_function_name],
 
-    [$.block, $.closure],
+    [$.lambda_expression, $._variable_declarator_id],
+    [$.variable_declarator, $.bare_closure_parameter],
+    [$._toplevel_statement, $.statement],
+    [$.expression, $._juxt_function_name],
+    [$.expression, $.array_access, $._juxt_function_name],
+    [$.primary_expression, $.explicit_constructor_invocation],
+    [$.primary_expression, $.method_invocation, $.record_pattern],
+    [$.inferred_parameters, $.primary_expression, $._variable_declarator_id, $._unannotated_type],
+    [$.inferred_parameters, $._variable_declarator_id],
+    [$.inferred_parameters, $.primary_expression, $._variable_declarator_id],
   ]),
 
   extras: $ => [
@@ -96,12 +105,38 @@ module.exports = grammar(Java, {
       $.juxt_function_call,
     ),
 
+    // Java's `statement` (used inside plain `block`s: method bodies,
+    // if/while/for/try/catch bodies, etc.) never gained the paren-less
+    // juxt_function_call alternative that _toplevel_statement and closure
+    // already have, so `println "x"` (very common) only worked at the top
+    // level or inside a Groovy closure, not inside an ordinary block.
+    statement: ($, original) => choice(
+      original,
+      $.juxt_function_call,
+    ),
+
     declaration: ($, original) => choice(
       original,
       $.package_declaration,
     ),
 
     shebang: $ => token(seq('#!', /.*/)),
+
+    // Groovy Closures are callable objects; `expr(...)` is sugar for
+    // `expr.call(...)`, so any call result that is itself a Closure (e.g.
+    // `Closure.rehydrate(...)`) can be invoked again immediately:
+    // `foo.bar(args)(moreArgs)`. Java has no such "call the
+    // result of a call" syntax, so primary_expression never gained a
+    // trailing-argument-list alternative.
+    primary_expression: ($, original) => choice(
+      original,
+      $.closure_invocation,
+    ),
+
+    closure_invocation: $ => prec.left(2, seq(
+      field('function', $.primary_expression),
+      field('arguments', $.argument_list),
+    )),
 
     expression_statement: $ => seq($.expression, DELIMITER),
 
@@ -253,9 +288,12 @@ module.exports = grammar(Java, {
       ),
     )),
 
+    // Groovy `def` functions/methods commonly take untyped parameters
+    // (dynamic typing), e.g. `def foo(eclipse, project) { ... }` - unlike
+    // Java, where every formal_parameter requires an explicit type.
     formal_parameter: $ => seq(
       optional($.modifiers),
-      field('type', $._unannotated_type),
+      optional(field('type', $._unannotated_type)),
       $._variable_declarator_id,
       optional(seq('=', $.expression)),
     ),
@@ -267,9 +305,17 @@ module.exports = grammar(Java, {
       ')',
     ),
 
+    // Gradle's `task xyz(type: Foo) { ... }` shorthand: `xyz(type: Foo)` is
+    // a normal parenthesized call, so a juxt (paren-less) argument can
+    // itself be such a call (previously only literals/map_items/bare
+    // identifiers were allowed, so anything after the nested call's closing
+    // paren was left dangling). The trailing closure attaches to the OUTER
+    // juxt call (e.g. `task testJar(type: Jar) { ... }`), mirroring
+    // method_invocation's own optional trailing closure body.
     juxt_function_call: $ => prec.left(1, seq(
       field('name', $._juxt_function_name),
       field('args', alias($._juxt_argument_list, $.argument_list)),
+      optional(field('body', $.closure)),
     )),
 
     _juxt_function_name: $ => choice(
@@ -278,7 +324,17 @@ module.exports = grammar(Java, {
       $.string_literal,
     ),
 
-    _juxt_argument_list: $ => commaSep1(choice($._literal, $.map_item, $.identifier)),
+    _juxt_argument_list: $ => commaSep1(choice($._literal, $.map_item, $.identifier, $.juxt_nested_call)),
+
+    // Narrow, purpose-built shape for `task xyz(type: Foo)`: a bare
+    // identifier immediately followed by its own parenthesized argument
+    // list. Deliberately NOT the general `$.method_invocation` (which
+    // drags in generics/super/dot-chains and a wide new conflict surface
+    // irrelevant here).
+    juxt_nested_call: $ => prec.left(2, seq(
+      field('name', $.identifier),
+      field('arguments', $.argument_list),
+    )),
 
     map_item: $ => seq(
       field('key', choice(
@@ -290,12 +346,38 @@ module.exports = grammar(Java, {
       field('value', $.expression),
     ),
 
-    closure: $ => prec(1, seq(
-      '{',
-      repeat(choice($.statement, $.juxt_function_call)),
-      optional(choice($.lambda_expression, $.expression)),
-      '}',
+    // Groovy closures with explicit parameters put the `params ->` prefix
+    // FIRST, immediately after `{`, followed by zero or more statements that
+    // share the SAME closing brace (e.g. `{ a, b -> stmt1; stmt2 }`). The
+    // upstream `closure` rule only modeled a single trailing
+    // lambda_expression/expression *after* a repeat of statements, which
+    // can't represent a leading arrow followed by multiple statements. Add
+    // that shape as a new alternative; the original shape (no leading
+    // params, at most one trailing lambda/expression) is left untouched.
+    closure: $ => prec(1, choice(
+      seq(
+        '{',
+        repeat($.statement),
+        optional(choice($.lambda_expression, $.expression)),
+        '}',
+      ),
+      seq(
+        '{',
+        field('parameters', $.bare_closure_parameters),
+        '->',
+        repeat($.statement),
+        optional($.expression),
+        '}',
+      ),
     )),
+
+    bare_closure_parameter: $ => seq(
+      optional(field('type', $._unannotated_type)),
+      $._variable_declarator_id,
+      optional(seq('=', $.expression)),
+    ),
+
+    bare_closure_parameters: $ => commaSep1($.bare_closure_parameter),
 
     range_expression: $ => prec.right(PREC.RANGE, seq(
       field('start', $.expression),
