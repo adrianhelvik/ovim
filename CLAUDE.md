@@ -62,6 +62,7 @@ ovim/                    # Binary crate
 │   │   ├── operators.rs # d, c, y operators
 │   │   ├── motions.rs   # Cursor movement
 │   │   └── mod.rs       # Main editor state + LSP integration
+│   ├── frontend/        # Frontend-agnostic runtime plumbing (shared by TUI/headless/future GUI)
 │   ├── ui/              # Terminal UI (ratatui + crossterm)
 │   ├── cli.rs           # CLI argument parsing
 │   ├── subcommands.rs   # CLI subcommand handlers
