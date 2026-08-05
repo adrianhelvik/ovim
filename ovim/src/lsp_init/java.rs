@@ -1,4 +1,4 @@
-use ovim::editor::Editor;
+use crate::editor::Editor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
@@ -79,7 +79,7 @@ pub async fn handle_hyperion_lsp(editor: &mut Editor, abs_path: PathBuf, languag
 
 /// Background Hyperion LSP initialization
 pub async fn initialize_hyperion_lsp_background(
-    lsp_manager: Option<Arc<ovim::lsp::LspManager>>,
+    lsp_manager: Option<Arc<crate::lsp::LspManager>>,
     file_path: PathBuf,
     language_id: &str,
 ) {

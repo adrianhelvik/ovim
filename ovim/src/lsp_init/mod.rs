@@ -1,14 +1,14 @@
 pub mod auto_install;
 mod java;
 
-use auto_install::{attempt_auto_install, InstallResult};
-use ovim::editor::Editor;
-use ovim::language_config::{
+use crate::editor::Editor;
+use crate::language_config::{
     find_lsp_command, find_project_root, AutoInstallConfig, AutoInstallPolicy, CompanionLspConfig,
     InstallMethod, LanguageRegistry,
 };
-use ovim::lsp::companion_server_id;
-use ovim::lsp::uri_from_file_path;
+use crate::lsp::companion_server_id;
+use crate::lsp::uri_from_file_path;
+use auto_install::{attempt_auto_install, InstallResult};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,7 +70,7 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
             // LSP server not found - try auto-install if configured
             if let Some(auto_install_config) = &lsp_config.auto_install {
                 // Check user's global autoinstall preference
-                if editor.options.lsp_auto_install == ovim::editor::AutoInstallMode::Off {
+                if editor.options.lsp_auto_install == crate::editor::AutoInstallMode::Off {
                     let hint = lsp_config
                         .install_hint
                         .as_deref()
@@ -117,9 +117,9 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
 
                 // If autoinstall=prompt, show consent dialog and return early.
                 // The event loop will pick up the approved install and re-trigger.
-                if editor.options.lsp_auto_install == ovim::editor::AutoInstallMode::Prompt {
+                if editor.options.lsp_auto_install == crate::editor::AutoInstallMode::Prompt {
                     let method_desc = describe_install_method(&auto_install_config.method);
-                    editor.set_pending_lsp_install(ovim::editor::PendingLspInstall {
+                    editor.set_pending_lsp_install(crate::editor::PendingLspInstall {
                         language_name: lang_config.name.clone(),
                         server_command: lsp_config.command.clone(),
                         method_description: method_desc,
@@ -508,7 +508,7 @@ async fn initialize_companions(editor: &mut Editor, language_id: &str, abs_path:
             None => {
                 // Try auto-install if configured
                 if let Some(auto_install_config) = &companion.auto_install {
-                    if editor.options.lsp_auto_install != ovim::editor::AutoInstallMode::Off
+                    if editor.options.lsp_auto_install != crate::editor::AutoInstallMode::Off
                         && auto_install_on_missing_enabled(auto_install_config)
                         && is_auto_install_allowed_for_current_mode(auto_install_config)
                     {

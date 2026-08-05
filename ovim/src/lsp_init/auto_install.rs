@@ -17,7 +17,7 @@
 //
 // The pattern: Try → Fail gracefully → Guide user to success
 
-use ovim::language_config::{AutoInstallConfig, InstallMethod};
+use crate::language_config::{AutoInstallConfig, InstallMethod};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -156,7 +156,7 @@ async fn install_via_npm(
         None
     } else {
         let primary = npm_package_base_name(&packages[0]);
-        let Some(dir) = ovim::language_config::managed_lsp_package_dir("npm", &primary) else {
+        let Some(dir) = crate::language_config::managed_lsp_package_dir("npm", &primary) else {
             return InstallResult::Failed(
                 "Could not determine home directory for sandboxed install.".to_string(),
             );
@@ -378,7 +378,7 @@ async fn install_via_cargo(
         );
     }
 
-    let Some(sandbox) = ovim::language_config::managed_lsp_package_dir("cargo", package) else {
+    let Some(sandbox) = crate::language_config::managed_lsp_package_dir("cargo", package) else {
         return InstallResult::Failed(
             "Could not determine home directory for sandboxed install.".to_string(),
         );
@@ -898,7 +898,7 @@ fn verify_shell_installation(binary: &str) -> Option<PathBuf> {
 
     // Fallback: the same well-known directories find_lsp_command searches,
     // so a successful verification here implies re-detection will also succeed.
-    ovim::language_config::find_in_well_known_locations(binary).map(PathBuf::from)
+    crate::language_config::find_in_well_known_locations(binary).map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -963,7 +963,7 @@ mod tests {
         // global prefix. No bin-dir linking: .bin entries may be shims that
         // resolve paths relative to $0 and only work at their real location.
         let sandbox =
-            ovim::language_config::managed_lsp_package_dir("npm", "@astrojs/language-server")
+            crate::language_config::managed_lsp_package_dir("npm", "@astrojs/language-server")
                 .unwrap();
         assert!(
             path.starts_with(sandbox.join("node_modules/.bin")),
@@ -971,7 +971,7 @@ mod tests {
             path
         );
         // Command resolution must find the same executable by bare name.
-        let resolved = ovim::language_config::find_in_well_known_locations("astro-ls")
+        let resolved = crate::language_config::find_in_well_known_locations("astro-ls")
             .expect("resolution should find sandboxed astro-ls");
         assert_eq!(PathBuf::from(resolved), path);
         // typescript@6 must be present in the same sandbox so tsdk

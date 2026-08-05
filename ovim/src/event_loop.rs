@@ -218,7 +218,7 @@ async fn process_lsp_notifications(editor: &mut Editor) {
 async fn process_lsp_init(editor: &mut Editor) {
     if let Some(file_path) = editor.needs_lsp_init() {
         ovim_core::log_debug!("tick", "Initializing LSP for {}", file_path);
-        crate::lsp_init::initialize_lsp_for_file(editor, &file_path).await;
+        ovim::lsp_init::initialize_lsp_for_file(editor, &file_path).await;
         editor.clear_lsp_init_flag();
     }
 }
@@ -611,7 +611,7 @@ async fn poll_background_tasks(editor: &mut Editor) {
         editor.mark_dirty();
     }
     if editor.has_approved_lsp_install() {
-        crate::lsp_init::handle_approved_lsp_install(editor).await;
+        ovim::lsp_init::handle_approved_lsp_install(editor).await;
         editor.mark_dirty();
     }
     if editor.poll_pending_ai_chat_job() {
@@ -676,15 +676,15 @@ fn spawn_pending_installs(editor: &mut Editor) {
             });
 
             let result =
-                crate::lsp_init::auto_install::attempt_auto_install(&lang_name, &command, &config)
+                ovim::lsp_init::auto_install::attempt_auto_install(&lang_name, &command, &config)
                     .await;
 
             let status = match result {
-                crate::lsp_init::auto_install::InstallResult::Success(_) => InstallStatus::Success,
-                crate::lsp_init::auto_install::InstallResult::Failed(msg) => {
+                ovim::lsp_init::auto_install::InstallResult::Success(_) => InstallStatus::Success,
+                ovim::lsp_init::auto_install::InstallResult::Failed(msg) => {
                     InstallStatus::Failed(msg)
                 }
-                crate::lsp_init::auto_install::InstallResult::PrerequisitesMissing(msg) => {
+                ovim::lsp_init::auto_install::InstallResult::PrerequisitesMissing(msg) => {
                     InstallStatus::Failed(msg)
                 }
             };

@@ -4,7 +4,6 @@
 
 mod api_dispatch;
 mod event_loop;
-mod lsp_init;
 
 use anyhow::Result;
 use ovim::cli::Cli;
@@ -111,7 +110,7 @@ async fn main() -> Result<()> {
     let resume_conversations = cli.resume;
 
     // Track runtime mode for components that need different behavior in headless mode.
-    lsp_init::set_headless_mode(headless);
+    ovim::lsp_init::set_headless_mode(headless);
 
     // Initialize LSP logging to file
     if let Err(e) = ovim::lsp::init_lsp_logging() {
@@ -190,7 +189,7 @@ async fn main() -> Result<()> {
     let (java_status_tx, java_status_rx) = mpsc::channel(64);
 
     // Initialize the Java status sender in the lsp_init module
-    lsp_init::init_java_status_sender(java_status_tx);
+    ovim::lsp_init::init_java_status_sender(java_status_tx);
 
     // Set up API server (always start in both headless and UI modes)
     let (tx, rx) = mpsc::channel(256);
