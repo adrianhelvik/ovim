@@ -1,6 +1,6 @@
 [package]
 name = "ovim-core"
-version = "0.1.20"
+version = "0.1.21"
 edition = "2024"
 description = "Core library for ovim (Oxidized Vim) — buffer, syntax, LSP, session, and editor primitives."
 
