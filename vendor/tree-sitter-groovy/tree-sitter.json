@@ -1,0 +1,38 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "groovy",
+      "camelcase": "Groovy",
+      "scope": "source.groovy",
+      "file-types": [
+        ".gradle",
+        ".groovy",
+        "Jenkinsfile"
+      ],
+      "injection-regex": "^groovy$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.2",
+    "license": "MIT",
+    "description": "Groovy grammar for tree-sitter",
+    "authors": [
+      {
+        "name": "Amaan Qureshi",
+        "email": "amaanq12@gmail.com"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/amaanq/tree-sitter-groovy"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "go": true,
+    "node": true,
+    "python": true,
+    "rust": true,
+    "swift": true
+  }
+}

@@ -2,6 +2,10 @@
 members = ["ovim-core", "ovim"]
 resolver = "2"
 
+# locally patched grammar, see vendor/tree-sitter-groovy/grammar.js (OV-00307)
+[patch.crates-io]
+tree-sitter-groovy = { path = "vendor/tree-sitter-groovy" }
+
 [workspace.lints.clippy]
 # Stylistic lints we deliberately don't enforce
 collapsible_if = "allow"

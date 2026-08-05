@@ -1165,4 +1165,47 @@ third line";"#;
         assert!(h.highlights_for_line(999, source).is_empty());
         assert!(h.highlights_for_line_range(source, 5, 10).is_empty());
     }
+
+    fn groovy_has_error(src: &str) -> bool {
+        let ts_language =
+            LanguageRegistry::get_tree_sitter_language(crate::syntax::languages::Language::Groovy);
+        let mut parser = Parser::new();
+        parser.set_language(&ts_language).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        tree.root_node().has_error()
+    }
+
+    #[test]
+    fn groovy_empty_single_quote_string_parses_without_error() {
+        // OV-00307: tree-sitter-groovy's character_literal token (inherited
+        // from tree-sitter-java, which only ever needs single chars) required
+        // >=1 char between quotes, so it had no rule at all for Groovy's empty
+        // single-quoted string `''`, an extremely common idiom (e.g. `x ?: ''`
+        // as an empty-string default). Hitting it mid-file threw the parser
+        // into an unrecoverable ERROR node that swallowed everything downstream
+        // until an unrelated later token happened to resynchronize it. Fixed by
+        // patching character_literal's repeat1 -> repeat (see
+        // vendor/tree-sitter-groovy/grammar.js) and repointing the dependency
+        // at the patched build via [patch.crates-io] in the workspace Cargo.toml.
+        assert!(
+            !groovy_has_error("x = 'a'\n"),
+            "non-empty single-quoted string should parse cleanly"
+        );
+        assert!(
+            !groovy_has_error("x = \"\"\n"),
+            "empty DOUBLE-quoted string should parse cleanly (control: only single-quote was broken)"
+        );
+        assert!(
+            !groovy_has_error("x = project.hasProperty('y') ? project.y : 'z'\n"),
+            "same ternary/method-call shape with non-empty literal should parse cleanly"
+        );
+        assert!(
+            !groovy_has_error("x = ''\n"),
+            "bare empty single-quoted string alone must parse without error"
+        );
+        assert!(
+            !groovy_has_error("x = project.hasProperty('y') ? project.y : ''\n"),
+            "real-world ternary-with-empty-string-default shape must parse without error"
+        );
+    }
 }
