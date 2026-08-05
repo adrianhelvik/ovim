@@ -35,7 +35,7 @@ impl Editor {
 
     pub fn ensure_workflows_loaded(&mut self) -> Result<()> {
         if self.ai_state.workflows.is_empty() {
-            let _ = self.reload_workflows()?;
+            self.reload_workflows()?;
         }
         Ok(())
     }

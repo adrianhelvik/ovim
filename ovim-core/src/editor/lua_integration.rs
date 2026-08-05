@@ -34,6 +34,29 @@ fn lua_failure_toast(title: &str, error: &anyhow::Error) -> super::ToastRequest 
 
 #[cfg(feature = "lua")]
 impl Editor {
+    /// Runs a command queued by the user's config or a plugin, surfacing
+    /// failures instead of dropping them (OV-00197): a broken keymap or
+    /// option in init.lua previously produced no feedback at all.
+    fn run_config_command(&mut self, cmd: &str, source: &str) {
+        if let Err(error) = InputHandler::execute_command_string(self, cmd) {
+            crate::log_warn!("lua", "{} command '{}' failed: {}", source, cmd, error);
+            let first_line = error.to_string();
+            let first_line = first_line
+                .lines()
+                .next()
+                .unwrap_or("unknown error")
+                .to_string();
+            self.push_toast(
+                super::ToastRequest::new(
+                    super::ToastSource::System,
+                    super::ToastLevel::Warning,
+                    format!("'{cmd}' failed: {first_line}"),
+                )
+                .with_title(format!("{source} command failed")),
+            );
+        }
+    }
+
     /// Enables Lua scripting support
     pub fn enable_lua(&mut self) -> Result<()> {
         if self.lua_context.is_none() {
@@ -57,7 +80,7 @@ impl Editor {
                     // Config loaded successfully - process any commands that were queued
                     let commands = bridge.drain_commands();
                     for cmd in commands {
-                        let _ = InputHandler::execute_command_string(self, &cmd);
+                        self.run_config_command(&cmd, "init.lua");
                     }
                     self.sync_ai_config_from_bridge(&bridge);
                 }
@@ -83,7 +106,7 @@ impl Editor {
             // Process any commands from plugins
             let commands = bridge.drain_commands();
             for cmd in commands {
-                let _ = InputHandler::execute_command_string(self, &cmd);
+                self.run_config_command(&cmd, "plugin");
             }
             self.sync_ai_config_from_bridge(&bridge);
             self.lua_context = Some(context);

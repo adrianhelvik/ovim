@@ -916,14 +916,36 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         let path = _expanded;
                         match context.execute_file(&path) {
                             Ok(_) => {
-                                // Process any commands from the sourced file using the public API
+                                // Process any commands from the sourced file,
+                                // reporting the first failure instead of
+                                // silently dropping it (OV-00197).
                                 let commands = editor.get_lua_commands();
+                                let mut failed = Vec::new();
                                 for cmd in commands {
-                                    let _ = crate::editor::InputHandler::execute_command_string(
-                                        editor, &cmd,
-                                    );
+                                    if let Err(error) =
+                                        crate::editor::InputHandler::execute_command_string(
+                                            editor, &cmd,
+                                        )
+                                    {
+                                        crate::log_warn!(
+                                            "lua",
+                                            "sourced command '{}' failed: {}",
+                                            cmd,
+                                            error
+                                        );
+                                        failed.push(cmd);
+                                    }
                                 }
-                                ok(format!("Sourced: {}", path.display()))
+                                if failed.is_empty() {
+                                    ok(format!("Sourced: {}", path.display()))
+                                } else {
+                                    ok(format!(
+                                        "Sourced: {} ({} command(s) failed: {}; see log)",
+                                        path.display(),
+                                        failed.len(),
+                                        failed.join(", ")
+                                    ))
+                                }
                             }
                             Err(e) => err(format!("Failed to source {}: {}", file, e)),
                         }
