@@ -1,10 +1,11 @@
 use tokio::sync::mpsc;
 
 use crate::buffer::{BufferId, LineHighlights};
-use crate::editor::{self, Editor};
+use crate::editor::Editor;
 use crate::mode::Mode;
 use crate::syntax::{Language, LanguageRegistry, SyntaxHighlighter};
 
+use super::channels::FrontendChannels;
 use super::loading::{
     spawn_file_finder_loading, spawn_picker_preview_loading, update_file_list_cache_from_background,
 };
@@ -17,18 +18,11 @@ fn apply_java_status(editor: &mut Editor, status: String) {
     }
 }
 
-/// Shared editor tick for both loops.
-/// Handles LSP, diagnostics, syntax, DAP, and background tasks.
-pub async fn process_editor_tick(
-    editor: &mut Editor,
-    java_status_rx: &mut mpsc::Receiver<String>,
-    preview_tx: &tokio::sync::mpsc::Sender<(String, editor::PreviewCache)>,
-    file_tx: &tokio::sync::mpsc::Sender<editor::PickerResult>,
-    syntax_tx: &tokio::sync::mpsc::Sender<(BufferId, Language, Option<LineHighlights>, u64)>,
-    syntax_rx: &mut tokio::sync::mpsc::Receiver<(BufferId, Language, Option<LineHighlights>, u64)>,
-) {
+/// Drives one round of background work: LSP, DAP, syntax highlighting,
+/// picker, and installs. Call on a periodic interval from any frontend.
+pub async fn process_editor_tick(editor: &mut Editor, channels: &mut FrontendChannels) {
     // === LSP lifecycle ===
-    process_java_status(editor, java_status_rx);
+    process_java_status(editor, &mut channels.java_status_rx);
     process_lsp_notifications(editor).await;
     process_lsp_init(editor).await;
     process_lsp_sync_and_inlay_hints(editor).await;
@@ -38,8 +32,8 @@ pub async fn process_editor_tick(
     process_pending_debug_action(editor).await;
 
     // === Syntax highlighting ===
-    spawn_syntax_highlighting(editor, syntax_tx);
-    drain_syntax_results(editor, syntax_rx);
+    spawn_syntax_highlighting(editor, &channels.syntax_tx);
+    drain_syntax_results(editor, &mut channels.syntax_rx);
 
     // === LSP responses & intents ===
     if editor.poll_pending_lsp_responses() {
@@ -49,7 +43,7 @@ pub async fn process_editor_tick(
 
     // === Background tasks ===
     poll_background_tasks(editor).await;
-    update_file_list_cache_from_background(editor);
+    update_file_list_cache_from_background(editor, channels);
 
     // === Transient UI state ===
     tick_transient_ui(editor);
@@ -65,7 +59,7 @@ pub async fn process_editor_tick(
 
     // === Picker ===
     if editor.mode() == Mode::Picker {
-        process_picker_tick(editor, preview_tx, file_tx);
+        process_picker_tick(editor, channels);
     }
 
     // File switches queue didClose outside the async input dispatcher. Drive
@@ -538,11 +532,7 @@ async fn poll_background_tasks(editor: &mut Editor) {
 }
 
 /// Drive the picker: nucleo matching, grep drain, debounced filter, preview/file loading.
-fn process_picker_tick(
-    editor: &mut Editor,
-    preview_tx: &tokio::sync::mpsc::Sender<(String, editor::PreviewCache)>,
-    file_tx: &tokio::sync::mpsc::Sender<editor::PickerResult>,
-) {
+fn process_picker_tick(editor: &mut Editor, channels: &mut FrontendChannels) {
     let mut picker_changed = false;
     if let Some(picker) = editor.picker_mut() {
         if picker.tick() {
@@ -558,8 +548,8 @@ fn process_picker_tick(
     if editor.apply_pending_picker_filter(50) {
         editor.mark_dirty();
     }
-    spawn_picker_preview_loading(editor, preview_tx);
-    spawn_file_finder_loading(editor, file_tx);
+    spawn_picker_preview_loading(editor, &channels.preview_tx);
+    spawn_file_finder_loading(editor, &channels.file_tx, &channels.file_list_cache_tx);
     if editor.picker_rapid_scrolling_just_stopped() {
         editor.mark_dirty();
     }

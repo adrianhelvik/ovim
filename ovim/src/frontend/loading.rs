@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
+use super::channels::FrontendChannels;
 use crate::editor::{self, Editor};
 use crate::syntax::{LanguageRegistry, SyntaxHighlighter};
 
 /// Spawns a background task to load picker preview if debounce time has elapsed
 /// Returns immediately without blocking input handling
-pub fn spawn_picker_preview_loading(
+pub(super) fn spawn_picker_preview_loading(
     editor: &mut Editor,
     preview_tx: &tokio::sync::mpsc::Sender<(String, editor::PreviewCache)>,
 ) {
@@ -31,9 +32,14 @@ pub fn spawn_picker_preview_loading(
 /// Spawns a background task to load files for file finder picker
 /// Returns immediately without blocking - files are sent via channel as they're discovered
 /// Uses cache when available to speed up repeated picker opens
-pub fn spawn_file_finder_loading(
+pub(super) fn spawn_file_finder_loading(
     editor: &mut Editor,
     file_tx: &tokio::sync::mpsc::Sender<editor::PickerResult>,
+    file_list_cache_tx: &tokio::sync::mpsc::Sender<(
+        std::path::PathBuf,
+        std::path::PathBuf,
+        Vec<editor::PickerResult>,
+    )>,
 ) {
     // Check if we should spawn file loading
     if let Some(picker) = editor.picker() {
@@ -74,6 +80,7 @@ pub fn spawn_file_finder_loading(
         }
 
         let tx = file_tx.clone();
+        let cache_tx = file_list_cache_tx.clone();
         let base_dir_clone = base_dir.clone();
         let preferred_dir_clone = preferred_dir.clone();
 
@@ -148,26 +155,21 @@ pub fn spawn_file_finder_loading(
                 }
             }
 
-            // Store collected files in a static to be picked up by cache update
-            // This is a workaround since we can't update Editor state from within a spawned task
-            FILE_LIST_CACHE_RESULTS.lock().await.replace((
-                base_dir_clone,
-                preferred_dir_clone,
-                collected_files,
-            ));
+            // Hand collected files back through the channel so the owning
+            // Editor's cache is updated from the frontend's tick, not from
+            // inside this spawned task.
+            let _ = cache_tx
+                .send((base_dir_clone, preferred_dir_clone, collected_files))
+                .await;
         });
     }
 }
 
 /// Helper to process preview and file picker results
-pub fn process_picker_results(
-    editor: &mut Editor,
-    preview_rx: &mut tokio::sync::mpsc::Receiver<(String, editor::PreviewCache)>,
-    file_rx: &mut tokio::sync::mpsc::Receiver<editor::PickerResult>,
-) {
+pub fn process_picker_results(editor: &mut Editor, channels: &mut FrontendChannels) {
     // Try to drain pending preview loads (single mark_dirty after batch)
     let mut previews_loaded = false;
-    while let Ok((path, cache)) = preview_rx.try_recv() {
+    while let Ok((path, cache)) = channels.preview_rx.try_recv() {
         editor.insert_preview(path, cache);
         previews_loaded = true;
     }
@@ -182,7 +184,7 @@ pub fn process_picker_results(
         if drain_start.elapsed() >= drain_budget {
             break;
         }
-        match file_rx.try_recv() {
+        match channels.file_rx.try_recv() {
             Ok(result) => {
                 if let Some(picker) = editor.picker_mut() {
                     picker.add_file_result(result);
@@ -196,26 +198,19 @@ pub fn process_picker_results(
         editor.mark_dirty();
     }
     // Update file list cache from background task (if completed)
-    update_file_list_cache_from_background(editor);
+    update_file_list_cache_from_background(editor, channels);
 }
 
-/// Temporary storage for file list results from background task
-/// The main event loop will pick these up and update the Editor cache
-static FILE_LIST_CACHE_RESULTS: tokio::sync::Mutex<
-    Option<(
-        std::path::PathBuf,
-        std::path::PathBuf,
-        Vec<editor::PickerResult>,
-    )>,
-> = tokio::sync::Mutex::const_new(None);
-
-/// Picks up cached file list results from the background task and updates Editor cache
-pub(super) fn update_file_list_cache_from_background(editor: &mut Editor) {
-    // Non-blocking try_lock to avoid any contention with background task
-    if let Ok(mut guard) = FILE_LIST_CACHE_RESULTS.try_lock() {
-        if let Some((base_dir, preferred_dir, files)) = guard.take() {
-            editor.update_file_list_cache(base_dir, preferred_dir, files);
-        }
+/// Drains completed file-list results from the background finder task and
+/// updates the Editor's cache. Owned by a channel on [`FrontendChannels`]
+/// rather than a process-global slot, since more than one `Editor` (e.g. GUI
+/// tabs/splits) can exist in the same process.
+pub(super) fn update_file_list_cache_from_background(
+    editor: &mut Editor,
+    channels: &mut FrontendChannels,
+) {
+    while let Ok((base_dir, preferred_dir, files)) = channels.file_list_cache_rx.try_recv() {
+        editor.update_file_list_cache(base_dir, preferred_dir, files);
     }
 }
 

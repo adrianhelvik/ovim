@@ -141,24 +141,18 @@ pub(crate) async fn handle_api_request(
             let _ = tx.send(response);
         }
         ApiRequest::Resize { width, height, tx } => {
-            let response = match handle_viewport_resize(editor, width, height) {
-                Ok(()) => {
-                    editor.mark_dirty();
-                    if let Ok(mut session) = session_info.lock() {
-                        if session.port != 0 {
-                            let _ = session.set_dimensions(width, height);
-                        }
-                    }
-                    ApiResponse::Success(SuccessResponse {
-                        success: true,
-                        message: Some(format!("Resized to {width}x{height}").into()),
-                        line_count: None,
-                    })
+            handle_viewport_resize(editor, width, height);
+            editor.mark_dirty();
+            if let Ok(mut session) = session_info.lock() {
+                if session.port != 0 {
+                    let _ = session.set_dimensions(width, height);
                 }
-                Err(error) => ApiResponse::Error(ErrorResponse {
-                    error: format!("Failed to resize editor: {error}"),
-                }),
-            };
+            }
+            let response = ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(format!("Resized to {width}x{height}").into()),
+                line_count: None,
+            });
             let _ = tx.send(response);
         }
         ApiRequest::GetBuffer(tx) => {

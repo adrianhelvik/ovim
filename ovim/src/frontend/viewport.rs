@@ -1,8 +1,15 @@
-use anyhow::Result;
-
 use crate::editor::Editor;
 
-pub fn handle_viewport_resize(editor: &mut Editor, width: u16, height: u16) -> Result<()> {
+/// Recomputes viewport geometry from raw grid cells: `width`/`height` are the
+/// full window in character cells (not the content area — this function
+/// subtracts chrome itself: tab bar, file tree, LSP progress line, and the
+/// status+command lines). Keeps viewport height, window manager dimensions,
+/// the wrap map, and the scroll offset in sync with the new size.
+///
+/// Call this whenever the grid geometry changes (terminal resize, window
+/// resize, split/pane changes) — see the frontend contract in
+/// [`crate::frontend`].
+pub fn handle_viewport_resize(editor: &mut Editor, width: u16, height: u16) {
     // Recompute the buffer chunk dimensions using the same high-level rules as the renderer.
     // This is intentionally approximate (position doesn't matter here) — it just needs to
     // keep viewport height and wrap width correct for scroll calculations.
@@ -54,12 +61,13 @@ pub fn handle_viewport_resize(editor: &mut Editor, width: u16, height: u16) -> R
 
     // Re-run scroll update so the cursor remains visible in the resized viewport.
     editor.update_scroll_offset();
-
-    Ok(())
 }
 
+/// Computes the wrap width (content width minus gutter) for a given content
+/// area width. Kept in sync by hand with
+/// `ovim::ui::renderer::layout::BufferLayout::compute`, which is the
+/// authority for gutter/layout sizing; this function must not drift from it.
 pub fn compute_text_width(editor: &Editor, content_width: u16) -> usize {
-    // Keep in sync with `ovim::ui::renderer::layout::BufferLayout::compute`.
     const SIGN_WIDTH: usize = 2;
     const GUTTER_SPACING: usize = 1;
 
@@ -118,7 +126,7 @@ mod tests {
         editor.options.scrolloff = 0;
 
         // Initial size.
-        handle_viewport_resize(&mut editor, 80, 20).unwrap();
+        handle_viewport_resize(&mut editor, 80, 20);
         assert_eq!(editor.viewport_height(), 18);
 
         // Move cursor to EOF and ensure scroll offset is set.
@@ -126,11 +134,11 @@ mod tests {
         editor
             .buffer_mut()
             .cursor_mut()
-            .set_position(last_line, ovim_core::unicode::GraphemeCol::ZERO);
+            .set_position(last_line, crate::unicode::GraphemeCol::ZERO);
         editor.update_scroll_offset();
 
         // Shrink the pane; cursor should remain visible in the new viewport.
-        handle_viewport_resize(&mut editor, 80, 10).unwrap();
+        handle_viewport_resize(&mut editor, 80, 10);
         assert_eq!(editor.viewport_height(), 8);
 
         let cursor_line = editor.buffer().cursor().line();

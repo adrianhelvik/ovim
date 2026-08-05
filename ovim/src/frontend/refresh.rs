@@ -1,6 +1,7 @@
 use crate::editor::Editor;
 
-/// Shared post-input refresh used by terminal and API input paths.
+/// Post-input refresh: rehighlight the viewport if the buffer needs it, then
+/// mark dirty.
 pub fn refresh_after_input(editor: &mut Editor) {
     if editor.buffer().needs_rehighlight() {
         editor.process_viewport_rehighlight();

@@ -9,14 +9,12 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Duration, Instant};
 
 use ovim::api::ApiRequest;
-use ovim::buffer::{BufferId, LineHighlights};
-use ovim::editor::{self, handle_mouse_event, Editor, InputHandler};
+use ovim::editor::{handle_mouse_event, Editor, InputHandler};
 use ovim::frontend::{
     handle_viewport_resize, process_editor_tick, process_external_file_change,
-    process_picker_results, refresh_after_input,
+    process_picker_results, refresh_after_input, FrontendChannels,
 };
 use ovim::session::SessionInfo;
-use ovim::syntax::Language;
 use ovim::ui::UI;
 
 fn emit_agent_attention_bell(output: &mut impl Write) -> io::Result<()> {
@@ -50,17 +48,13 @@ fn notify_new_agent_attention(editor: &Editor, observed_generation: &mut u64) {
 pub async fn run_headless_loop(
     editor: &mut Editor,
     mut api_rx: mpsc::Receiver<ApiRequest>,
-    mut java_status_rx: mpsc::Receiver<String>,
+    java_status_rx: mpsc::Receiver<String>,
     start_time: SystemTime,
     session_info: Arc<Mutex<SessionInfo>>,
     initial_dimensions: (u16, u16),
     mut shutdown_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
-    let (preview_tx, mut preview_rx) =
-        tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
-    let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<editor::PickerResult>(1000);
-    let (syntax_tx, mut syntax_rx) =
-        tokio::sync::mpsc::channel::<(BufferId, Language, Option<LineHighlights>, u64)>(16);
+    let mut channels = FrontendChannels::new(java_status_rx);
     let mut lsp_interval = interval(Duration::from_millis(50));
     lsp_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Reused across `GetRender` requests so identical-dimension polls
@@ -71,7 +65,7 @@ pub async fn run_headless_loop(
 
     // A TUI paints its first frame before a person can type. Establish the
     // same layout and viewport contract before accepting headless requests.
-    handle_viewport_resize(editor, initial_dimensions.0, initial_dimensions.1)?;
+    handle_viewport_resize(editor, initial_dimensions.0, initial_dimensions.1);
     let _ = render_cache.render(editor, initial_dimensions.0, initial_dimensions.1, false)?;
 
     loop {
@@ -87,11 +81,11 @@ pub async fn run_headless_loop(
                 }
                 if editor.should_quit() { break; }
             }
-            Some((path, cache)) = preview_rx.recv() => {
+            Some((path, cache)) = channels.preview_rx.recv() => {
                 editor.insert_preview(path, cache);
                 editor.mark_dirty();
             }
-            Some(result) = file_rx.recv() => {
+            Some(result) = channels.file_rx.recv() => {
                 let added = if let Some(picker) = editor.picker_mut() {
                     picker.add_file_result(result);
                     true
@@ -103,7 +97,7 @@ pub async fn run_headless_loop(
                 }
             }
             _ = lsp_interval.tick() => {
-                process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx, &syntax_tx, &mut syntax_rx).await;
+                process_editor_tick(editor, &mut channels).await;
                 if last_external_file_check.elapsed() >= Duration::from_millis(500) {
                     process_external_file_change(editor);
                     last_external_file_check = Instant::now();
@@ -218,7 +212,7 @@ fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<bool>
                 // Without this, rapid post-resize navigation can use stale viewport/wrap
                 // dimensions until the next render pass updates them, which can make the
                 // cursor move past the visible buffer without the viewport following.
-                handle_viewport_resize(editor, w, h)?;
+                handle_viewport_resize(editor, w, h);
                 editor.startle_cat();
             }
             Event::FocusGained => {
@@ -269,17 +263,13 @@ pub async fn run_event_loop(
     ui: &mut UI,
     editor: &mut Editor,
     mut api_rx: Option<mpsc::Receiver<ApiRequest>>,
-    mut java_status_rx: mpsc::Receiver<String>,
+    java_status_rx: mpsc::Receiver<String>,
     start_time: SystemTime,
 ) -> Result<()> {
     let mut last_edit = Instant::now();
     let debounce_delay = Duration::from_millis(200);
     let mut last_input_time: Option<Instant> = None;
-    let (preview_tx, mut preview_rx) =
-        tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
-    let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<editor::PickerResult>(1000);
-    let (syntax_tx, mut syntax_rx) =
-        tokio::sync::mpsc::channel::<(BufferId, Language, Option<LineHighlights>, u64)>(16);
+    let mut channels = FrontendChannels::new(java_status_rx);
 
     let mut event_stream = EventStream::new();
     let mut tick_interval = interval(Duration::from_millis(16));
@@ -366,8 +356,8 @@ pub async fn run_event_loop(
 
             // Tick timer — background work (LSP, picker, animations)
             _ = tick_interval.tick() => {
-                process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx, &syntax_tx, &mut syntax_rx).await;
-                process_picker_results(editor, &mut preview_rx, &mut file_rx);
+                process_editor_tick(editor, &mut channels).await;
+                process_picker_results(editor, &mut channels);
                 if last_external_file_check.elapsed() >= Duration::from_millis(500) {
                     process_external_file_change(editor);
                     last_external_file_check = Instant::now();
@@ -631,8 +621,8 @@ mod tests {
         let dimensions = (72, 20);
         let mut direct = Editor::with_content("alpha\nbeta\ngamma\n");
         let mut via_api = Editor::with_content("alpha\nbeta\ngamma\n");
-        handle_viewport_resize(&mut direct, dimensions.0, dimensions.1).unwrap();
-        handle_viewport_resize(&mut via_api, dimensions.0, dimensions.1).unwrap();
+        handle_viewport_resize(&mut direct, dimensions.0, dimensions.1);
+        handle_viewport_resize(&mut via_api, dimensions.0, dimensions.1);
 
         for event in ovim::api::parse_key_string(sequence).unwrap() {
             InputHandler::handle_key_event_no_dirty(&mut direct, event).unwrap();
