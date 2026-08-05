@@ -55,6 +55,7 @@ vendored = ["ovim-core/vendored", "reqwest/native-tls-vendored"]
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+ropey = "1.6"
 tree-sitter = "0.25"
 streaming-iterator = "0.1.9"
 insta = "1.40"

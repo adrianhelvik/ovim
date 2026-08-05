@@ -2868,6 +2868,7 @@ dependencies = [
  "ratatui-image",
  "reqwest",
  "resvg",
+ "ropey",
  "serde",
  "serde_json",
  "shellexpand",

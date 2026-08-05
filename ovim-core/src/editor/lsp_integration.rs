@@ -2371,12 +2371,19 @@ mod tests {
         editor.set_file_path("/tmp/a.rs".to_string());
         editor.set_mode(crate::mode::Mode::Insert);
 
+        // Read the EFFECTIVE path back: set_file_path canonicalizes when the
+        // file happens to exist on the host (macOS /tmp → /private/tmp), and
+        // the poll validates result.file_path against it by string equality.
+        // Hard-coding "/tmp/a.rs" made this test depend on whether a stray
+        // /tmp/a.rs existed on the machine.
+        let effective_path = editor.buffer().file_path().unwrap().to_string();
+
         let bv = editor.buffer().version();
         fire_completion_result(
             &mut editor,
             CompletionResult {
                 items: vec![completion_item("foo")],
-                file_path: "/tmp/a.rs".to_string(),
+                file_path: effective_path,
                 buffer_version: bv,
                 synced_content: None,
                 synced_lsp_version: None,
@@ -2422,6 +2429,7 @@ mod tests {
         // Simulate: request fired at version N, user kept typing (bumping
         // the buffer version), response arrived carrying the old N. Without
         // validation the stale items would populate the menu.
+        let effective_path = editor.buffer().file_path().unwrap().to_string();
         let stale_version = editor.buffer().version();
         editor
             .buffer_mut()
@@ -2432,7 +2440,7 @@ mod tests {
             &mut editor,
             CompletionResult {
                 items: vec![completion_item("foo")],
-                file_path: "/tmp/a.rs".to_string(),
+                file_path: effective_path,
                 buffer_version: stale_version,
                 synced_content: None,
                 synced_lsp_version: None,

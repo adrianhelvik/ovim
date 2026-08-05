@@ -428,7 +428,8 @@ fn cmd_read_lines_session(
     Ok(())
 }
 
-/// Replace text in a file (direct file I/O, no session needed)
+/// Replace text in a file (direct file I/O, no session needed).
+/// Planning is shared with session mode via `edit_engine` (OV-00298).
 fn cmd_edit_file(file_path: &str, line: Option<usize>, old: &str, new: &str) -> Result<()> {
     let old_expanded = expand_escapes(old);
     let new_expanded = expand_escapes(new);
@@ -436,185 +437,67 @@ fn cmd_edit_file(file_path: &str, line: Option<usize>, old: &str, new: &str) -> 
     let content = std::fs::read_to_string(file_path)
         .context(format!("Failed to read file: {}", file_path))?;
 
-    let lines: Vec<&str> = content.lines().collect();
+    let (splice, match_line) =
+        crate::edit_engine::plan_edit(&content, line, &old_expanded, &new_expanded)?;
+    overwrite_file(
+        file_path,
+        &crate::edit_engine::apply_splice(&content, &splice),
+    )?;
 
-    if let Some(line_num) = line {
-        // Replace on a specific line
-        if line_num == 0 || line_num > lines.len() {
-            anyhow::bail!(
-                "Line {} out of range (file has {} lines)",
-                line_num,
-                lines.len()
-            );
-        }
-
-        let line_content = lines[line_num - 1];
-        if !line_content.contains(old_expanded.as_str()) {
-            anyhow::bail!(
-                "Text not found on line {}: {:?}\nLine content: {:?}",
-                line_num,
-                old_expanded,
-                line_content
-            );
-        }
-
-        let match_count = line_content.matches(old_expanded.as_str()).count();
-        if match_count > 1 {
-            anyhow::bail!(
-                "Text {:?} found {} times on line {}. Be more specific.",
-                old_expanded,
-                match_count,
-                line_num
-            );
-        }
-
-        let new_line = line_content.replacen(&old_expanded, &new_expanded, 1);
-        let mut new_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-        new_lines[line_num - 1] = new_line;
-
-        let sep = line_separator(&content);
-        let mut new_content = new_lines.join(sep);
-        if content.ends_with('\n') {
-            new_content.push_str(sep);
-        }
-
-        overwrite_file(file_path, &new_content)?;
-        println!("Replaced on line {}", line_num);
+    if line.is_some() {
+        println!("Replaced on line {}", match_line);
     } else {
-        // Replace in whole buffer — must be unique
-        let match_count = content.matches(old_expanded.as_str()).count();
-        if match_count == 0 {
-            anyhow::bail!("Text not found in file: {:?}", old_expanded);
-        }
-        if match_count > 1 {
-            // Show where the matches are
-            let mut match_lines = Vec::new();
-            for (i, line_text) in lines.iter().enumerate() {
-                if line_text.contains(old_expanded.as_str()) {
-                    match_lines.push(format!("  line {}: {}", i + 1, line_text.trim()));
-                }
-            }
-            anyhow::bail!(
-                "Text {:?} found {} times. Use --line to specify which occurrence:\n{}",
-                old_expanded,
-                match_count,
-                match_lines.join("\n")
-            );
-        }
-
-        let new_content = content.replacen(&old_expanded, &new_expanded, 1);
-        overwrite_file(file_path, &new_content)?;
         println!("Replaced 1 occurrence");
     }
-
     Ok(())
 }
 
-/// Insert text into a file (direct file I/O)
+/// Insert text into a file (direct file I/O).
+/// Planning is shared with session mode via `edit_engine` (OV-00298).
 fn cmd_insert_file(
     file_path: &str,
     after: Option<usize>,
     before: Option<usize>,
     text: &str,
 ) -> Result<()> {
+    use crate::edit_engine::InsertAt;
+
     let text_expanded = expand_escapes(text);
 
     let content = std::fs::read_to_string(file_path)
         .context(format!("Failed to read file: {}", file_path))?;
 
-    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
-    // Handle the case where the file is empty
-    if lines.is_empty() && !content.is_empty() {
-        lines.push(String::new());
+    let at = match (after, before) {
+        (Some(after_line), _) => InsertAt::After(after_line),
+        (None, Some(before_line)) => InsertAt::Before(before_line),
+        (None, None) => anyhow::bail!("Either --after or --before must be specified"),
+    };
+
+    let (splice, insert_count) = crate::edit_engine::plan_insert(&content, at, &text_expanded)?;
+    overwrite_file(
+        file_path,
+        &crate::edit_engine::apply_splice(&content, &splice),
+    )?;
+
+    match at {
+        InsertAt::After(n) => println!("Inserted {} line(s) after line {}", insert_count, n),
+        InsertAt::Before(n) => println!("Inserted {} line(s) before line {}", insert_count, n),
     }
-
-    let insert_lines: Vec<String> = text_expanded.lines().map(|l| l.to_string()).collect();
-    let insert_count = insert_lines.len();
-
-    if let Some(after_line) = after {
-        if after_line > lines.len() {
-            anyhow::bail!(
-                "Line {} out of range (file has {} lines). Use --after 0 to insert at start.",
-                after_line,
-                lines.len()
-            );
-        }
-        // Insert after the given line (0 means before first line)
-        for (i, new_line) in insert_lines.into_iter().enumerate() {
-            lines.insert(after_line + i, new_line);
-        }
-        println!(
-            "Inserted {} line(s) after line {}",
-            insert_count, after_line
-        );
-    } else if let Some(before_line) = before {
-        if before_line == 0 || before_line > lines.len() + 1 {
-            anyhow::bail!(
-                "Line {} out of range (file has {} lines)",
-                before_line,
-                lines.len()
-            );
-        }
-        let idx = before_line - 1;
-        for (i, new_line) in insert_lines.into_iter().enumerate() {
-            lines.insert(idx + i, new_line);
-        }
-        println!(
-            "Inserted {} line(s) before line {}",
-            insert_count, before_line
-        );
-    } else {
-        anyhow::bail!("Either --after or --before must be specified");
-    }
-
-    let sep = line_separator(&content);
-    let mut new_content = lines.join(sep);
-    if content.ends_with('\n') {
-        new_content.push_str(sep);
-    }
-
-    overwrite_file(file_path, &new_content)?;
     Ok(())
 }
 
-/// Delete lines from a file (direct file I/O)
+/// Delete lines from a file (direct file I/O).
+/// Planning is shared with session mode via `edit_engine` (OV-00298).
 fn cmd_delete_lines_file(file_path: &str, from: usize, to: usize) -> Result<()> {
     let content = std::fs::read_to_string(file_path)
         .context(format!("Failed to read file: {}", file_path))?;
 
-    let lines: Vec<&str> = content.lines().collect();
+    let (splice, deleted_count) = crate::edit_engine::plan_delete_lines(&content, from, to)?;
+    overwrite_file(
+        file_path,
+        &crate::edit_engine::apply_splice(&content, &splice),
+    )?;
 
-    if from == 0 || to == 0 {
-        anyhow::bail!("Line numbers are 1-indexed (got from={}, to={})", from, to);
-    }
-    if from > lines.len() || to > lines.len() {
-        anyhow::bail!(
-            "Line range {}-{} out of range (file has {} lines)",
-            from,
-            to,
-            lines.len()
-        );
-    }
-    if from > to {
-        anyhow::bail!("--from ({}) must be <= --to ({})", from, to);
-    }
-
-    let mut new_lines: Vec<&str> = Vec::with_capacity(lines.len());
-    for (i, line) in lines.iter().enumerate() {
-        let line_num = i + 1;
-        if line_num < from || line_num > to {
-            new_lines.push(line);
-        }
-    }
-
-    let deleted_count = to - from + 1;
-    let sep = line_separator(&content);
-    let mut new_content = new_lines.join(sep);
-    if content.ends_with('\n') {
-        new_content.push_str(sep);
-    }
-
-    overwrite_file(file_path, &new_content)?;
     println!("Deleted {} line(s) ({}-{})", deleted_count, from, to);
     Ok(())
 }
@@ -679,17 +562,6 @@ fn overwrite_file(file_path: &str, content: &str) -> Result<()> {
     f.sync_all()?;
 
     Ok(())
-}
-
-/// The separator to re-join `str::lines()` output with: preserves CRLF
-/// files instead of silently rewriting every line ending to LF (OV-00280).
-/// Mixed-ending files are normalized to the dominant style.
-fn line_separator(content: &str) -> &'static str {
-    if content.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    }
 }
 
 // ─── Session Control ─────────────────────────────────────────────────────────

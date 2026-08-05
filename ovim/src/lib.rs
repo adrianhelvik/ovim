@@ -10,6 +10,7 @@ pub mod api;
 pub mod cli;
 pub mod client;
 pub mod daemon;
+pub mod edit_engine;
 pub mod key_convert;
 pub mod mcp_stdio_server;
 pub mod subcommands;

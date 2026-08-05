@@ -1854,106 +1854,30 @@ fn api_agent_error(error: String) -> ApiResponse {
     ApiResponse::Error(ErrorResponse { error })
 }
 
-/// Handle edit-line API request: find and replace text on a specific line or whole buffer
-/// Scan `haystack` for every occurrence of `needle` and return char-offset
-/// positions of each match.
+/// Handle edit-line API request: find and replace text on a specific line
+/// or the whole buffer.
 ///
-/// `str::find` returns byte offsets, but rope ops (`CharCol`) and cursor
-/// state (`GraphemeCol`) are char/grapheme-indexed. Feeding a byte offset
-/// into `CharCol(...)` silently corrupts non-ASCII content — see OV-00243.
-fn find_char_positions(haystack: &str, needle: &str) -> Vec<usize> {
-    if needle.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut byte_start = 0;
-    while let Some(rel) = haystack[byte_start..].find(needle) {
-        let abs_byte = byte_start + rel;
-        out.push(haystack[..abs_byte].chars().count());
-        byte_start = abs_byte + needle.len();
-    }
-    out
-}
-
+/// Matching, validation, and error wording are shared with file mode via
+/// `ovim::edit_engine` (OV-00298) — the plan's char offsets apply directly
+/// to the rope. `line` arrives 0-indexed from the API layer; the engine
+/// speaks 1-indexed CLI lines.
 fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &str) -> ApiResponse {
-    let rope = editor.buffer().rope();
-    let total_lines = rope.len_lines();
-
-    // Match positions are char offsets — never byte offsets. CharCol/GraphemeCol
-    // are usize-wrapping newtypes, so the type system can't catch byte-offset
-    // smuggling.
-    //
-    // Multi-line needles are matched against the whole buffer (per-line
-    // search can never see across terminators — OV-00285), single-line
-    // needles per line as before.
-    let multi_line_old = old.contains('\n');
-    let matches: Vec<(usize, usize)> = if let Some(line_idx) = line {
-        if multi_line_old {
-            return ApiResponse::Error(ErrorResponse {
-                error: "Multi-line --old cannot be combined with --line".to_string(),
-            });
-        }
-        if line_idx >= total_lines {
-            return ApiResponse::Error(ErrorResponse {
-                error: format!(
-                    "Line {} out of range (buffer has {} lines)",
-                    line_idx + 1,
-                    total_lines
-                ),
-            });
-        }
-        let line_content = ovim_core::display::line_content(rope, line_idx);
-        find_char_positions(&line_content, old)
-            .into_iter()
-            .map(|c| (line_idx, c))
-            .collect()
-    } else if multi_line_old {
-        let content = rope.to_string();
-        find_char_positions(&content, old)
-            .into_iter()
-            .map(|abs| {
-                let l = rope.char_to_line(abs);
-                (l, abs - rope.line_to_char(l))
-            })
-            .collect()
-    } else {
-        let mut found = Vec::new();
-        for line_idx in 0..total_lines {
-            let line_content = ovim_core::display::line_content(rope, line_idx);
-            for c in find_char_positions(&line_content, old) {
-                found.push((line_idx, c));
+    let content = editor.buffer().rope().to_string();
+    let (splice, _match_line) =
+        match ovim::edit_engine::plan_edit(&content, line.map(|l| l + 1), old, new) {
+            Ok(plan) => plan,
+            Err(error) => {
+                return ApiResponse::Error(ErrorResponse {
+                    error: error.to_string(),
+                })
             }
-        }
-        found
-    };
-
-    if matches.is_empty() {
-        return ApiResponse::Error(ErrorResponse {
-            error: "Text not found".to_string(),
-        });
-    }
-
-    // Multiple matches are ambiguous even when --line was given: file mode
-    // refuses ("Be more specific"), and session mode must honor the same
-    // uniqueness contract instead of silently editing the first hit
-    // (OV-00284).
-    if matches.len() > 1 {
-        let error = if line.is_some() {
-            format!(
-                "Text found {} times on line {}. Be more specific.",
-                matches.len(),
-                matches[0].0 + 1
-            )
-        } else {
-            format!(
-                "Ambiguous: found {} matches. Use --line to specify which line.",
-                matches.len()
-            )
         };
-        return ApiResponse::Error(ErrorResponse { error });
-    }
 
-    let (match_line, match_col_chars) = matches[0];
+    let rope = editor.buffer().rope();
+    let match_line = rope.char_to_line(splice.start_char);
+    let match_col_chars = splice.start_char - rope.line_to_char(match_line);
+    let end_line = rope.char_to_line(splice.end_char);
+    let end_col_chars = splice.end_char - rope.line_to_char(end_line);
 
     // Capture grapheme prefix length on the *pre-edit* line so cursor_after
     // can be computed in grapheme-space without re-scanning the post-edit rope.
@@ -1969,14 +1893,7 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
 
     // Perform the edit (delete + insert) inside a `record()` session so the
     // edits land on `edit_log` and feed a single `Change::Recorded` undo
-    // entry. Mark buffer modified so LSP didChange fires. The end position
-    // is derived from absolute char offsets so a multi-line `old` deletes
-    // across line boundaries (OV-00285).
-    let old_chars = old.chars().count();
-    let start_abs = rope.line_to_char(match_line) + match_col_chars;
-    let end_abs = start_abs + old_chars;
-    let end_line = rope.char_to_line(end_abs);
-    let end_col_chars = end_abs - rope.line_to_char(end_line);
+    // entry. Mark buffer modified so LSP didChange fires.
     let ((), edits) = editor.buffer_mut().record(|buf| {
         buf.delete_range(
             match_line,
@@ -2016,42 +1933,25 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
     })
 }
 
-/// Handle insert-lines API request: insert text before a specific line
+/// Handle insert-lines API request: insert text before a specific line.
+///
+/// `line` is the 0-indexed insert position (== "after 1-indexed line N"),
+/// which is exactly the engine's `InsertAt::After(N)`. Position math,
+/// newline policy (OV-00279), and line-ending style are shared with file
+/// mode via `ovim::edit_engine` (OV-00298).
 fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &str) -> ApiResponse {
-    let total_lines = editor.buffer().rope().len_lines();
-
-    // `line` is 0-indexed insert position
-    // Clamp to valid range
-    if line > total_lines {
-        return ApiResponse::Error(ErrorResponse {
-            error: format!(
-                "Line {} out of range (buffer has {} lines)",
-                line + 1,
-                total_lines
-            ),
-        });
-    }
-
-    // Calculate char position for insertion
-    let char_idx = if line >= total_lines {
-        editor.buffer().rope().len_chars()
-    } else {
-        editor.buffer().rope().line_to_char(line)
-    };
-
-    // Appending past a terminator-less last line must open a NEW line, not
-    // splice into the existing one: for `alpha\nbeta`, inserting `TEXT\n` at
-    // len_chars produced `alpha\nbetaTEXT\n` (OV-00279). Lead with `\n` and
-    // keep the file's missing trailing newline, matching file mode.
-    let rope_end = editor.buffer().rope().len_chars();
-    let appending_after_unterminated_line =
-        char_idx == rope_end && rope_end > 0 && editor.buffer().rope().char(rope_end - 1) != '\n';
-    let text_with_nl = if appending_after_unterminated_line {
-        format!("\n{}", text.strip_suffix('\n').unwrap_or(text))
-    } else if text.ends_with('\n') {
-        text.to_string()
-    } else {
-        format!("{}\n", text)
+    let content = editor.buffer().rope().to_string();
+    let (splice, _count) = match ovim::edit_engine::plan_insert(
+        &content,
+        ovim::edit_engine::InsertAt::After(line),
+        text,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return ApiResponse::Error(ErrorResponse {
+                error: error.to_string(),
+            })
+        }
     };
 
     let cursor_before = {
@@ -2059,19 +1959,14 @@ fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &s
         ovim::editor::CursorPos::new(c.line(), c.col())
     };
 
-    // Convert char_idx to line/col for insert_text_at
+    // Convert the splice's char offset to line/col for insert_text_at
     let rope = editor.buffer().rope();
-    let ins_line = rope.char_to_line(char_idx);
-    let ins_col = char_idx - rope.line_to_char(ins_line);
+    let ins_line = rope.char_to_line(splice.start_char);
+    let ins_col = splice.start_char - rope.line_to_char(ins_line);
 
     // Record change for undo via `buffer.record()` + `push_recorded_undo`.
-    // Replaces the old pattern of direct mutation + `Change::insert` constructor.
     let ((), edits) = editor.buffer_mut().record(|buf| {
-        buf.insert_text_at(
-            ins_line,
-            ovim_core::unicode::CharCol(ins_col),
-            &text_with_nl,
-        );
+        buf.insert_text_at(ins_line, ovim_core::unicode::CharCol(ins_col), &splice.text);
     });
 
     if !edits.is_empty() {
@@ -2089,52 +1984,38 @@ fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &s
     })
 }
 
-/// Handle delete-lines API request: delete a range of lines (0-indexed, inclusive)
+/// Handle delete-lines API request: delete a range of lines (0-indexed,
+/// inclusive). Validation and range math are shared with file mode via
+/// `ovim::edit_engine` (OV-00298) — including strict rejection of
+/// past-the-end ranges, which this handler previously clamped.
 fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiResponse {
-    let total_lines = editor.buffer().rope().len_lines();
-
-    if from >= total_lines {
-        return ApiResponse::Error(ErrorResponse {
-            error: format!(
-                "Line {} out of range (buffer has {} lines)",
-                from + 1,
-                total_lines
-            ),
-        });
-    }
-
-    let to = to.min(total_lines.saturating_sub(1));
-
-    if from > to {
-        return ApiResponse::Error(ErrorResponse {
-            error: format!("Invalid range: from {} > to {}", from + 1, to + 1),
-        });
-    }
+    let content = editor.buffer().rope().to_string();
+    let (splice, _count) = match ovim::edit_engine::plan_delete_lines(&content, from + 1, to + 1) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return ApiResponse::Error(ErrorResponse {
+                error: error.to_string(),
+            })
+        }
+    };
 
     let cursor_before = {
         let c = editor.buffer().cursor();
         ovim::editor::CursorPos::new(c.line(), c.col())
     };
 
-    // Calculate end position for delete_range
-    let end_line = if to + 1 >= total_lines {
-        total_lines.saturating_sub(1)
-    } else {
-        to + 1
-    };
-    let end_col = if to + 1 >= total_lines {
-        let last_line = editor.buffer().rope().line(total_lines - 1);
-        last_line.len_chars()
-    } else {
-        0
-    };
+    // Convert the splice's char offsets to line/col for delete_range
+    let rope = editor.buffer().rope();
+    let start_line = rope.char_to_line(splice.start_char);
+    let start_col = splice.start_char - rope.line_to_char(start_line);
+    let end_line = rope.char_to_line(splice.end_char);
+    let end_col = splice.end_char - rope.line_to_char(end_line);
 
     // Record delete via `buffer.record()` + `push_recorded_undo`.
-    // Replaces the old pattern of direct mutation + `Change::delete` constructor.
     let (_deleted, edits) = editor.buffer_mut().record(|buf| {
         buf.delete_range(
-            from,
-            ovim_core::unicode::CharCol::ZERO,
+            start_line,
+            ovim_core::unicode::CharCol(start_col),
             end_line,
             ovim_core::unicode::CharCol(end_col),
         )
@@ -2905,7 +2786,6 @@ mod tests {
     use super::apply_java_status;
     use super::compute_text_width;
     use super::emit_new_agent_attention;
-    use super::find_char_positions;
     use super::handle_api_request;
     use super::handle_edit_line;
     use super::handle_terminal_resize;
@@ -3245,27 +3125,8 @@ mod tests {
     }
 
     // ==================== OV-00243: byte/char mix in handle_edit_line ====================
-
-    #[test]
-    fn find_char_positions_returns_char_offsets_not_bytes() {
-        // `é` is 2 bytes in UTF-8 but 1 char. `str::find` returns byte offsets;
-        // this helper must convert them to char offsets so they're safe to feed
-        // into CharCol.
-        assert_eq!(find_char_positions("é bar", "bar"), vec![2]);
-        assert_eq!(find_char_positions("café bar baz", "ba"), vec![5, 9]);
-        assert_eq!(find_char_positions("ascii only", "only"), vec![6]);
-        assert_eq!(find_char_positions("nope", "missing"), Vec::<usize>::new());
-        assert_eq!(find_char_positions("anything", ""), Vec::<usize>::new());
-    }
-
-    #[test]
-    fn find_char_positions_handles_multi_byte_grapheme_prefix() {
-        // Family emoji is 1 grapheme but 25 bytes / 7 chars. The byte offset
-        // of "x" is 25; the char offset is 7.
-        let s = "👨‍👩‍👧‍👦x";
-        let positions = find_char_positions(s, "x");
-        assert_eq!(positions, vec![7]);
-    }
+    // (find_char_positions unit tests moved to edit_engine.rs with the
+    // function; the handler-level regressions below still cover the path.)
 
     #[test]
     fn handle_edit_line_replaces_match_after_non_ascii_prefix() {
