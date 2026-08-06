@@ -513,14 +513,13 @@ impl Editor {
                 self.push_tag();
 
                 if new_tab {
-                    let tab_title = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "[No Name]".to_string());
-                    self.new_tab(Some(tab_title));
+                    self.new_tab();
                     match crate::buffer::Buffer::load_file(&path) {
                         Ok(buffer) => {
                             self.buffers[self.current_buffer_index] = buffer;
+                            // The replacement buffer has a fresh id; repoint
+                            // the tab at it
+                            self.sync_current_tab_buffer();
                             if let Some(path) = self.buffer().file_path() {
                                 self.registers.set_current_file(path.to_string());
                             }

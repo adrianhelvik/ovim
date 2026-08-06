@@ -1,33 +1,24 @@
+use crate::buffer::BufferId;
 use crate::editor::WindowManager;
 
 /// Represents a single tab page
 pub struct TabPage {
-    /// Title/name of this tab page
-    title: String,
     /// Window manager for this tab (handles split windows)
     window_manager: Option<WindowManager>,
-    /// Index of the currently active buffer in this tab
-    current_buffer_index: usize,
+    /// Stable id of the buffer this tab is displaying. `None` only for a
+    /// pristine tab that has never been synced to a buffer; resolved to the
+    /// editor's current buffer in that case. Stored as an id rather than an
+    /// index so buffer removal elsewhere can't silently repoint the tab.
+    buffer_id: Option<BufferId>,
 }
 
 impl TabPage {
     /// Creates a new tab page
-    pub fn new(title: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            title,
             window_manager: None,
-            current_buffer_index: 0,
+            buffer_id: None,
         }
-    }
-
-    /// Gets the title
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
-    /// Sets the title
-    pub fn set_title(&mut self, title: String) {
-        self.title = title;
     }
 
     /// Gets the window manager
@@ -45,14 +36,20 @@ impl TabPage {
         self.window_manager = Some(wm);
     }
 
-    /// Gets the current buffer index
-    pub fn current_buffer_index(&self) -> usize {
-        self.current_buffer_index
+    /// Gets the id of the buffer this tab is displaying
+    pub fn buffer_id(&self) -> Option<BufferId> {
+        self.buffer_id
     }
 
-    /// Sets the current buffer index (no bounds checking - caller must ensure validity)
-    pub fn set_current_buffer_index(&mut self, index: usize) {
-        self.current_buffer_index = index;
+    /// Sets the buffer this tab is displaying
+    pub fn set_buffer_id(&mut self, id: BufferId) {
+        self.buffer_id = Some(id);
+    }
+}
+
+impl Default for TabPage {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -68,7 +65,7 @@ impl TabPageManager {
     /// Creates a new tab page manager with one default tab
     pub fn new() -> Self {
         Self {
-            tabs: vec![TabPage::new("1".to_string())],
+            tabs: vec![TabPage::new()],
             current_tab_index: 0,
         }
     }
@@ -107,19 +104,14 @@ impl TabPageManager {
         self.tabs.get_mut(index)
     }
 
-    /// Sets the title of the current tab
-    pub fn set_current_tab_title(&mut self, title: String) {
-        if !self.tabs.is_empty() {
-            self.tabs[self.current_tab_index].set_title(title);
-        }
-    }
-
-    /// Creates a new tab page
-    pub fn new_tab(&mut self, title: Option<String>) {
-        let tab_number = self.tabs.len() + 1;
-        let title = title.unwrap_or_else(|| tab_number.to_string());
-        self.tabs.push(TabPage::new(title));
-        self.current_tab_index = self.tabs.len() - 1;
+    /// Creates a new tab page and switches to it.
+    /// Vim inserts the new tab page directly after the current one, not at
+    /// the end of the list (`:tabnew` from tab 1 of 3 becomes tab 2 of 4;
+    /// verified in `nvim --clean`).
+    pub fn new_tab(&mut self) {
+        let insert_at = (self.current_tab_index + 1).min(self.tabs.len());
+        self.tabs.insert(insert_at, TabPage::new());
+        self.current_tab_index = insert_at;
     }
 
     /// Closes the current tab

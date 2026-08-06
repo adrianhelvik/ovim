@@ -67,7 +67,7 @@ pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, theme: &Theme, area: R
     for (i, _tab) in tabs.iter().enumerate() {
         let title = editor.get_tab_title(i);
         let tab_text = format!(" {} {} ", i + 1, title);
-        let tab_width = tab_text.len();
+        let tab_width = tab_text.width();
         tab_widths.push(tab_width);
         total_width += tab_width;
         if i < tabs.len() - 1 {
@@ -186,7 +186,7 @@ pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, theme: &Theme, area: R
         }
     }
 
-    let content_width: usize = spans.iter().map(|s| s.content.len()).sum();
+    let content_width: usize = spans.iter().map(|s| s.content.width()).sum();
     let remaining = (area.width as usize).saturating_sub(content_width);
     if remaining > 0 {
         spans.push(Span::styled(

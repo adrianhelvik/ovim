@@ -21,7 +21,7 @@ fn tab_switch_requests_diagnostics_refresh_for_new_current_file() {
     let mut t = EditorTest::new("fn a() {}\n");
     t.set_file_path(file1.clone());
 
-    t.editor.new_tab(None);
+    t.editor.new_tab();
     t.set_file_path(file2.clone());
 
     // Ensure the flag is not already set from setup.
@@ -59,7 +59,7 @@ fn tab_switch_next_tab_requests_diagnostics_refresh() {
 
     let mut t = EditorTest::new("fn a() {}\n");
     t.set_file_path(file1);
-    t.editor.new_tab(None);
+    t.editor.new_tab();
     t.set_file_path(file2);
 
     // Switch back to tab 1, then clear the refresh flag.

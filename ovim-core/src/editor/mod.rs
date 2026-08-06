@@ -1748,8 +1748,8 @@ impl Editor {
                 self.current_buffer_index = i;
                 // Update current file register
                 self.registers.set_current_file(path_str);
-                // Sync tab's buffer index to match the existing buffer
-                self.sync_current_tab_buffer_index();
+                // Point the current tab at the existing buffer
+                self.sync_current_tab_buffer();
                 // Still need to initialize LSP for this file if it hasn't been yet
                 self.lsp.state.needs_lsp_init = true;
                 return Ok(());
@@ -1781,11 +1781,9 @@ impl Editor {
         // Update current file register
         self.registers.set_current_file(path_str);
 
-        // Update tab title to match the loaded file
-        self.update_current_tab_title();
-
-        // Sync tab's buffer index to match the newly loaded buffer
-        self.sync_current_tab_buffer_index();
+        // Point the current tab at the newly loaded buffer (the tab title is
+        // derived from the buffer, so no separate title update is needed)
+        self.sync_current_tab_buffer();
 
         // Mark that we need to send didClose for the old file
         if old_file_path.is_some() {

@@ -433,7 +433,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             // Open the actual LSP log file in a new tab so % resolves correctly
             let log_path = crate::lsp::get_log_path();
             let log_path_str = log_path.to_string_lossy().to_string();
-            editor.new_tab(None);
+            editor.new_tab();
             match editor.load_file(&log_path_str) {
                 Ok(_) => {
                     // Jump to end of log
@@ -582,7 +582,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
         }
         "tabnew" | "tabe" | "tabedit" => {
             // Create new tab with default name
-            editor.new_tab(None);
+            editor.new_tab();
             let tab_index = editor.current_tab_index() + 1; // 1-indexed for display
             ok(format!("Created tab {}", tab_index))
         }
@@ -733,9 +733,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             let tab_list: Vec<String> = tabs
                 .iter()
                 .enumerate()
-                .map(|(i, tab)| {
+                .map(|(i, _tab)| {
                     let marker = if i == current_index { ">" } else { " " };
-                    format!("{} {} {}", marker, i + 1, tab.title())
+                    format!("{} {} {}", marker, i + 1, editor.get_tab_title(i))
                 })
                 .collect();
             ok(tab_list.join("\n"))
@@ -762,7 +762,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 };
 
                 // Create new tab and load file (or create if doesn't exist)
-                editor.new_tab(None);
+                editor.new_tab();
 
                 // Try to load the file, if it doesn't exist create an empty buffer
                 match editor.load_file(&filename) {
@@ -786,11 +786,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                             editor.set_file_path(path_str);
                             editor.mark_dirty();
 
-                            // Update tab title to match the new file
-                            editor.update_current_tab_title();
-
-                            // Sync tab's buffer index to match the new buffer
-                            editor.sync_current_tab_buffer_index();
+                            // Point the current tab at the new buffer (the
+                            // tab title derives from the buffer's file path)
+                            editor.sync_current_tab_buffer();
 
                             let tab_index = editor.current_tab_index() + 1;
                             ok(format!(
