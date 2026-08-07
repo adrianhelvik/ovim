@@ -312,8 +312,8 @@ impl Editor {
                 // Open file (checks for existing buffer)
                 let path = node.path().to_path_buf();
                 if let Ok(()) = self.open_file(&path) {
-                    // Focus the buffer; q remains the explicit way to close the tree.
                     self.set_mode(Mode::Normal);
+                    self.ui_panels.file_tree.close();
                 }
             }
         }

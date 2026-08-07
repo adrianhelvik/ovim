@@ -199,7 +199,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.set_mode(Mode::Search);
             Ok(true)
         }
-        // - - toggle file tree (oil.nvim style)
+        // - - toggle file tree
         KeyCode::Char('-') => {
             editor.toggle_file_tree();
             Ok(true)
