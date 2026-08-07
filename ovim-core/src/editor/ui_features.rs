@@ -862,7 +862,7 @@ mod file_tree_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn opening_a_file_from_the_tree_keeps_the_sidebar_visible() {
+    async fn opening_a_file_from_the_tree_closes_the_sidebar() {
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("main.rs");
         std::fs::write(&file, "fn main() {}").unwrap();
@@ -874,7 +874,7 @@ mod file_tree_tests {
 
         let canonical_file = file.canonicalize().unwrap();
         assert_eq!(editor.mode(), Mode::Normal);
-        assert!(editor.file_tree().is_visible());
+        assert!(!editor.file_tree().is_visible());
         assert_eq!(editor.buffer().file_path(), canonical_file.to_str());
     }
 }
