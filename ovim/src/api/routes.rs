@@ -98,6 +98,7 @@ mod tests {
                 agents: Vec::new(),
                 pending_attention: 0,
                 pending_updates: 0,
+                attention: Default::default(),
             }))
             .unwrap();
         });

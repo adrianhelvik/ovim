@@ -857,6 +857,9 @@ impl AiSubagentRun {
                 .map_err(|error| error.to_string())?,
             pending_notifications,
         )?;
+        let attention = snapshot.attention.clone();
+        let pending_attention = snapshot.pending_attention;
+        let pending_updates = snapshot.pending_updates;
         let agents = snapshot
             .agents
             .into_iter()
@@ -867,7 +870,9 @@ impl AiSubagentRun {
             .collect::<Vec<_>>();
         Ok(json!({
             "agents": agents,
-            "pending_attention": pending_notifications,
+            "pending_attention": pending_attention,
+            "pending_updates": pending_updates,
+            "attention": attention,
         }))
     }
 

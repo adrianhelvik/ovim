@@ -1,9 +1,9 @@
 //! Transport-neutral delegated-agent snapshots for editor and headless clients.
 
 use super::{
-    AgentApprovalProjection, AgentDispatchRecord, AgentMessageRecord, AgentMessageState,
-    AgentRuntimeProjection, DispatchState, PendingAgentApproval, ResolvedAgentApproval,
-    WorkspaceStrategy,
+    AgentApprovalProjection, AgentCapability, AgentDispatchRecord, AgentMessageRecord,
+    AgentMessageState, AgentRuntimeProjection, DispatchState, PendingAgentApproval,
+    ResolvedAgentApproval, WorkspaceStrategy,
 };
 use crate::run_log::{
     AgentApprovalDecisionSnapshot, AgentApprovalResolutionSourceSnapshot, AgentId, AgentReported,
@@ -13,9 +13,9 @@ use crate::run_log::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Version two adds each agent's bounded operational `trace`. The trace field
-/// defaults empty when reading version-one snapshots.
-pub const AGENT_CONTROL_SNAPSHOT_VERSION: u32 = 2;
+/// Version three adds result state, typed attention, and capability ceilings.
+/// New fields default empty when reading older snapshots.
+pub const AGENT_CONTROL_SNAPSHOT_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentControlPlaneSnapshot {
@@ -30,6 +30,118 @@ pub struct AgentControlPlaneSnapshot {
     /// decisions so routine handoffs never masquerade as operator blockers.
     #[serde(default)]
     pub pending_updates: usize,
+    #[serde(default)]
+    pub attention: AgentControlAttentionSnapshot,
+}
+
+#[derive(Clone, Debug)]
+struct InvalidHandoffSnapshot {
+    event_id: EventId,
+    error: String,
+    raw_payload: Vec<u8>,
+}
+
+fn latest_invalid_handoffs(events: &[EventEnvelope]) -> BTreeMap<AgentId, InvalidHandoffSnapshot> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let EventKind::AgentHandoffValidationFailed(failed) = &event.kind else {
+                return None;
+            };
+            Some((
+                event.agent_id.clone()?,
+                InvalidHandoffSnapshot {
+                    event_id: event.event_id.clone(),
+                    error: failed.error.clone(),
+                    raw_payload: failed.raw_payload.clone(),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn result_snapshot(
+    handoff: Option<&AgentHandoffSnapshot>,
+    invalid: Option<&InvalidHandoffSnapshot>,
+) -> AgentResultSnapshot {
+    let Some(handoff) = handoff else {
+        return AgentResultSnapshot {
+            state: "pending".into(),
+            ..AgentResultSnapshot::default()
+        };
+    };
+    if let Some(invalid) = invalid
+        && handoff
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains(invalid.event_id.as_str()))
+    {
+        let raw = serde_json::from_slice::<super::StructuredHandoffV1>(&invalid.raw_payload).ok();
+        return AgentResultSnapshot {
+            state: "validation_failed".into(),
+            status: raw
+                .as_ref()
+                .map(|value| format!("{:?}", value.status).to_lowercase()),
+            summary: raw
+                .as_ref()
+                .map(|value| value.summary.clone())
+                .or_else(|| Some(handoff.summary.clone())),
+            confidence: raw
+                .as_ref()
+                .map(|value| format!("{:?}", value.confidence).to_lowercase()),
+            evidence_count: raw.as_ref().map_or(0, |value| value.evidence.len()),
+            followup_count: raw.as_ref().map_or(0, |value| value.followups.len()),
+            event_id: Some(handoff.event_id.clone()),
+            validation_error: Some(invalid.error.clone()),
+            raw_result_event_id: Some(invalid.event_id.clone()),
+            raw_result_available: true,
+        };
+    }
+    AgentResultSnapshot {
+        state: "available".into(),
+        status: Some(handoff.status.clone()),
+        summary: Some(handoff.summary.clone()),
+        confidence: Some(handoff.confidence.clone()),
+        evidence_count: handoff.evidence.len(),
+        followup_count: handoff.followups.len(),
+        event_id: Some(handoff.event_id.clone()),
+        validation_error: None,
+        raw_result_event_id: None,
+        raw_result_available: false,
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentCapabilityCeilingSnapshot {
+    pub available: Vec<String>,
+    pub workspace_write: bool,
+    pub shell: bool,
+    pub safe_shell: bool,
+    pub diagnostics: bool,
+    pub network: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentResultSnapshot {
+    pub state: String,
+    pub status: Option<String>,
+    pub summary: Option<String>,
+    pub confidence: Option<String>,
+    pub evidence_count: usize,
+    pub followup_count: usize,
+    pub event_id: Option<EventId>,
+    pub validation_error: Option<String>,
+    pub raw_result_event_id: Option<EventId>,
+    pub raw_result_available: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentControlAttentionSnapshot {
+    pub approvals: usize,
+    pub completed_results: usize,
+    pub failed_results: usize,
+    pub result_validation_failures: usize,
+    pub mailbox_updates: usize,
 }
 
 const MAX_AGENT_TRACE_EVENTS: usize = 64;
@@ -56,6 +168,10 @@ fn trace_event(event: &EventEnvelope) -> Option<AgentTraceEventSnapshot> {
                 .detail
                 .clone()
                 .unwrap_or_else(|| format!("state {}", wire_name(&value.state))),
+        ),
+        EventKind::AgentHandoffValidationFailed(value) => (
+            "handoff_validation_failed",
+            format!("{} · raw result preserved", value.error),
         ),
         EventKind::AgentProvider(value) => (
             "provider",
@@ -280,9 +396,13 @@ pub struct AgentSnapshot {
     pub progress: AgentReported<crate::run_log::AgentProgressEvent>,
     pub usage: AgentReported<AgentUsageEvent>,
     pub workspace: AgentWorkspaceSnapshot,
+    #[serde(default)]
+    pub capabilities: AgentCapabilityCeilingSnapshot,
     pub messages: Vec<AgentMessageSnapshot>,
     pub approvals: Vec<AgentApprovalSnapshot>,
     pub handoff: Option<AgentHandoffSnapshot>,
+    #[serde(default)]
+    pub result: AgentResultSnapshot,
     pub artifact_handles: Vec<AgentArtifactHandle>,
     pub attention: AgentAttentionSnapshot,
     pub recovery_status: String,
@@ -422,6 +542,7 @@ pub(crate) fn build_agent_snapshot(
     }
     let artifacts = artifact_handles_by_agent(events);
     let handoffs = latest_handoffs(events);
+    let invalid_handoffs = latest_invalid_handoffs(events);
     let terminal_recovery = recovery_by_agent(events);
     let mut agents = Vec::with_capacity(records.len());
     for record in records {
@@ -463,6 +584,8 @@ pub(crate) fn build_agent_snapshot(
             .iter()
             .filter(|approval| approval.state == "pending")
             .count();
+        let handoff = handoffs.get(&agent_id).cloned();
+        let result = result_snapshot(handoff.as_ref(), invalid_handoffs.get(&agent_id));
         agents.push(AgentSnapshot {
             ancestry: ancestry(&record, &by_id, &root_agent_id)?,
             children: children.remove(&agent_id).unwrap_or_default(),
@@ -487,9 +610,11 @@ pub(crate) fn build_agent_snapshot(
             progress,
             usage,
             workspace: workspace_snapshot(&record),
+            capabilities: capability_ceiling(&record),
             messages: agent_messages,
             approvals,
-            handoff: handoffs.get(&agent_id).cloned(),
+            handoff,
+            result,
             artifact_handles: artifacts.get(&agent_id).cloned().unwrap_or_default(),
             attention: AgentAttentionSnapshot {
                 required: pending_approval_count > 0,
@@ -509,6 +634,27 @@ pub(crate) fn build_agent_snapshot(
         .iter()
         .map(|agent| agent.attention.pending_approvals)
         .sum();
+    let attention = AgentControlAttentionSnapshot {
+        approvals: pending_attention,
+        completed_results: agents
+            .iter()
+            .filter(|agent| agent.result.status.as_deref() == Some("completed"))
+            .count(),
+        failed_results: agents
+            .iter()
+            .filter(|agent| {
+                matches!(
+                    agent.result.status.as_deref(),
+                    Some("failed" | "blocked" | "timed_out" | "interrupted")
+                )
+            })
+            .count(),
+        result_validation_failures: agents
+            .iter()
+            .filter(|agent| agent.result.state == "validation_failed")
+            .count(),
+        mailbox_updates: pending_notifications,
+    };
     Ok(AgentControlPlaneSnapshot {
         schema_version: AGENT_CONTROL_SNAPSHOT_VERSION,
         run_id,
@@ -517,7 +663,40 @@ pub(crate) fn build_agent_snapshot(
         agents,
         pending_attention,
         pending_updates: pending_notifications,
+        attention,
     })
+}
+
+fn capability_ceiling(record: &AgentDispatchRecord) -> AgentCapabilityCeilingSnapshot {
+    let available = record
+        .role
+        .capabilities
+        .iter()
+        .map(capability_name)
+        .collect::<Vec<_>>();
+    AgentCapabilityCeilingSnapshot {
+        workspace_write: available.iter().any(|value| value == "workspace_write"),
+        shell: available.iter().any(|value| value == "shell"),
+        safe_shell: available.iter().any(|value| value == "safe_shell"),
+        diagnostics: available
+            .iter()
+            .any(|value| matches!(value.as_str(), "read" | "navigate")),
+        network: available.iter().any(|value| value == "external_effects"),
+        available,
+    }
+}
+
+fn capability_name(capability: &AgentCapability) -> String {
+    match capability {
+        AgentCapability::Read => "read",
+        AgentCapability::Navigate => "navigate",
+        AgentCapability::SafeShell => "safe_shell",
+        AgentCapability::Shell => "shell",
+        AgentCapability::WorkspaceWrite => "workspace_write",
+        AgentCapability::ExternalEffects => "external_effects",
+        AgentCapability::DispatchAgents => "dispatch_agents",
+    }
+    .into()
 }
 
 fn ancestry(
@@ -847,9 +1026,11 @@ mod tests {
                 root: None,
                 read_only: true,
             },
+            capabilities: AgentCapabilityCeilingSnapshot::default(),
             messages: Vec::new(),
             approvals,
             handoff: None,
+            result: AgentResultSnapshot::default(),
             artifact_handles: Vec::new(),
             attention: AgentAttentionSnapshot::default(),
             recovery_status: "none".into(),
@@ -866,6 +1047,7 @@ mod tests {
             agents,
             pending_attention: 0,
             pending_updates: 0,
+            attention: AgentControlAttentionSnapshot::default(),
         }
     }
 
@@ -924,5 +1106,50 @@ mod tests {
             .oldest_pending_approval_for(quiet_id.as_str())
             .is_none());
         assert!(snapshot.oldest_pending_approval().is_some());
+    }
+
+    #[test]
+    fn invalid_result_is_distinct_from_execution_failure_and_keeps_useful_summary() {
+        let raw_event_id = EventId::new();
+        let raw_payload = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "status": "completed",
+            "summary": "Found two runtime defects.",
+            "evidence": [{"path": "src/lib.rs", "line": 1, "claim": "evidence"}],
+            "changed_files": [],
+            "verification": [],
+            "blockers": ["Could not run shell tests"],
+            "followups": ["Add a regression test"],
+            "confidence": "medium"
+        }))
+        .unwrap();
+        let handoff = AgentHandoffSnapshot {
+            event_id: EventId::new(),
+            status: "failed".into(),
+            summary: "provider returned an invalid structured handoff".into(),
+            evidence: Vec::new(),
+            changed_files: Vec::new(),
+            blockers: vec![format!("raw result preserved in event {raw_event_id}")],
+            followups: Vec::new(),
+            confidence: "low".into(),
+        };
+        let invalid = InvalidHandoffSnapshot {
+            event_id: raw_event_id.clone(),
+            error: "completed handoff cannot contain blockers".into(),
+            raw_payload,
+        };
+
+        let result = result_snapshot(Some(&handoff), Some(&invalid));
+
+        assert_eq!(result.state, "validation_failed");
+        assert_eq!(result.status.as_deref(), Some("completed"));
+        assert_eq!(
+            result.summary.as_deref(),
+            Some("Found two runtime defects.")
+        );
+        assert_eq!(result.evidence_count, 1);
+        assert_eq!(result.followup_count, 1);
+        assert_eq!(result.raw_result_event_id, Some(raw_event_id));
+        assert!(result.raw_result_available);
     }
 }
