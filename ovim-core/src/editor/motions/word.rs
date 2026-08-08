@@ -198,57 +198,76 @@ impl Motions {
             }
         }
 
-        let line = crate::display::line_content(rope, line_idx);
-        let chars: Vec<char> = line.chars().collect();
-        // Convert grapheme col to char col for char-based iteration
-        let mut new_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
+        loop {
+            let line = crate::display::line_content(rope, line_idx);
+            let chars: Vec<char> = line.chars().collect();
+            // Convert grapheme col to char col for char-based iteration.
+            let mut new_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
 
-        // Skip backward over whitespace first
-        if new_col > 0 && new_col <= chars.len() {
-            // When new_col == chars.len(), we're past the end; check chars[new_col - 1]
+            // Skip backward over whitespace first. When new_col == chars.len(),
+            // we're past the end and begin with chars[new_col - 1].
             while new_col > 0 && Self::is_whitespace(chars[new_col - 1]) {
                 new_col -= 1;
             }
-        }
 
-        if new_col == 0 {
-            buffer
-                .cursor_mut()
-                .set_position(line_idx, GraphemeCol::ZERO);
-            return;
-        }
+            if new_col == 0 {
+                // Leading whitespace is not a word boundary. Continue onto the
+                // preceding line, skipping whitespace-only lines. A genuinely
+                // empty line is a Vim word boundary, so stop on it.
+                if line_idx == 0 {
+                    buffer
+                        .cursor_mut()
+                        .set_position(line_idx, GraphemeCol::ZERO);
+                    return;
+                }
 
-        if big_word {
-            // Move back to start of WORD
-            while new_col > 0 && !Self::is_whitespace(chars[new_col - 1]) {
-                new_col -= 1;
+                line_idx -= 1;
+                let previous_line = crate::display::line_content(rope, line_idx);
+                if previous_line.is_empty() {
+                    buffer
+                        .cursor_mut()
+                        .set_position(line_idx, GraphemeCol::ZERO);
+                    return;
+                }
+                grapheme_col = GraphemeCol(grapheme_count(&previous_line));
+                continue;
             }
-        } else {
-            let target_char = chars[new_col - 1];
-            let class = char_class(target_char);
-            match class {
-                CharClass::Cjk => {
-                    // Each CJK char is its own word — back exactly one
+
+            if big_word {
+                // Move back to start of WORD
+                while new_col > 0 && !Self::is_whitespace(chars[new_col - 1]) {
                     new_col -= 1;
                 }
-                CharClass::Word => {
-                    while new_col > 0 && char_class(chars[new_col - 1]) == CharClass::Word {
+            } else {
+                let target_char = chars[new_col - 1];
+                let class = char_class(target_char);
+                match class {
+                    CharClass::Cjk => {
+                        // Each CJK char is its own word — back exactly one
                         new_col -= 1;
                     }
-                }
-                CharClass::Punctuation => {
-                    while new_col > 0 && char_class(chars[new_col - 1]) == CharClass::Punctuation {
-                        new_col -= 1;
+                    CharClass::Word => {
+                        while new_col > 0 && char_class(chars[new_col - 1]) == CharClass::Word {
+                            new_col -= 1;
+                        }
                     }
+                    CharClass::Punctuation => {
+                        while new_col > 0
+                            && char_class(chars[new_col - 1]) == CharClass::Punctuation
+                        {
+                            new_col -= 1;
+                        }
+                    }
+                    CharClass::Whitespace => {}
                 }
-                CharClass::Whitespace => {}
             }
-        }
 
-        buffer.cursor_mut().set_position(
-            line_idx,
-            crate::unicode::char_to_grapheme_col(&line, crate::unicode::CharCol(new_col)),
-        );
+            buffer.cursor_mut().set_position(
+                line_idx,
+                crate::unicode::char_to_grapheme_col(&line, crate::unicode::CharCol(new_col)),
+            );
+            return;
+        }
     }
 
     /// Moves cursor forward to the end of the current/next word

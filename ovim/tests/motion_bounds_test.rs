@@ -152,6 +152,28 @@ fn test_b_multiple_at_start() {
 }
 
 #[test]
+fn test_b_skips_whitespace_only_lines() {
+    let mut test = EditorTest::new("alpha beta\n   \ngamma");
+
+    // Verified with Neovim 0.12.4: from line 3 column 0, `b` lands at
+    // line 1 column 6 rather than stopping on the whitespace-only line.
+    test.keys("Gb");
+
+    test.assert_cursor(0, 6);
+}
+
+#[test]
+fn test_B_skips_leading_and_whitespace_only_lines() {
+    let mut test = EditorTest::new("alpha beta\n   \n   gamma");
+
+    // Verified with Neovim 0.12.4: `B` at the first word after leading
+    // whitespace continues across a whitespace-only line to the prior WORD.
+    test.keys("G0WB");
+
+    test.assert_cursor(0, 6);
+}
+
+#[test]
 fn test_b_with_count_beyond_buffer() {
     let mut test = EditorTest::new("one two three");
 
