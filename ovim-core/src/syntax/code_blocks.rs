@@ -66,6 +66,9 @@ impl CodeBlockCache {
 
         // Find all fenced_code_block nodes
         self.visit_node(&mut cursor, source, catalog);
+        // Tree traversal is document-ordered today, but lookup relies on this
+        // invariant and plugin grammars may produce different node layouts.
+        self.blocks.sort_by_key(|block| block.line_start);
     }
 
     /// Recursively visit nodes to find fenced code blocks
@@ -185,15 +188,8 @@ impl CodeBlockCache {
         &self,
         line_idx: usize,
     ) -> Option<&Vec<(Range<usize>, HighlightGroup)>> {
-        for block in &self.blocks {
-            if line_idx >= block.line_start && line_idx < block.line_end {
-                let block_line_idx = line_idx - block.line_start;
-                if block_line_idx < block.highlights.len() {
-                    return Some(&block.highlights[block_line_idx]);
-                }
-            }
-        }
-        None
+        let block = self.block_for_line(line_idx)?;
+        block.highlights.get(line_idx - block.line_start)
     }
 
     /// Returns the cache version
@@ -203,9 +199,16 @@ impl CodeBlockCache {
 
     /// Checks if a line is inside any code block
     pub fn is_line_in_code_block(&self, line_idx: usize) -> bool {
-        self.blocks
-            .iter()
-            .any(|block| line_idx >= block.line_start && line_idx < block.line_end)
+        self.block_for_line(line_idx).is_some()
+    }
+
+    /// Finds the only block that could contain `line_idx` in O(log n).
+    fn block_for_line(&self, line_idx: usize) -> Option<&CodeBlock> {
+        let insertion = self
+            .blocks
+            .partition_point(|block| block.line_start <= line_idx);
+        let block = self.blocks.get(insertion.checked_sub(1)?)?;
+        (line_idx < block.line_end).then_some(block)
     }
 }
 
@@ -267,6 +270,31 @@ let x = 42;
         // Line 1 is "# Test" - not in code block
         let highlights = cache.highlights_for_line(1);
         assert!(highlights.is_none());
+    }
+
+    #[test]
+    fn block_lookup_handles_boundaries_and_gaps() {
+        let source = r#"```rust
+let first = 1;
+```
+
+plain text
+
+```python
+second = 2
+third = 3
+```
+"#;
+        let cache = cache_for(source, &LanguageCatalog::built_in());
+
+        assert!(cache.is_line_in_code_block(1));
+        assert!(!cache.is_line_in_code_block(2));
+        assert!(!cache.is_line_in_code_block(5));
+        assert!(cache.is_line_in_code_block(7));
+        assert!(cache.is_line_in_code_block(8));
+        assert!(!cache.is_line_in_code_block(9));
+        assert!(cache.highlights_for_line(7).is_some());
+        assert!(cache.highlights_for_line(5).is_none());
     }
 
     #[test]
