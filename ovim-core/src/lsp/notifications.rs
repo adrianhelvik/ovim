@@ -1137,14 +1137,15 @@ impl LspManager {
                                 lsp_info!("Progress", "{}", message);
                                 // Store latest progress message (will be cleared on End)
                                 let mut current_progress = self.current_progress.lock().await;
+                                let key = (server_id.to_string(), progress.token.clone());
                                 match &progress.value {
                                     lsp_types::ProgressParamsValue::WorkDone(
                                         lsp_types::WorkDoneProgress::End(_),
                                     ) => {
-                                        current_progress.remove(&server_id.to_string());
+                                        current_progress.remove(&key);
                                     }
                                     _ => {
-                                        current_progress.insert(server_id.to_string(), message);
+                                        current_progress.insert(key, message);
                                     }
                                 }
                             }
@@ -1343,6 +1344,56 @@ mod tests {
     use super::*;
     use crate::lsp::protocol::RequestId;
     use std::str::FromStr;
+
+    fn progress_notification(token: serde_json::Value, value: serde_json::Value) -> JsonRpcMessage {
+        JsonRpcMessage::notification(
+            "$/progress".to_string(),
+            serde_json::json!({ "token": token, "value": value }),
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn progress_end_only_clears_its_own_token() {
+        let manager = LspManager::new();
+
+        manager
+            .handle_notification(
+                "java",
+                progress_notification(
+                    serde_json::json!("index"),
+                    serde_json::json!({ "kind": "begin", "title": "Indexing" }),
+                ),
+            )
+            .await;
+        manager
+            .handle_notification(
+                "java",
+                progress_notification(
+                    serde_json::json!(2),
+                    serde_json::json!({ "kind": "begin", "title": "Building" }),
+                ),
+            )
+            .await;
+
+        assert_eq!(manager.current_progress.lock().await.len(), 2);
+
+        manager
+            .handle_notification(
+                "java",
+                progress_notification(
+                    serde_json::json!("index"),
+                    serde_json::json!({ "kind": "end" }),
+                ),
+            )
+            .await;
+
+        let progress = manager.current_progress.lock().await;
+        assert_eq!(progress.len(), 1);
+        assert_eq!(
+            progress.get(&("java".to_string(), lsp_types::ProgressToken::Number(2))),
+            Some(&"java: Building".to_string())
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn process_notifications_does_not_block_on_server_requests() {

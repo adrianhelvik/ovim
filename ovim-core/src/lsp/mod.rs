@@ -196,8 +196,10 @@ pub struct LspManager {
     /// Flag indicating diagnostics have changed and cache needs update
     diagnostics_changed: AtomicBool,
 
-    /// Current progress messages from LSP servers (language_id -> message)
-    current_progress: Mutex<HashMap<String, String>>,
+    /// Current progress messages keyed by server and LSP progress token.
+    /// A server may run multiple operations concurrently, so server identity
+    /// alone is not sufficient to track their independent lifetimes.
+    current_progress: Mutex<HashMap<(String, lsp_types::ProgressToken), String>>,
 
     /// Channel for workspace edits that need to be applied by the Editor
     /// These come from server-initiated workspace/applyEdit requests
