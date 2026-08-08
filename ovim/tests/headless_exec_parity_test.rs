@@ -83,6 +83,31 @@ fn exec_ranged_delete() {
     assert_eq!(test.buffer_content(), "a\nd\n");
 }
 
+#[test]
+fn exec_undo_and_redo_mutate_the_live_buffer() {
+    let mut test = EditorTest::new("alpha beta");
+    test.keys("wx");
+    assert_eq!(test.buffer_content(), "alpha eta\n");
+
+    assert_success(&exec(&mut test, "undo"), "undo");
+    assert_eq!(test.buffer_content(), "alpha beta\n");
+
+    assert_success(&exec(&mut test, "redo"), "redo");
+    assert_eq!(test.buffer_content(), "alpha eta\n");
+}
+
+#[test]
+fn exec_accepts_vim_undo_and_redo_abbreviations() {
+    let mut test = EditorTest::new("abc");
+    test.press('x');
+
+    assert_success(&exec(&mut test, "u"), "u");
+    assert_eq!(test.buffer_content(), "abc\n");
+
+    assert_success(&exec(&mut test, "red"), "red");
+    assert_eq!(test.buffer_content(), "bc\n");
+}
+
 // ---- The standard-command contract must be preserved ----
 
 #[test]

@@ -1,6 +1,6 @@
 //! Command execution for ex commands (:w, :q, etc.)
 
-use crate::command_result::{err, ok, CommandResult};
+use crate::command_result::{err, ok, ok_silent, CommandResult};
 use crate::editor::Editor;
 use crate::editor::QuickfixEntry;
 use crate::unicode::GraphemeCol;
@@ -209,6 +209,14 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
     }
 
     match command {
+        "u" | "undo" => {
+            editor.undo();
+            ok_silent()
+        }
+        "red" | "redo" => {
+            editor.redo();
+            ok_silent()
+        }
         "q" | "quit" => {
             if !editor.tab_page_manager().is_single_tab() {
                 editor.close_current_tab();
