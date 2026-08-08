@@ -53,6 +53,40 @@ struct ActiveSubagentRoot {
     repository_root: PathBuf,
 }
 
+fn preserved_invalid_result(
+    events: &[crate::run_log::EventEnvelope],
+    notification: &crate::run_log::MailboxNotificationKind,
+) -> Option<serde_json::Value> {
+    let crate::run_log::MailboxNotificationKind::Handoff {
+        source_agent_id,
+        handoff,
+        ..
+    } = notification
+    else {
+        return None;
+    };
+    events.iter().rev().find_map(|event| {
+        if event.agent_id.as_ref() != Some(source_agent_id)
+            || !handoff
+                .blockers
+                .iter()
+                .any(|blocker| blocker.contains(event.event_id.as_str()))
+        {
+            return None;
+        }
+        let crate::run_log::EventKind::AgentHandoffValidationFailed(failed) = &event.kind else {
+            return None;
+        };
+        Some(json!({
+            "state": "validation_failed",
+            "event_id": event.event_id,
+            "error": failed.error,
+            "repair_attempted": failed.repair_attempted,
+            "raw_output": String::from_utf8_lossy(&failed.raw_payload),
+        }))
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SpawnAgentArguments {
@@ -901,6 +935,10 @@ impl AiSubagentRun {
                 Ok(json!({ "outcome": "timed_out", "updates": [] }))
             }
             crate::agent_runtime::MailboxWaitOutcome::Updates(entries) => {
+                let events = self
+                    .store
+                    .events(&self.run_id)
+                    .map_err(|error| error.to_string())?;
                 let updates = entries
                     .iter()
                     .map(|entry| {
@@ -909,6 +947,10 @@ impl AiSubagentRun {
                             "sequence": entry.sequence,
                             "recorded_at": entry.recorded_at,
                             "notification": entry.notification,
+                            "preserved_invalid_result": preserved_invalid_result(
+                                &events,
+                                &entry.notification,
+                            ),
                         })
                     })
                     .collect::<Vec<_>>();
