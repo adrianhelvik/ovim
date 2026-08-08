@@ -195,18 +195,14 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         return Ok(());
     }
 
-    // <C-t> toggles tree panel from any focus zone
+    // <C-t> remains the primary-conversation branch tree. Delegated agents
+    // use the switcher reached with Down from an empty composer.
     if key_event.code == KeyCode::Char('t') && key_event.modifiers.contains(Modifiers::CONTROL) {
-        let has_agents = editor
-            .ai_agent_current_snapshot()
-            .ok()
-            .flatten()
-            .is_some_and(|snapshot| !snapshot.agents.is_empty());
         if let Some(chat) = editor.ai_state.chat.as_mut() {
             chat.tree_panel_open = !chat.tree_panel_open;
             if chat.tree_panel_open {
                 chat.focus = ChatFocus::TreePanel;
-                chat.agent_tree_focused = has_agents;
+                chat.agent_tree_focused = false;
             } else if chat.focus == ChatFocus::TreePanel {
                 chat.focus = ChatFocus::TextInput;
             }
@@ -431,6 +427,24 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Down => {
+            let can_open_agent_switcher = editor
+                .ai_state
+                .chat
+                .as_ref()
+                .is_some_and(|chat| chat.input.is_empty())
+                && editor
+                    .ai_agent_current_snapshot()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|snapshot| !snapshot.agents.is_empty());
+            if can_open_agent_switcher {
+                if let Some(chat) = editor.ai_state.chat.as_mut() {
+                    chat.focus = ChatFocus::TreePanel;
+                    chat.agent_tree_focused = true;
+                    chat.agent_tree_cursor = 0;
+                }
+                return Ok(());
+            }
             let wrap_width = editor.render_cache.ai_chat_input_content_width;
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 if wrap_width > 0 {
@@ -684,40 +698,81 @@ fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     }
 
     if agent_focused {
-        let selected = snapshot.as_ref().and_then(|snapshot| {
-            snapshot
-                .hierarchy()
-                .get(editor.ai_agent_tree_cursor())
-                .map(|agent| agent.agent_id.to_string())
-        });
+        // Cursor zero is the primary conversation. Delegated agents follow in
+        // hierarchy order so Up always has an obvious route home.
+        let selected = editor
+            .ai_agent_tree_cursor()
+            .checked_sub(1)
+            .and_then(|index| {
+                snapshot.as_ref().and_then(|snapshot| {
+                    snapshot
+                        .hierarchy()
+                        .get(index)
+                        .map(|agent| (agent.agent_id.to_string(), agent.lifecycle.clone()))
+                })
+            });
+        let selected_id = selected.as_ref().map(|(agent_id, _)| agent_id.clone());
         match key_event.code {
             KeyCode::Down | KeyCode::Char('j') => {
                 if let Some(chat) = editor.ai_state.chat.as_mut()
                     && agent_count > 0
                 {
-                    chat.agent_tree_cursor = (chat.agent_tree_cursor + 1).min(agent_count - 1);
+                    chat.agent_tree_cursor = (chat.agent_tree_cursor + 1).min(agent_count);
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if let Some(chat) = editor.ai_state.chat.as_mut() {
-                    chat.agent_tree_cursor = chat.agent_tree_cursor.saturating_sub(1);
+                    if chat.agent_tree_cursor == 0 {
+                        chat.focus = ChatFocus::TextInput;
+                    } else {
+                        chat.agent_tree_cursor -= 1;
+                    }
                 }
             }
             KeyCode::Enter => {
-                if let (Some(chat), Some(agent_id)) = (editor.ai_state.chat.as_mut(), selected) {
-                    chat.selected_agent_id = Some(agent_id.clone());
-                    chat.expanded_agent_cards.insert(agent_id);
+                if let Some((agent_id, lifecycle)) = selected {
+                    editor.cancel_ai_agent_composer_action();
+                    if let Some(chat) = editor.ai_state.chat.as_mut() {
+                        chat.selected_agent_id = Some(agent_id.clone());
+                    }
+                    let kind = if matches!(
+                        lifecycle.as_str(),
+                        "starting"
+                            | "running"
+                            | "waiting_for_agent"
+                            | "waiting_for_tool"
+                            | "waiting_for_user"
+                    ) {
+                        Some(AgentComposerActionKind::Message)
+                    } else if matches!(lifecycle.as_str(), "completed" | "interrupted") {
+                        Some(AgentComposerActionKind::Followup)
+                    } else {
+                        None
+                    };
+                    if let Some(kind) = kind {
+                        if let Err(error) = editor.begin_ai_agent_composer_action(agent_id, kind) {
+                            editor.set_status_message(error);
+                        }
+                    } else if let Some(chat) = editor.ai_state.chat.as_mut() {
+                        chat.focus = ChatFocus::MessageHistory;
+                    }
+                } else {
+                    editor.cancel_ai_agent_composer_action();
+                    if let Some(chat) = editor.ai_state.chat.as_mut() {
+                        chat.selected_agent_id = None;
+                        chat.focus = ChatFocus::TextInput;
+                    }
                 }
             }
             KeyCode::Char(' ') => {
-                if let (Some(chat), Some(agent_id)) = (editor.ai_state.chat.as_mut(), selected) {
+                if let (Some(chat), Some(agent_id)) = (editor.ai_state.chat.as_mut(), selected_id) {
                     if !chat.expanded_agent_cards.remove(&agent_id) {
                         chat.expanded_agent_cards.insert(agent_id);
                     }
                 }
             }
             KeyCode::Char('f') | KeyCode::Char('w') => {
-                if let (Some(chat), Some(agent_id)) = (editor.ai_state.chat.as_mut(), selected) {
+                if let (Some(chat), Some(agent_id)) = (editor.ai_state.chat.as_mut(), selected_id) {
                     if chat.followed_agent_id.as_deref() == Some(agent_id.as_str()) {
                         chat.followed_agent_id = None;
                     } else {
@@ -727,14 +782,14 @@ fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 }
             }
             KeyCode::Char('i') => {
-                if let Some(agent_id) = selected
+                if let Some(agent_id) = selected_id
                     && let Err(error) = editor.interrupt_ai_agent_from_ui(agent_id)
                 {
                     editor.set_status_message(format!("Could not interrupt child: {error}"));
                 }
             }
             KeyCode::Char('m') => {
-                if let Some(agent_id) = selected
+                if let Some(agent_id) = selected_id
                     && let Err(error) = editor
                         .begin_ai_agent_composer_action(agent_id, AgentComposerActionKind::Message)
                 {
@@ -742,7 +797,7 @@ fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 }
             }
             KeyCode::Char('r') => {
-                if let Some(agent_id) = selected
+                if let Some(agent_id) = selected_id
                     && let Err(error) = editor
                         .begin_ai_agent_composer_action(agent_id, AgentComposerActionKind::Followup)
                 {
@@ -750,13 +805,15 @@ fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 }
             }
             KeyCode::Char('a') => {
-                if let Err(error) = editor.ai_agent_resolve_approval_for(selected.as_deref(), true)
+                if let Err(error) =
+                    editor.ai_agent_resolve_approval_for(selected_id.as_deref(), true)
                 {
                     editor.set_status_message(error);
                 }
             }
             KeyCode::Char('d') => {
-                if let Err(error) = editor.ai_agent_resolve_approval_for(selected.as_deref(), false)
+                if let Err(error) =
+                    editor.ai_agent_resolve_approval_for(selected_id.as_deref(), false)
                 {
                     editor.set_status_message(error);
                 }
@@ -1006,6 +1063,7 @@ mod tests {
                 previous_input: "preserved root draft".into(),
                 previous_cursor: 9,
             });
+        chat.selected_agent_id = Some("agt_child".into());
 
         handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Esc, Modifiers::NONE))
             .expect("esc");
@@ -1014,6 +1072,7 @@ mod tests {
         assert_eq!(editor.ai_chat_input(), "preserved root draft");
         assert_eq!(editor.ai_chat_input_cursor(), 9);
         assert!(editor.ai_agent_composer_action().is_none());
+        assert!(editor.ai_agent_selected_id().is_none());
     }
 
     #[test]

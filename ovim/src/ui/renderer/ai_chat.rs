@@ -71,6 +71,93 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
     render_chat_panel_impl(frame, editor, chat_area, theme, None);
 }
 
+fn render_agent_conversation(
+    frame: &mut Frame,
+    editor: &Editor,
+    area: Rect,
+    snapshot: &ovim_core::agent_runtime::AgentControlPlaneSnapshot,
+    agent_id: &str,
+) {
+    let Some(agent) = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.agent_id.as_str() == agent_id)
+    else {
+        return;
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                agent.task_name.clone(),
+                Style::default()
+                    .fg(ACCENT_USER)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}", agent.lifecycle.replace('_', " ")),
+                Style::default().fg(TEXT_DIM),
+            ),
+        ]),
+        Line::from(Span::styled(
+            format!(
+                "{} · {} · {}",
+                agent.resolved_route.model,
+                agent.resolved_route.reasoning_effort,
+                if agent.workspace.read_only {
+                    "read-only snapshot"
+                } else {
+                    "writable workspace"
+                }
+            ),
+            Style::default().fg(TEXT_DIM),
+        )),
+        Line::from(agent.objective.clone()),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Activity",
+            Style::default()
+                .fg(TEXT_NORMAL)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    let switcher = super::agent_tree::agent_switcher_lines(
+        snapshot,
+        area.width as usize,
+        editor.ai_chat_focus() == ChatFocus::TreePanel && editor.ai_agent_tree_focused(),
+        editor.ai_agent_tree_cursor(),
+        Some(agent_id),
+    );
+    let available = area
+        .height
+        .saturating_sub(lines.len() as u16)
+        .saturating_sub(switcher.len() as u16) as usize;
+    let start = agent.trace.len().saturating_sub(available);
+    for event in &agent.trace[start..] {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(
+                    "#{:<4} {:<16}",
+                    event.sequence,
+                    event.kind.replace('_', " ")
+                ),
+                Style::default().fg(TEXT_DIM),
+            ),
+            Span::raw(event.summary.replace('\n', " ")),
+        ]));
+    }
+    if agent.trace.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No activity reported yet",
+            Style::default().fg(TEXT_DIM),
+        )));
+    }
+    lines.extend(switcher);
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(TEXT_NORMAL).bg(BG_PANEL)),
+        area,
+    );
+}
+
 pub fn render_chat_panel_cached(
     frame: &mut Frame,
     editor: &mut Editor,
@@ -110,58 +197,10 @@ fn render_chat_panel_impl(
 
     let agent_snapshot = editor.ai_agent_current_snapshot().ok().flatten();
 
-    // Keep delegated-agent hierarchy adjacent to, but visually distinct from,
-    // the existing conversation branch tree. Both are projections; neither
-    // renderer owns lifecycle or control state.
+    // Delegated agents are switched in the conversation surface below; the
+    // optional side tree remains dedicated to primary conversation branches.
     if let Some(tree_rect) = layout.tree_area {
-        if agent_snapshot
-            .as_ref()
-            .is_some_and(|snapshot| !snapshot.agents.is_empty())
-        {
-            let has_branches = editor
-                .conversation()
-                .and_then(|conversation| conversation.root_id())
-                .is_some();
-            let agent_height = if has_branches && tree_rect.height >= 10 {
-                (tree_rect.height.saturating_mul(2) / 3)
-                    .clamp(5, tree_rect.height.saturating_sub(3))
-            } else {
-                tree_rect.height
-            };
-            let agent_area = Rect::new(tree_rect.x, tree_rect.y, tree_rect.width, agent_height);
-            let expanded = editor
-                .ai_agent_expanded_cards()
-                .cloned()
-                .unwrap_or_default();
-            super::agent_tree::render_agent_tree_panel(
-                frame,
-                agent_snapshot.as_ref(),
-                agent_area,
-                super::agent_tree::AgentTreeRenderState {
-                    enabled: true,
-                    focused: editor.ai_chat_focus() == ChatFocus::TreePanel
-                        && editor.ai_agent_tree_focused(),
-                    cursor: editor.ai_agent_tree_cursor(),
-                    selected_agent_id: editor.ai_agent_selected_id(),
-                    followed_agent_id: editor.ai_agent_followed_id(),
-                    expanded: &expanded,
-                },
-            );
-            if agent_height < tree_rect.height {
-                super::conversation_tree::render_tree_panel(
-                    frame,
-                    editor,
-                    Rect::new(
-                        tree_rect.x,
-                        tree_rect.y + agent_height,
-                        tree_rect.width,
-                        tree_rect.height - agent_height,
-                    ),
-                );
-            }
-        } else {
-            super::conversation_tree::render_tree_panel(frame, editor, tree_rect);
-        }
+        super::conversation_tree::render_tree_panel(frame, editor, tree_rect);
     }
 
     let model_picker_anchor = render_chat_header(frame, editor, layout.header_area);
@@ -171,14 +210,20 @@ fn render_chat_panel_impl(
         .map(|image| image.path.clone())
         .collect::<Vec<_>>();
     if layout.messages_area.height > 0 {
-        render_message_history(
-            frame,
-            editor,
-            layout.messages_area,
-            theme,
-            cache,
-            agent_snapshot.as_ref(),
-        );
+        if let (Some(snapshot), Some(agent_id)) =
+            (agent_snapshot.as_ref(), editor.ai_agent_selected_id())
+        {
+            render_agent_conversation(frame, editor, layout.messages_area, snapshot, agent_id);
+        } else {
+            render_message_history(
+                frame,
+                editor,
+                layout.messages_area,
+                theme,
+                cache,
+                agent_snapshot.as_ref(),
+            );
+        }
     } else {
         editor.render_cache.ai_chat_interactions.history = None;
     }
@@ -855,38 +900,18 @@ fn render_message_history(
             .push((row_start, rendered_lines.len()));
     }
 
-    // Delegated work is run state, not synthetic assistant prose. Keep one
-    // compact, independently collapsible card per projected child near the
-    // live edge of chat while preserving message row identity above it.
+    // Agents are conversations, not footer cards. Keep a compact switcher at
+    // the live edge; Down from an empty composer expands it, and Enter changes
+    // the active conversation.
     if let Some(snapshot) = agent_snapshot.filter(|snapshot| !snapshot.agents.is_empty()) {
-        let expanded = editor
-            .ai_agent_expanded_cards()
-            .cloned()
-            .unwrap_or_default();
-        let cards = super::agent_tree::project_inline_agent_cards(snapshot, panel_width, &expanded);
-        if let Some(summary) = super::agent_tree::inline_agent_summary(snapshot, panel_width) {
-            rendered_lines.push((
-                Line::from(Span::styled(
-                    summary,
-                    Style::default()
-                        .fg(if snapshot.pending_attention > 0 {
-                            Color::Rgb(255, 191, 77)
-                        } else {
-                            TEXT_DIM
-                        })
-                        .bg(BG_PANEL)
-                        .add_modifier(Modifier::BOLD),
-                )),
-                false,
-            ));
-            for card in &cards {
-                rendered_lines.extend(
-                    super::agent_tree::inline_card_lines(card, panel_width)
-                        .into_iter()
-                        .map(|line| (line, false)),
-                );
-            }
-        }
+        let lines = super::agent_tree::agent_switcher_lines(
+            snapshot,
+            panel_width,
+            focus == ChatFocus::TreePanel && editor.ai_agent_tree_focused(),
+            editor.ai_agent_tree_cursor(),
+            editor.ai_agent_selected_id(),
+        );
+        rendered_lines.extend(lines.into_iter().map(|line| (line, false)));
     }
 
     // Progress belongs to the run, not to an assistant message. Keep it as a
