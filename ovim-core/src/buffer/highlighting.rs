@@ -989,19 +989,20 @@ impl Buffer {
             }
         }
 
-        // Same idea for embedded-language injections (Astro etc.) — build
-        // once eagerly so script/frontmatter regions highlight immediately
-        // rather than waiting for the debounced full rebuild.
+        // Same idea for embedded-language injections (Astro etc.), but query
+        // only the viewport. Rebuilding every interpolation in the document
+        // here made the synchronous per-keystroke path grow with file size.
         if self.injection_cache.is_none() {
             if let (Some(injection_query), Some(tree)) = (syntax.injection_query(), syntax.tree()) {
                 let content = self.rope.to_string();
                 let mut cache = InjectionCache::new();
-                cache.update_from_tree(
+                cache.update_from_tree_for_line_range(
                     tree,
                     &content,
                     injection_query,
                     self.highlight_version,
                     &self.language_catalog,
+                    start_line..actual_end,
                 );
                 self.injection_cache = Some(cache);
             }

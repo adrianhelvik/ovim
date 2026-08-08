@@ -265,10 +265,13 @@ impl Editor {
             (None, None) => None,
         };
         let system_prompt = if self.ai_subagent_parent_tools_visible() {
-            let guidance = "## Delegation\n\nDelegate bounded independent research, review, or verification when it can run in parallel. Every child request must choose an explicit advertised model and reasoning effort. Avoid duplicate, tiny, or sequential tasks, and continue the local critical path while children run.";
+            let guidance = format!(
+                "## Delegation\n\nDelegate bounded independent work that can run in parallel. {}",
+                crate::agent_runtime::DELEGATION_GUIDANCE
+            );
             Some(match system_prompt {
                 Some(prompt) => format!("{prompt}\n\n{guidance}"),
-                None => guidance.into(),
+                None => guidance,
             })
         } else {
             system_prompt

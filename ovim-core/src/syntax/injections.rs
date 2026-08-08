@@ -15,6 +15,7 @@ use crate::language_catalog::LanguageCatalog;
 
 use super::highlighter::SyntaxHighlighter;
 use super::theme::HighlightGroup;
+use std::collections::HashMap;
 use std::ops::Range;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Query, QueryCursor, Tree};
@@ -54,11 +55,60 @@ impl InjectionCache {
         version: u64,
         catalog: &LanguageCatalog,
     ) {
+        self.update_from_tree_in_line_range(tree, source, injection_query, version, catalog, None);
+    }
+
+    /// Rebuilds injections that intersect a viewport. This keeps the
+    /// synchronous post-input path proportional to visible content instead of
+    /// reparsing every interpolation in an Astro document on each keystroke.
+    pub fn update_from_tree_for_line_range(
+        &mut self,
+        tree: &Tree,
+        source: &str,
+        injection_query: &Query,
+        version: u64,
+        catalog: &LanguageCatalog,
+        line_range: Range<usize>,
+    ) {
+        self.update_from_tree_in_line_range(
+            tree,
+            source,
+            injection_query,
+            version,
+            catalog,
+            Some(line_range),
+        );
+    }
+
+    fn update_from_tree_in_line_range(
+        &mut self,
+        tree: &Tree,
+        source: &str,
+        injection_query: &Query,
+        version: u64,
+        catalog: &LanguageCatalog,
+        line_range: Option<Range<usize>>,
+    ) {
         self.regions.clear();
         self.version = version;
 
         let mut cursor = QueryCursor::new();
+        if let Some(lines) = line_range {
+            cursor.set_point_range(
+                tree_sitter::Point {
+                    row: lines.start,
+                    column: 0,
+                }..tree_sitter::Point {
+                    row: lines.end,
+                    column: 0,
+                },
+            );
+        }
         let mut matches = cursor.matches(injection_query, tree.root_node(), source.as_bytes());
+        // Compiling a tree-sitter highlight query is expensive. Astro files can
+        // contain hundreds of interpolation captures, but usually only two
+        // injected languages, so reuse one parser/query pair per language.
+        let mut highlighters: HashMap<String, SyntaxHighlighter> = HashMap::new();
 
         while let Some(m) = matches.next() {
             let language_name = injection_query
@@ -87,10 +137,17 @@ impl InjectionCache {
                     continue;
                 }
 
-                let Ok(mut highlighter) = SyntaxHighlighter::from_definition(language.id(), syntax)
-                else {
-                    continue;
-                };
+                let language_id = language.id().to_string();
+                if !highlighters.contains_key(&language_id) {
+                    let Ok(highlighter) = SyntaxHighlighter::from_definition(language.id(), syntax)
+                    else {
+                        continue;
+                    };
+                    highlighters.insert(language_id.clone(), highlighter);
+                }
+                let highlighter = highlighters
+                    .get_mut(&language_id)
+                    .expect("injected highlighter was just inserted");
                 highlighter.parse(content);
                 let local_highlights = highlighter.highlights_for_all_lines(content);
                 if local_highlights.is_empty() {
@@ -214,5 +271,63 @@ mod tests {
         let source = "---\n---\n<h1>Hi</h1>\n";
         let cache = injection_cache_for(source);
         assert!(cache.highlights_for_line(2).is_none());
+    }
+
+    #[test]
+    fn viewport_rebuild_excludes_offscreen_injections() {
+        let mut source = String::from("---\nconst seed = 1;\n---\n");
+        for i in 0..100 {
+            source.push_str(&format!("<p>{{seed + {i}}}</p>\n"));
+        }
+
+        let ts_language = LanguageRegistry::get_tree_sitter_language(Language::Astro);
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_language).unwrap();
+        let tree = parser.parse(&source, None).unwrap();
+        let query = Query::new(
+            &ts_language,
+            LanguageRegistry::get_injection_query(Language::Astro).unwrap(),
+        )
+        .unwrap();
+        let mut cache = InjectionCache::new();
+
+        cache.update_from_tree_for_line_range(
+            &tree,
+            &source,
+            &query,
+            1,
+            &LanguageCatalog::built_in(),
+            20..30,
+        );
+
+        assert!(!cache.regions.is_empty());
+        assert!(cache
+            .regions
+            .iter()
+            .all(|region| region.line_start < 30 && region.line_end > 20));
+        assert!(cache.highlights_for_line(5).is_none());
+        assert!(cache.highlights_for_line(25).is_some());
+        assert!(cache.highlights_for_line(80).is_none());
+    }
+    #[test]
+    fn interpolation_heavy_astro_builds_all_injection_regions() {
+        let mut source = String::from("---\nconst seed = 1;\n---\n");
+        for i in 0..500 {
+            source.push_str(&format!(
+                "<div data-value={{seed + {i}}}>{{seed + {i}}}</div>\n"
+            ));
+        }
+
+        let started = std::time::Instant::now();
+        let cache = injection_cache_for(&source);
+        eprintln!(
+            "built {} Astro injection regions in {:?}",
+            cache.regions.len(),
+            started.elapsed()
+        );
+
+        assert_eq!(cache.regions.len(), 1001);
+        assert!(cache.highlights_for_line(1).is_some());
+        assert!(cache.highlights_for_line(502).is_some());
     }
 }
