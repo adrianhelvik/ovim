@@ -24,12 +24,22 @@ fn fallback_code_action_character(
 }
 
 fn is_organize_imports_action(action: &lsp_types::CodeActionOrCommand) -> bool {
+    fn is_organize_imports_kind(kind: &lsp_types::CodeActionKind) -> bool {
+        let kind = kind.as_str();
+        let organize_imports_kind = lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS;
+        let organize_imports = organize_imports_kind.as_str();
+        kind == organize_imports
+            || kind
+                .strip_prefix(organize_imports)
+                .is_some_and(|suffix| suffix.starts_with('.'))
+    }
+
     match action {
         lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
             code_action
-                .edit
+                .kind
                 .as_ref()
-                .is_some_and(|edit| edit.changes.is_some() || edit.document_changes.is_some())
+                .is_some_and(is_organize_imports_kind)
                 || code_action
                     .command
                     .as_ref()
@@ -440,7 +450,10 @@ mod tests {
     use super::{fallback_code_action_character, is_organize_imports_action};
     use crate::editor::lsp_state::AvailableCodeAction;
     use crate::editor::Editor;
-    use lsp_types::{CodeAction, CodeActionOrCommand, Command, Diagnostic, Position, Range};
+    use lsp_types::{
+        CodeAction, CodeActionKind, CodeActionOrCommand, Command, Diagnostic, Position, Range,
+        WorkspaceEdit,
+    };
 
     fn diagnostic(start_character: u32, end_character: u32) -> Diagnostic {
         Diagnostic {
@@ -514,6 +527,35 @@ mod tests {
     fn organize_imports_matches_code_action_with_embedded_command() {
         let action = code_action_with_command("typescript.organizeImports");
         assert!(is_organize_imports_action(&action));
+    }
+
+    #[test]
+    fn organize_imports_matches_standard_and_child_kinds() {
+        for kind in [
+            CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+            CodeActionKind::new("source.organizeImports.ts"),
+        ] {
+            let action = CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Organize imports".to_string(),
+                kind: Some(kind),
+                edit: Some(WorkspaceEdit::default()),
+                ..Default::default()
+            });
+
+            assert!(is_organize_imports_action(&action));
+        }
+    }
+
+    #[test]
+    fn organize_imports_rejects_unrelated_code_action_with_edit() {
+        let action = CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Apply quick fix".to_string(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit::default()),
+            ..Default::default()
+        });
+
+        assert!(!is_organize_imports_action(&action));
     }
 
     #[test]
