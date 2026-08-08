@@ -1317,6 +1317,7 @@ impl Editor {
         };
         chat.input = action.previous_input;
         chat.input_cursor = action.previous_cursor.min(chat.input.len());
+        chat.selected_agent_id = None;
         self.set_status_message("Cancelled delegated-agent action");
         true
     }
@@ -1337,8 +1338,8 @@ impl Editor {
             .pending_agent_composer_action
             .take()
             .expect("action checked above");
-        chat.input = action.previous_input;
-        chat.input_cursor = action.previous_cursor.min(chat.input.len());
+        chat.input.clear();
+        chat.input_cursor = 0;
 
         let (tool_name, arguments, status) = match action.kind {
             super::ai_chat_state::AgentComposerActionKind::Message => (
@@ -1362,6 +1363,19 @@ impl Editor {
             self.set_status_message(status);
         } else {
             self.spawn_ai_agent_ui_control(call, status)?;
+        }
+        // Selecting an agent establishes a conversation context, not a
+        // one-shot command. Keep the primary draft parked until Esc/Primary,
+        // and route subsequent input to the same child. A restarted child is
+        // steerable after its follow-up turn begins.
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.pending_agent_composer_action =
+                Some(super::ai_chat_state::PendingAgentComposerAction {
+                    kind: super::ai_chat_state::AgentComposerActionKind::Message,
+                    agent_id: action.agent_id,
+                    previous_input: action.previous_input,
+                    previous_cursor: action.previous_cursor,
+                });
         }
         Ok(true)
     }
@@ -3530,6 +3544,8 @@ mod tests {
         editor.ai_runtime_complete_turn();
         assert!(editor.active_ai_runtime_turn().is_none());
 
+        editor.ai_state.chat.as_mut().unwrap().input = "preserved root draft".into();
+        editor.ai_state.chat.as_mut().unwrap().selected_agent_id = Some(agent_id.to_string());
         editor
             .begin_ai_agent_composer_action(
                 agent_id.to_string(),
@@ -3538,6 +3554,12 @@ mod tests {
             .unwrap();
         editor.ai_state.chat.as_mut().unwrap().input = "Prioritize the ownership boundary.".into();
         assert!(editor.submit_ai_agent_composer_action().unwrap());
+        assert_eq!(editor.ai_chat_input(), "");
+        assert_eq!(
+            editor.ai_agent_composer_action(),
+            Some(super::super::ai_chat_state::AgentComposerActionKind::Message)
+        );
+        assert_eq!(editor.ai_agent_selected_id(), Some(agent_id.as_str()));
         assert!(run.supervisor.messages().unwrap().iter().any(|message| {
             message.recipient_agent_id == agent_id
                 && message.content == "Prioritize the ownership boundary."
