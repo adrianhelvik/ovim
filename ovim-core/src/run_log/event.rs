@@ -22,6 +22,20 @@ pub enum EventActor {
     System(String),
 }
 
+pub const AGENT_HANDOFF_VALIDATION_FAILED_EVENT_VERSION: u32 = 1;
+
+/// A provider completed its investigation but returned a result envelope that
+/// failed validation. The bounded original payload is retained so validation
+/// cannot destroy useful work and a caller can repair or inspect it later.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentHandoffValidationFailedEvent {
+    pub version: u32,
+    pub error: String,
+    pub raw_payload: Vec<u8>,
+    pub repair_attempted: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EventEnvelope {
     pub schema_version: u32,
@@ -126,6 +140,7 @@ pub enum EventKind {
     AgentUsage(AgentUsageEvent),
     AgentProgress(AgentProgressEvent),
     AgentHandoff(AgentHandoffEvent),
+    AgentHandoffValidationFailed(AgentHandoffValidationFailedEvent),
     AgentFollowup(AgentFollowupEvent),
     AgentApprovalRequested(AgentApprovalRequestedEvent),
     AgentApprovalResolved(AgentApprovalResolvedEvent),
@@ -169,6 +184,10 @@ impl Serialize for EventKind {
             Self::AgentUsage(value) => ("agent_usage", serde_json::to_value(value)),
             Self::AgentProgress(value) => ("agent_progress", serde_json::to_value(value)),
             Self::AgentHandoff(value) => ("agent_handoff", serde_json::to_value(value)),
+            Self::AgentHandoffValidationFailed(value) => (
+                "agent_handoff_validation_failed",
+                serde_json::to_value(value),
+            ),
             Self::AgentFollowup(value) => ("agent_followup", serde_json::to_value(value)),
             Self::AgentApprovalRequested(value) => {
                 ("agent_approval_requested", serde_json::to_value(value))
@@ -226,6 +245,9 @@ impl<'de> Deserialize<'de> for EventKind {
             "agent_usage" => decode(raw.data).map(Self::AgentUsage),
             "agent_progress" => decode(raw.data).map(Self::AgentProgress),
             "agent_handoff" => decode(raw.data).map(Self::AgentHandoff),
+            "agent_handoff_validation_failed" => {
+                decode(raw.data).map(Self::AgentHandoffValidationFailed)
+            }
             "agent_followup" => decode(raw.data).map(Self::AgentFollowup),
             "agent_approval_requested" => decode(raw.data).map(Self::AgentApprovalRequested),
             "agent_approval_resolved" => decode(raw.data).map(Self::AgentApprovalResolved),

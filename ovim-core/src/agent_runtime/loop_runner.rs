@@ -12,10 +12,11 @@ use super::{
 };
 use crate::ai::tools::StrictJsonSchema;
 use crate::run_log::{
-    AgentProgressActivity, AgentProgressEvent, AgentProviderEvent as RecordedAgentProviderEvent,
-    AgentProviderState, AgentReported, AgentUsageEvent, EventEnvelope, EventId, EventKind,
-    ManifestId, OperationId, RunId, ToolIntentEvent, ToolOutcome, ToolResultEvent, ToolSideEffect,
-    ToolStartedEvent, TurnId, WorkspaceId, AGENT_PROGRESS_EVENT_VERSION,
+    AgentHandoffValidationFailedEvent, AgentProgressActivity, AgentProgressEvent,
+    AgentProviderEvent as RecordedAgentProviderEvent, AgentProviderState, AgentReported,
+    AgentUsageEvent, EventEnvelope, EventId, EventKind, ManifestId, OperationId, RunId,
+    ToolIntentEvent, ToolOutcome, ToolResultEvent, ToolSideEffect, ToolStartedEvent, TurnId,
+    WorkspaceId, AGENT_HANDOFF_VALIDATION_FAILED_EVENT_VERSION, AGENT_PROGRESS_EVENT_VERSION,
     AGENT_PROVIDER_EVENT_VERSION, AGENT_USAGE_EVENT_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,28 @@ pub struct DelegationEnvelope {
     pub effective_capabilities: Vec<String>,
     pub timeout_seconds: u64,
     pub workspace_warnings: Vec<AgentWorkspaceWarning>,
+}
+
+async fn record_invalid_handoff(
+    input: &AgentLoopInput,
+    payload: &[u8],
+    error: &HandoffValidationError,
+    repair_attempted: bool,
+) -> Result<EventEnvelope, AgentLoopError> {
+    input
+        .event_sink
+        .record(AgentLoopEventRecord {
+            handle: input.handle.clone(),
+            kind: EventKind::AgentHandoffValidationFailed(AgentHandoffValidationFailedEvent {
+                version: AGENT_HANDOFF_VALIDATION_FAILED_EVENT_VERSION,
+                error: error.to_string(),
+                raw_payload: payload.to_vec(),
+                repair_attempted,
+            }),
+            operation_id: None,
+            provider_call_id: None,
+        })
+        .await
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -888,9 +911,14 @@ impl AgentLoopRunner {
                     match input.handoff_validator.validate_json(&payload, None) {
                         Ok(handoff) => break handoff,
                         Err(error) => {
+                            let preserved =
+                                record_invalid_handoff(&input, &payload, &error, false).await?;
                             break synthetic_handoff(
                                 HandoffStatus::Failed,
-                                format!("provider returned an invalid structured handoff: {error}"),
+                                format!(
+                                    "provider returned an invalid structured handoff: {error}; raw result preserved in event {}",
+                                    preserved.event_id
+                                ),
                             )?;
                         }
                     }
@@ -1863,7 +1891,7 @@ mod tests {
         let harness = Arc::new(RecordingHarness::new());
         let result = AgentLoopRunner::run(input(
             "malformed_handoff",
-            harness,
+            harness.clone(),
             AgentCancellationToken::new(),
         ))
         .await
@@ -1871,6 +1899,17 @@ mod tests {
 
         assert_eq!(result.handoff.status(), HandoffStatus::Failed);
         assert!(result.handoff.as_handoff().blockers[0].contains("invalid structured handoff"));
+        let events = harness.sink.events(&result_event_run(&harness)).unwrap();
+        let preserved = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::AgentHandoffValidationFailed(failed) => Some((event, failed)),
+                _ => None,
+            })
+            .expect("invalid handoff must be preserved before terminal failure");
+        assert!(!preserved.1.raw_payload.is_empty());
+        assert!(!preserved.1.repair_attempted);
+        assert!(result.handoff.as_handoff().blockers[0].contains(preserved.0.event_id.as_str()));
     }
 
     #[tokio::test]
