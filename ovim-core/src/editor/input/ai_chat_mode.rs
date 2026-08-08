@@ -764,13 +764,6 @@ fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                     }
                 }
             }
-            KeyCode::Char(' ') => {
-                if let (Some(chat), Some(agent_id)) = (editor.ai_state.chat.as_mut(), selected_id) {
-                    if !chat.expanded_agent_cards.remove(&agent_id) {
-                        chat.expanded_agent_cards.insert(agent_id);
-                    }
-                }
-            }
             KeyCode::Char('f') | KeyCode::Char('w') => {
                 if let (Some(chat), Some(agent_id)) = (editor.ai_state.chat.as_mut(), selected_id) {
                     if chat.followed_agent_id.as_deref() == Some(agent_id.as_str()) {

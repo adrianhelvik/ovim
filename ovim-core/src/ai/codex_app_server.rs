@@ -439,6 +439,10 @@ fn provider_configuration_fingerprint(
     let configuration = json!({
         "protocol": "codex-app-server-v2",
         "model": profile.model,
+        "reasoningEffort": profile.reasoning_effort,
+        "verbosity": profile.verbosity,
+        "temperature": profile.temperature,
+        "maxTokens": profile.max_tokens,
         "cwd": cwd,
         "approvalPolicy": "never",
         "sandbox": "read-only",
@@ -1513,6 +1517,20 @@ mod tests {
             original,
             provider_configuration_fingerprint(&base, "instructions", cwd, &[]).unwrap()
         );
+        let mutations: [fn(&mut AiProfileConfig); 4] = [
+            |profile: &mut AiProfileConfig| profile.reasoning_effort = Some("xhigh".into()),
+            |profile: &mut AiProfileConfig| profile.temperature = Some(0.7),
+            |profile: &mut AiProfileConfig| profile.max_tokens = Some(8192),
+            |profile: &mut AiProfileConfig| profile.verbosity = Some("high".into()),
+        ];
+        for mutate in mutations {
+            let mut changed = base.clone();
+            mutate(&mut changed);
+            assert_ne!(
+                original,
+                provider_configuration_fingerprint(&changed, "instructions", cwd, &tools).unwrap()
+            );
+        }
     }
 
     #[test]

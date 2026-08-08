@@ -1003,6 +1003,19 @@ impl AiSubagentRun {
             .ok_or_else(|| "nested follow-up requires an attributed parent turn".to_string())?;
         let agent_id = AgentId::parse(args.agent_id).map_err(|error| error.to_string())?;
         ensure_descendant_control(&self.supervisor, &call.handle.agent_id, &agent_id)?;
+        let record = self
+            .supervisor
+            .dispatches()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|record| record.handle.agent_id == agent_id)
+            .ok_or_else(|| format!("unknown delegated agent {agent_id}"))?;
+        let budget = self
+            .input_factory
+            .build(&record)
+            .map_err(|error| error.to_string())?
+            .budget
+            .unwrap_or_else(|| supervisor_config(policy).child_budget);
         let followup = self
             .supervisor
             .followup_agent(FollowupAgentRequest {
@@ -1012,7 +1025,7 @@ impl AiSubagentRun {
                 caused_by_event: call.caused_by_event.clone(),
                 objective: args.objective,
                 capabilities: None,
-                budget: supervisor_config(policy).child_budget,
+                budget,
                 retained_session_requested: false,
             })
             .await
@@ -1154,20 +1167,6 @@ impl Editor {
             .chat
             .as_ref()
             .and_then(|chat| chat.followed_agent_id.as_deref())
-    }
-
-    pub fn ai_agent_card_expanded(&self, agent_id: &AgentId) -> bool {
-        self.ai_state
-            .chat
-            .as_ref()
-            .is_some_and(|chat| chat.expanded_agent_cards.contains(agent_id.as_str()))
-    }
-
-    pub fn ai_agent_expanded_cards(&self) -> Option<&std::collections::HashSet<String>> {
-        self.ai_state
-            .chat
-            .as_ref()
-            .map(|chat| &chat.expanded_agent_cards)
     }
 
     pub fn ai_agent_follow_status(&self) -> Option<String> {

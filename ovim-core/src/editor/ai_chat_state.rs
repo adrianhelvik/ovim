@@ -699,9 +699,6 @@ pub struct AiChatState {
     /// lifecycle and control data always comes from the durable projection.
     pub selected_agent_id: Option<String>,
     pub followed_agent_id: Option<String>,
-    /// Expanded inline/tree cards. Children default collapsed to keep the chat
-    /// usable in narrow terminals.
-    pub expanded_agent_cards: HashSet<String>,
     /// A targeted child message/follow-up temporarily owns the existing chat
     /// composer. The prior root draft is restored after submit or cancel.
     pub pending_agent_composer_action: Option<PendingAgentComposerAction>,
@@ -906,7 +903,6 @@ impl AiChatState {
             last_observed_agent_sequence: 0,
             selected_agent_id: None,
             followed_agent_id: None,
-            expanded_agent_cards: HashSet::new(),
             pending_agent_composer_action: None,
             streaming_tool_calls: Vec::new(),
             streaming_provider_state: Vec::new(),

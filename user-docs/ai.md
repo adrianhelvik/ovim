@@ -241,52 +241,40 @@ handoff. Follow-up cannot reroute the child or widen its authority.
 
 ### Inspect and control delegated agents
 
-Each delegated child appears as a compact inline activity row at the live edge
-of AI chat. Active rows show the current tool/detail and elapsed time; completed
-rows collapse to one line so finished work does not crowd the parent chat. The
-section header summarizes active work and decisions needing the human.
-Unread agent mailbox updates are counted separately; only pending approvals use
-the `needs you` label.
-Attention-required rows sort first. Expand a card from the agent tree to inspect
-its objective, ownership path, generation, requested versus effective routing (including fallback reason),
-workspace strategy and ownership, pending approvals/messages, and the bounded
-handoff summary with evidence and artifact counts. Missing provider metrics are
-shown as `not reported`/`n/r`, never estimated as zero.
+Delegated agents are switchable conversations rather than a permanent sidebar.
+From an empty Primary composer, press Down to open the switcher. Primary is the
+first row, followed by delegated agents in hierarchy order. Use Up/Down or
+`j`/`k` to highlight a conversation and Enter to open it. Esc returns to
+Primary and restores the parked Primary draft.
 
-Press `Ctrl-T` in AI chat to open the shared sidebar. Delegated agents have a
-dedicated hierarchical section above the existing conversation branch tree;
-press `Tab` to switch between the two sections. The agent section starts
-collapsed and remains compact on narrow terminals.
+The selected agent uses the main conversation surface. Its header identifies
+task, lifecycle, model, effort, objective, and read-only/writable workspace
+mode. Durable operator messages and handoffs appear as conversation entries;
+bounded lifecycle and tool events remain available as activity evidence.
+Lifecycle and mailbox delivery are separate: a running child can simultaneously
+show that one steer is queued for its next safe boundary.
 
-Agent-tree keys:
+Typing in a live agent conversation sends a durable steer to that exact agent.
+The conversation remains selected after submission, so several messages can be
+sent without retargeting. Opening a completed or interrupted agent turns the
+composer into a follow-up action. Follow-ups preserve identity, route, workspace,
+capability ceiling, and the original budget ceiling. The root can control any
+descendant; a delegated parent can control any descendant in its own subtree.
+Queued or failed agents remain inspectable but do not masquerade as live steer
+targets.
 
-- `j`/`k` or Down/Up moves through the hierarchy; `Enter` selects and opens a child.
-- `Space` expands or collapses that child's detail in both the tree and chat.
-- `f` or `w` follows/unfollows the child. Following is nonblocking and adds
-  `task · model · effort · state` to the status line; the model-facing
-  `wait_agent` control remains available when the root actually needs to wait.
-- `m` opens the existing composer for a steer to a live child. The composer
-  names the exact target. `r` opens it for a new objective on a completed or
-  interrupted child. Enter submits;
-  Esc cancels and restores the root draft exactly.
-- `i` interrupts the selected child through the same durable control path used
-  by the headless API and parent model.
-- `a` allows the highlighted child's pending approval; `d` denies it. If the
-  highlighted child has none, the oldest pending approval is used instead. The
-  prompt identifies child and ancestry, role, requested and effective
-  model/effort, tool and normalized effect, workspace, and reason. Simultaneous
-  requests stay attributed and are presented in durable order.
-- `q` closes the sidebar.
+The switcher keeps completed, failed, interrupted, and restart-recovered states
+distinct. It also shows queued mailbox delivery independently from lifecycle.
+`f`/`w` follows or unfollows the highlighted child for status-line monitoring;
+`i` interrupts it; and `a`/`d` resolves its pending approval. If the highlighted
+child has no approval, approval controls fall back to the oldest pending request.
+The prompt identifies child and ancestry, role, requested and effective route,
+tool effect, workspace, and reason.
 
-A child pausing for approval does not freeze the editor — only that child
-waits while the root turn and composer stay interactive. From any focus,
-`Ctrl-Y` allows and `Ctrl-N` denies the oldest pending child approval without
-opening the tree; the highlighted-child `a`/`d` above give per-child control.
-
-Completed, failed, interrupted, and restart-recovered children keep distinct
-visual states. An interrupted-after-restart child is never presented as still
-running; its expanded card explains that a follow-up can start a new
-generation.
+A child pausing for approval does not freeze the editor—only that child waits.
+From any focus, `Ctrl-Y` allows and `Ctrl-N` denies the oldest pending child
+approval. `Ctrl-T` remains dedicated to the Primary conversation branch tree;
+it is not the delegated-agent navigator.
 
 Ovim does not guess how to resume an in-flight child provider session after a
 restart. Starting, running, waiting, or effect-ambiguous work is closed with a
