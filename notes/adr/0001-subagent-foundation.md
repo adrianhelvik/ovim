@@ -5,6 +5,26 @@
 - Plan baseline: `f0b1bd1`
 - First release: read-only, asynchronous, depth one
 
+## 2026-08 bounded hierarchy amendment
+
+The preview now keeps depth one as the default but permits an explicit
+`max_depth` from one through four. A child with remaining depth receives the
+same strict coordination contracts as the root and may dispatch read-only
+explorer/reviewer descendants against its immutable snapshot. Each descendant
+gets a fresh durable manifest/envelope identity, shares the root concurrency
+and budget ceilings, and loses coordination tools at the depth boundary.
+
+Direct parents own model-to-model steering. The durable root remains operator
+authority over the whole visible tree, so a human can steer or interrupt a
+descendant without impersonating an intermediate model. This extends the
+existing scheduler, mailbox, ancestry, cancellation, and restart contracts;
+it does not introduce peer-to-peer dispatch or autonomous depth growth.
+Operator controls remain attached to the durable chat binding after the root
+model turn ends and append a user-authored causal event. A delegated parent
+waiting on mailbox updates temporarily yields its provider-concurrency slot,
+then reacquires capacity before its provider session resumes; otherwise a
+depth-two tree could deadlock at `max_concurrent = 1`.
+
 ## Context
 
 Ovim already has durable run identities, an append-only event log, captured
@@ -30,11 +50,12 @@ parent ID, causing turn and event, workspace identity, immutable dispatch
 contract, lifecycle, budgets, and completion record in the existing run log.
 Provider thread/session identifiers are bindings, never agent identities.
 
-The first release has maximum depth one, at most three concurrently running
-children, and read-only roles only. The parent remains live after dispatch and
-learns about child progress and completion through durable mailbox events. A
-child is not represented as an ordinary chat branch and cannot dispatch
-descendants in v1.
+The default has maximum depth one, at most three concurrently running children,
+and read-only roles only. Configuration may raise the bounded depth to four.
+The parent remains live after dispatch and learns about child progress and
+completion through durable mailbox events. A child is not represented as an
+ordinary chat branch. It can dispatch descendants only when the configured
+depth leaves room and its durable role contains `DispatchAgents`.
 
 Cancellation is hierarchical. Canceling a parent cancels all nonterminal
 descendants, but preserves their trace and partial evidence. Terminal state is
@@ -46,12 +67,13 @@ event ID.
 V1 children receive an immutable projection of the captured workspace
 manifest. They may read, navigate, and use only commands classified as
 read-only. They cannot write source, use arbitrary shell, access the network,
-perform external effects, or receive dispatch tools. A command that cannot be
+perform external effects other than bounded agent coordination. A command that cannot be
 deterministically classified as read-only is denied rather than escalated to
 an approval prompt.
 
-Write agents, integration, custom role definitions, dependency graphs, and
-recursive dispatch are later phases. Follow-up turns are now available for
+Write agents, integration, custom role definitions, and dependency graphs are
+later phases. Bounded read-only recursive dispatch is available as described
+in the amendment above. Follow-up turns are now available for
 completed or interrupted read-only children: they preserve the Ovim agent,
 route, workspace, capability ceiling, and budget ceiling while recording a
 fresh turn ID and generation. The existing
@@ -270,5 +292,6 @@ prompt/event/artifact/handoff path.
   not establish Ovim's exact ownership/retention contract.
 - Reimplementing Federation config/secrets in Ovim: creates divergent runtime
   semantics and a new secret-exposure surface.
-- Peer-to-peer or recursively self-expanding agents: unnecessary for the first
-  release and much harder to bound, audit, and recover.
+- Peer-to-peer or unbounded recursively self-expanding agents: ownership,
+  authority, and cost become ambiguous. Bounded parent-child recursion is
+  permitted only inside the durable rooted tree and configured depth ceiling.

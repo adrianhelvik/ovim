@@ -1,8 +1,9 @@
 //! Strict, catalog-derived parent control-tool contracts.
 
 use super::{SideEffect, StrictJsonSchema, ToolDefinition, ToolSchemaError};
-use crate::agent_runtime::SubagentModelCatalog;
+use crate::agent_runtime::{AgentCapability, ScopedTool, SubagentModelCatalog};
 use crate::ai::{AiSubagentConfig, FileScope, RequiredScope};
+use crate::run_log::ToolSideEffect;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
@@ -176,6 +177,39 @@ pub fn parent_control_tools(
     ])
 }
 
+/// Provider-facing equivalents of the root controls for a delegated parent.
+/// The runtime still decides whether a particular child has depth and
+/// capability remaining; this function only centralizes the strict contracts
+/// so root and nested agents cannot drift onto subtly different schemas.
+pub fn delegated_parent_control_tools(
+    catalog: &SubagentModelCatalog,
+    policy: &AiSubagentConfig,
+) -> Result<Vec<ScopedTool>, ToolSchemaError> {
+    parent_control_tools(catalog, policy)?
+        .into_iter()
+        .map(|definition| {
+            let input_schema = definition.custom_input_schema.ok_or_else(|| {
+                ToolSchemaError::StrictObjectRequired(format!(
+                    "delegated control {} has no strict schema",
+                    definition.name
+                ))
+            })?;
+            let side_effect = match definition.name.as_str() {
+                LIST_AGENTS_TOOL | WAIT_AGENT_TOOL => ToolSideEffect::Read,
+                _ => ToolSideEffect::External,
+            };
+            Ok(ScopedTool {
+                name: definition.name,
+                description: definition.description,
+                input_schema,
+                side_effect,
+                required_capability: AgentCapability::DispatchAgents,
+                requires_approval: false,
+            })
+        })
+        .collect()
+}
+
 fn definition(name: &str, description: String, schema: StrictJsonSchema) -> ToolDefinition {
     ToolDefinition {
         name: name.into(),
@@ -258,6 +292,42 @@ mod tests {
                 "missing {field}"
             );
         }
+    }
+
+    #[test]
+    fn delegated_parent_controls_reuse_root_contracts_and_require_dispatch_capability() {
+        let (config, catalog) = configured();
+        let root = parent_control_tools(&catalog, &config.subagents).unwrap();
+        let delegated = delegated_parent_control_tools(&catalog, &config.subagents).unwrap();
+        assert_eq!(delegated.len(), root.len());
+        for (root, delegated) in root.iter().zip(&delegated) {
+            assert_eq!(delegated.name, root.name);
+            assert_eq!(
+                delegated.input_schema,
+                root.custom_input_schema.clone().unwrap()
+            );
+            assert_eq!(
+                delegated.required_capability,
+                AgentCapability::DispatchAgents
+            );
+            assert!(!delegated.requires_approval);
+        }
+        assert_eq!(
+            delegated
+                .iter()
+                .find(|tool| tool.name == SPAWN_AGENT_TOOL)
+                .unwrap()
+                .side_effect,
+            ToolSideEffect::External
+        );
+        assert_eq!(
+            delegated
+                .iter()
+                .find(|tool| tool.name == LIST_AGENTS_TOOL)
+                .unwrap()
+                .side_effect,
+            ToolSideEffect::Read
+        );
     }
 
     #[test]

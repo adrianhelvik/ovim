@@ -6,27 +6,29 @@
 
 use crate::agent_runtime::{
     AgentApprovalBroker, AgentApprovalKey, AgentApprovalResponse, AgentApprovalResponseDecision,
-    AgentCapability, AgentControlPlaneSnapshot, AgentKindName, AgentLoopBudget,
-    AgentLoopInputFactory, AgentProviderAdapter, AgentRoleTemplate, AgentSupervisor,
-    AgentSupervisorConfig, AgentWorkspaceManager, CapturedSnapshotDiagnostics,
+    AgentCapability, AgentControlPlaneSnapshot, AgentDispatchRecord, AgentFuture, AgentKindName,
+    AgentLoopBudget, AgentLoopInputFactory, AgentProviderAdapter, AgentRoleTemplate,
+    AgentSupervisor, AgentSupervisorConfig, AgentToolCall, AgentToolError, AgentToolExtension,
+    AgentToolResult, AgentWorkspaceManager, CapturedSnapshotDiagnostics,
     CapturedSnapshotSymbolIndex, CompletionContract, DelegatedAgentKind, DelegationContextMode,
     DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity, DispatchRequest,
     FollowupAgentRequest, ModelFallbackPolicy, ProfileAgentProvider, ReasoningEffort,
-    RequestedModelRoute, SendAgentMessageRequest, SnapshotAgentLoopInputFactory,
+    RequestedModelRoute, ScopedTool, SendAgentMessageRequest, SnapshotAgentLoopInputFactory,
     SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog, WorkspaceAssignment, WorkspacePolicy,
     WorkspaceStrategy,
 };
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::subagents::{
-    is_parent_control_tool, FOLLOWUP_AGENT_TOOL, INTERRUPT_AGENT_TOOL, LIST_AGENTS_TOOL,
-    SEND_MESSAGE_TOOL, SPAWN_AGENT_TOOL, WAIT_AGENT_TOOL,
+    delegated_parent_control_tools, is_parent_control_tool, FOLLOWUP_AGENT_TOOL,
+    INTERRUPT_AGENT_TOOL, LIST_AGENTS_TOOL, SEND_MESSAGE_TOOL, SPAWN_AGENT_TOOL, WAIT_AGENT_TOOL,
 };
 use crate::ai::tools::ToolDefinition;
 use crate::ai::tools::ToolResult;
 use crate::ai::{AiConfig, AiSubagentConfig};
 use crate::run_log::{
-    AgentId, ArtifactStore, BaseManifest, BaseManifestId, EventId, EventKind, LocalRunStore,
-    ManifestId, OperationId, RepoPath, RepositoryId, RunEventSink, RunId, TurnId, WorkspaceId,
+    AgentId, ArtifactStore, BaseManifest, BaseManifestId, EventActor, EventId, EventKind,
+    LocalRunStore, ManifestId, NewRunEvent, OperationId, RepoPath, RepositoryId, RunEventSink,
+    RunId, TurnId, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -36,7 +38,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use super::Editor;
 
@@ -123,6 +125,45 @@ pub(crate) struct AiSubagentRun {
     repository_root: PathBuf,
 }
 
+/// Bridges provider-facing child controls back into the run-owned durable
+/// supervisor. The weak run reference avoids a cycle through the input
+/// factory, which owns this extension for the lifetime of provider sessions.
+struct EditorAgentToolExtension {
+    run: Mutex<Weak<AiSubagentRun>>,
+    policy: AiSubagentConfig,
+    catalog: Arc<SubagentModelCatalog>,
+}
+
+impl EditorAgentToolExtension {
+    fn new(policy: AiSubagentConfig, catalog: Arc<SubagentModelCatalog>) -> Self {
+        Self {
+            run: Mutex::new(Weak::new()),
+            policy,
+            catalog,
+        }
+    }
+
+    fn attach(&self, run: &Arc<AiSubagentRun>) -> Result<(), String> {
+        let mut slot = self
+            .run
+            .lock()
+            .map_err(|_| "delegated control run binding is poisoned".to_string())?;
+        if slot.strong_count() > 0 {
+            return Err("delegated control run is already attached".into());
+        }
+        *slot = Arc::downgrade(run);
+        Ok(())
+    }
+
+    fn attached_run(&self) -> Result<Arc<AiSubagentRun>, AgentToolError> {
+        self.run
+            .lock()
+            .map_err(|_| AgentToolError::new("delegated control run binding is poisoned"))?
+            .upgrade()
+            .ok_or_else(|| AgentToolError::new("delegated control run is unavailable"))
+    }
+}
+
 const PREPARED_DELEGATION_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +207,30 @@ impl AiSubagentService {
             runs: Mutex::new(HashMap::new()),
             snapshot_cache: Mutex::new(None),
         }
+    }
+
+    /// Rebuild startup-owned routing and policy after Lua configuration has
+    /// finished merging, but only before a durable delegated run exists.
+    /// Built-in Lua profiles load after legacy `ai.toml`; without this refresh
+    /// the service fingerprint and child catalog describe the pre-Lua config,
+    /// which makes parent controls fail closed in every real editor startup.
+    pub(crate) fn reconfigure_if_idle(&mut self, config: &AiConfig) -> Result<(), String> {
+        if self.ensure_compatible(config).is_ok() {
+            return Ok(());
+        }
+        if !self
+            .runs
+            .lock()
+            .map_err(|_| "delegated-agent run registry is poisoned".to_string())?
+            .is_empty()
+        {
+            return Err(
+                "delegated-agent policy or provider profiles changed after a run started; restart Ovim"
+                    .into(),
+            );
+        }
+        *self = Self::new(config);
+        Ok(())
     }
 
     /// Serve a memoized control-plane snapshot when the run's durable watermark
@@ -317,6 +382,11 @@ impl AiSubagentService {
             self.provider.clone(),
             approval_broker.clone(),
         ));
+        let tool_extension = Arc::new(EditorAgentToolExtension::new(
+            self.startup_policy.clone(),
+            self.catalog()?,
+        ));
+        input_factory.set_tool_extension(tool_extension.clone())?;
         let supervisor = if has_prior_child_history {
             AgentSupervisor::rehydrate(
                 run_id.clone(),
@@ -352,6 +422,7 @@ impl AiSubagentService {
             delegation_registry: PreparedDelegationRegistry::new(run_directory.join("delegations")),
             repository_root,
         });
+        tool_extension.attach(&run)?;
         if has_prior_child_history {
             run.restore_prepared_dispatches();
         }
@@ -549,6 +620,430 @@ impl AiSubagentRun {
     }
 }
 
+impl AgentToolExtension for EditorAgentToolExtension {
+    fn scoped_tools(&self, dispatch: &AgentDispatchRecord) -> Result<Vec<ScopedTool>, String> {
+        if !dispatch
+            .role
+            .capabilities
+            .contains(&AgentCapability::DispatchAgents)
+        {
+            return Ok(Vec::new());
+        }
+        delegated_parent_control_tools(self.catalog.as_ref(), &self.policy)
+            .map_err(|error| error.to_string())
+    }
+
+    fn execute(
+        &self,
+        call: AgentToolCall,
+    ) -> AgentFuture<'_, Result<AgentToolResult, AgentToolError>> {
+        Box::pin(async move {
+            let run = self.attached_run()?;
+            let result = match call.tool_name.as_str() {
+                SPAWN_AGENT_TOOL => run.spawn_nested_agent(&call, &self.policy, &self.catalog),
+                LIST_AGENTS_TOOL => run.list_nested_agents(&call.handle.agent_id),
+                WAIT_AGENT_TOOL => run.wait_nested_agents(&call).await,
+                SEND_MESSAGE_TOOL => run.send_nested_agent_message(&call),
+                FOLLOWUP_AGENT_TOOL => run.followup_nested_agent(&call, &self.policy).await,
+                INTERRUPT_AGENT_TOOL => run.interrupt_nested_agent(&call).await,
+                _ => Err(format!(
+                    "{} is not a delegated coordination tool",
+                    call.tool_name
+                )),
+            }
+            .map_err(AgentToolError::new)?;
+            Ok(AgentToolResult::completed(Some(result)))
+        })
+    }
+}
+
+impl AiSubagentRun {
+    fn spawn_nested_agent(
+        &self,
+        call: &AgentToolCall,
+        policy: &AiSubagentConfig,
+        catalog: &SubagentModelCatalog,
+    ) -> Result<serde_json::Value, String> {
+        let args: SpawnAgentArguments =
+            serde_json::from_value(call.arguments.clone()).map_err(|error| error.to_string())?;
+        let causing_turn_id = call
+            .causing_turn_id
+            .clone()
+            .ok_or_else(|| "nested delegation requires an attributed parent turn".to_string())?;
+        let records = self
+            .supervisor
+            .dispatches()
+            .map_err(|error| error.to_string())?;
+        let parent_depth =
+            agent_record_depth(&records, &call.handle.agent_id, &self.root_agent_id)?;
+        let child_depth = parent_depth.saturating_add(1);
+        if child_depth > policy.max_depth {
+            return Err(format!(
+                "delegation depth {child_depth} exceeds configured maximum {}",
+                policy.max_depth
+            ));
+        }
+        let parent = records
+            .iter()
+            .find(|record| record.handle.agent_id == call.handle.agent_id)
+            .ok_or_else(|| format!("unknown delegated parent {}", call.handle.agent_id))?;
+        if parent.handle.workspace != call.handle.workspace {
+            return Err("delegated parent workspace identity changed".into());
+        }
+        let source_manifest_id = match &parent.handle.workspace.strategy {
+            WorkspaceStrategy::ReadOnlySnapshot {
+                manifest_id: Some(manifest_id),
+            } => manifest_id,
+            _ => return Err("nested delegation requires an immutable parent snapshot".into()),
+        };
+
+        let effort = ReasoningEffort::new(args.reasoning_effort.clone())
+            .map_err(|error| error.to_string())?;
+        let requested_route = RequestedModelRoute {
+            catalog_model_id: args.model,
+            reasoning_effort: effort,
+            fallback_policy: ModelFallbackPolicy::FailClosed,
+        };
+        let resolved = catalog
+            .resolve(&requested_route, true)
+            .map_err(|error| error.to_string())?;
+        let (agent_kind, role_name) = match args.agent_kind.as_str() {
+            "explorer" => (DelegatedAgentKind::Explorer, AgentKindName::Explorer),
+            "reviewer" => (DelegatedAgentKind::Reviewer, AgentKindName::Reviewer),
+            _ => return Err("only explorer and reviewer delegated roles are supported".into()),
+        };
+        let expected_output = match args.expected_output.as_str() {
+            "analysis" => DelegationExpectedOutput::Analysis,
+            "review_report" => DelegationExpectedOutput::ReviewReport,
+            "verification" => DelegationExpectedOutput::Verification,
+            _ => return Err("unsupported delegated output contract".into()),
+        };
+        if args.context_mode != "brief" {
+            return Err("only brief delegated context is supported".into());
+        }
+
+        // A descendant gets a fresh durable manifest identity while reading
+        // exactly the parent's immutable content. This preserves one envelope
+        // per dispatch and prevents live editor changes from leaking downward.
+        let source_manifest = self
+            .manifest_registry
+            .load(source_manifest_id)
+            .map_err(|error| error.to_string())?;
+        let source_prepared = self
+            .delegation_registry
+            .load(source_manifest_id)
+            .map_err(|error| error.to_string())?;
+        let manifest_id = ManifestId::new();
+        let workspace_id = WorkspaceId::new();
+        self.register_manifest(manifest_id.clone(), source_manifest, &self.repository_root)?;
+
+        let can_delegate = child_depth < policy.max_depth;
+        let mut capabilities = BTreeSet::from([AgentCapability::Read]);
+        if can_delegate {
+            capabilities.insert(AgentCapability::DispatchAgents);
+        }
+        let role = AgentRoleTemplate {
+            name: role_name,
+            instructions: if can_delegate {
+                "Use only the immutable captured snapshot. You may coordinate bounded read-only descendants for independent work, then synthesize their evidence without mutating source or performing external effects beyond delegated-agent control.".into()
+            } else {
+                "Use only the immutable captured snapshot. Report bounded evidence and never mutate source or perform external effects.".into()
+            },
+            capabilities: capabilities.clone(),
+            workspace_policy: WorkspacePolicy::ReadOnlyProjection,
+            completion_contract: CompletionContract::ReviewReport,
+        };
+        let envelope = DelegationEnvelope {
+            version: 1,
+            task_name: args.task_name.clone(),
+            objective: args.objective.clone(),
+            agent_kind,
+            context_mode: DelegationContextMode::Brief,
+            expected_output,
+            done_when: args.done_when,
+            non_goals: args.non_goals,
+            relevant_paths: args.relevant_paths,
+            parent_brief: Some(format!(
+                "Delegated by {} at depth {parent_depth}; return evidence to that parent.",
+                parent.task_name
+            )),
+            identity: Some(Box::new(DelegationIdentity {
+                run_id: self.run_id.clone(),
+                parent_agent_id: call.handle.agent_id.clone(),
+                causing_turn_id: causing_turn_id.clone(),
+                causing_event_id: call.caused_by_event.clone(),
+                workspace_id: workspace_id.clone(),
+                manifest_id: manifest_id.clone(),
+            })),
+            effective_capabilities: capabilities
+                .iter()
+                .map(|capability| match capability {
+                    AgentCapability::Read => "read",
+                    AgentCapability::DispatchAgents => "dispatch_agents",
+                    _ => "unsupported",
+                })
+                .map(str::to_string)
+                .collect(),
+            timeout_seconds: args.timeout_seconds,
+            workspace_warnings: source_prepared.envelope.workspace_warnings.clone(),
+        };
+        self.register_prepared_delegation(
+            manifest_id.clone(),
+            envelope,
+            AgentLoopBudget {
+                timeout: std::time::Duration::from_secs(args.timeout_seconds),
+                max_provider_events: policy.budgets.max_provider_events_per_agent,
+                max_tool_calls: policy.budgets.max_tool_calls_per_agent,
+            },
+            source_prepared.symbols,
+            source_prepared.diagnostics,
+        )?;
+        let handle = self
+            .supervisor
+            .dispatch_nonblocking(DispatchRequest {
+                task_name: args.task_name.clone(),
+                objective: args.objective,
+                role,
+                requested_route,
+                parent_agent_id: Some(call.handle.agent_id.clone()),
+                causing_turn_id: Some(causing_turn_id),
+                caused_by_event: Some(call.caused_by_event.clone()),
+                workspace: WorkspaceAssignment {
+                    workspace_id,
+                    strategy: WorkspaceStrategy::ReadOnlySnapshot {
+                        manifest_id: Some(manifest_id.clone()),
+                    },
+                },
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "outcome": "queued",
+            "task_name": args.task_name,
+            "run_id": handle.run_id,
+            "agent_id": handle.agent_id,
+            "parent_agent_id": call.handle.agent_id,
+            "depth": child_depth,
+            "remaining_depth": policy.max_depth.saturating_sub(child_depth),
+            "workspace_id": handle.workspace.workspace_id,
+            "manifest_id": manifest_id,
+            "model": resolved.catalog_model_id,
+            "reasoning_effort": resolved.reasoning_effort,
+        }))
+    }
+
+    fn list_nested_agents(&self, parent: &AgentId) -> Result<serde_json::Value, String> {
+        let records = self
+            .supervisor
+            .dispatches()
+            .map_err(|error| error.to_string())?;
+        let events = self
+            .store
+            .events(&self.run_id)
+            .map_err(|error| error.to_string())?;
+        let pending_notifications = self
+            .supervisor
+            .mailbox(parent.clone())
+            .map_err(|error| error.to_string())?
+            .pending()
+            .map_err(|error| error.to_string())?
+            .len();
+        let snapshot = crate::agent_runtime::build_agent_snapshot(
+            self.run_id.clone(),
+            self.root_agent_id.clone(),
+            records,
+            &events,
+            self.supervisor
+                .messages()
+                .map_err(|error| error.to_string())?,
+            self.approval_broker
+                .pending()
+                .map_err(|error| error.to_string())?,
+            self.approval_broker
+                .resolved()
+                .map_err(|error| error.to_string())?,
+            pending_notifications,
+        )?;
+        let agents = snapshot
+            .agents
+            .into_iter()
+            .filter(|agent| {
+                agent.parent_agent_id.as_ref() == Some(parent)
+                    || agent.ancestry.iter().any(|ancestor| ancestor == parent)
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "agents": agents,
+            "pending_attention": pending_notifications,
+        }))
+    }
+
+    async fn wait_nested_agents(&self, call: &AgentToolCall) -> Result<serde_json::Value, String> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Arguments {
+            timeout_seconds: u64,
+        }
+        let args: Arguments =
+            serde_json::from_value(call.arguments.clone()).map_err(|error| error.to_string())?;
+        let mailbox = self
+            .supervisor
+            .mailbox(call.handle.agent_id.clone())
+            .map_err(|error| error.to_string())?;
+        match self
+            .supervisor
+            .wait_for_agent_updates(
+                &call.handle,
+                std::time::Duration::from_secs(args.timeout_seconds),
+            )
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            crate::agent_runtime::MailboxWaitOutcome::TimedOut => {
+                Ok(json!({ "outcome": "timed_out", "updates": [] }))
+            }
+            crate::agent_runtime::MailboxWaitOutcome::Updates(entries) => {
+                let updates = entries
+                    .iter()
+                    .map(|entry| {
+                        json!({
+                            "notification_event_id": entry.notification_event_id,
+                            "sequence": entry.sequence,
+                            "recorded_at": entry.recorded_at,
+                            "notification": entry.notification,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                for entry in &entries {
+                    mailbox
+                        .consume(&entry.notification_event_id)
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(json!({ "outcome": "updates", "updates": updates }))
+            }
+        }
+    }
+
+    fn send_nested_agent_message(&self, call: &AgentToolCall) -> Result<serde_json::Value, String> {
+        let args: SendMessageArguments =
+            serde_json::from_value(call.arguments.clone()).map_err(|error| error.to_string())?;
+        let causing_turn_id = call
+            .causing_turn_id
+            .clone()
+            .ok_or_else(|| "nested steering requires an attributed parent turn".to_string())?;
+        let recipient = AgentId::parse(args.agent_id).map_err(|error| error.to_string())?;
+        ensure_descendant_control(&self.supervisor, &call.handle.agent_id, &recipient)?;
+        let message = self
+            .supervisor
+            .send_message(SendAgentMessageRequest {
+                sender_agent_id: call.handle.agent_id.clone(),
+                recipient_agent_id: recipient,
+                causing_turn_id,
+                caused_by_event: call.caused_by_event.clone(),
+                content: args.message,
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "outcome": "queued",
+            "agent_id": message.recipient_agent_id,
+            "message_event_id": message.message_event_id,
+        }))
+    }
+
+    async fn followup_nested_agent(
+        &self,
+        call: &AgentToolCall,
+        policy: &AiSubagentConfig,
+    ) -> Result<serde_json::Value, String> {
+        let args: FollowupAgentArguments =
+            serde_json::from_value(call.arguments.clone()).map_err(|error| error.to_string())?;
+        let causing_turn_id = call
+            .causing_turn_id
+            .clone()
+            .ok_or_else(|| "nested follow-up requires an attributed parent turn".to_string())?;
+        let agent_id = AgentId::parse(args.agent_id).map_err(|error| error.to_string())?;
+        ensure_descendant_control(&self.supervisor, &call.handle.agent_id, &agent_id)?;
+        let followup = self
+            .supervisor
+            .followup_agent(FollowupAgentRequest {
+                agent_id,
+                parent_agent_id: call.handle.agent_id.clone(),
+                causing_turn_id,
+                caused_by_event: call.caused_by_event.clone(),
+                objective: args.objective,
+                capabilities: None,
+                budget: supervisor_config(policy).child_budget,
+                retained_session_requested: false,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "outcome": "queued",
+            "agent_id": followup.handle.agent_id,
+            "followup_turn_id": followup.followup_turn_id,
+            "turn_generation": followup.turn_generation,
+        }))
+    }
+
+    async fn interrupt_nested_agent(
+        &self,
+        call: &AgentToolCall,
+    ) -> Result<serde_json::Value, String> {
+        let args: InterruptAgentArguments =
+            serde_json::from_value(call.arguments.clone()).map_err(|error| error.to_string())?;
+        let agent_id = AgentId::parse(args.agent_id).map_err(|error| error.to_string())?;
+        ensure_descendant_control(&self.supervisor, &call.handle.agent_id, &agent_id)?;
+        let interrupted = self
+            .supervisor
+            .interrupt(&agent_id, args.reason)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(json!({ "outcome": "interrupted", "agent_ids": interrupted }))
+    }
+}
+
+fn agent_record_depth(
+    records: &[AgentDispatchRecord],
+    agent_id: &AgentId,
+    root_agent_id: &AgentId,
+) -> Result<usize, String> {
+    let mut current = agent_id;
+    let mut seen = BTreeSet::new();
+    let mut depth = 0usize;
+    while current != root_agent_id {
+        if !seen.insert(current.clone()) {
+            return Err("delegated ancestry contains a cycle".into());
+        }
+        let record = records
+            .iter()
+            .find(|record| &record.handle.agent_id == current)
+            .ok_or_else(|| format!("unknown delegated ancestor {current}"))?;
+        depth = depth.saturating_add(1);
+        current = record
+            .parent_agent_id
+            .as_ref()
+            .ok_or_else(|| format!("delegated agent {current} has no parent"))?;
+    }
+    Ok(depth)
+}
+
+fn ensure_descendant_control(
+    supervisor: &AgentSupervisor,
+    parent: &AgentId,
+    target: &AgentId,
+) -> Result<(), String> {
+    let records = supervisor.dispatches().map_err(|error| error.to_string())?;
+    let target_record = records
+        .iter()
+        .find(|record| &record.handle.agent_id == target)
+        .ok_or_else(|| format!("unknown delegated agent {target}"))?;
+    if target_record.parent_agent_id.as_ref() != Some(parent) {
+        return Err(format!(
+            "delegated agent {parent} may control only its direct children"
+        ));
+    }
+    Ok(())
+}
+
 impl Editor {
     /// Project delegated-agent state for the current chat through the exact
     /// versioned snapshot used by headless API clients.
@@ -716,6 +1211,34 @@ impl Editor {
         }
     }
 
+    pub fn ai_agent_composer_title(&self) -> Option<String> {
+        let action = self
+            .ai_state
+            .chat
+            .as_ref()?
+            .pending_agent_composer_action
+            .as_ref()?;
+        let target = self
+            .ai_agent_current_snapshot()
+            .ok()
+            .flatten()
+            .and_then(|snapshot| {
+                snapshot
+                    .agents
+                    .into_iter()
+                    .find(|agent| agent.agent_id.as_str() == action.agent_id)
+                    .map(|agent| agent.task_name)
+            })
+            .unwrap_or_else(|| action.agent_id.chars().take(12).collect());
+        Some(format!(
+            " {} → {target} ",
+            match action.kind {
+                super::ai_chat_state::AgentComposerActionKind::Message => "steer",
+                super::ai_chat_state::AgentComposerActionKind::Followup => "resume",
+            }
+        ))
+    }
+
     pub(crate) fn begin_ai_agent_composer_action(
         &mut self,
         agent_id: String,
@@ -739,7 +1262,8 @@ impl Editor {
                     | "waiting_for_user"
             ),
             super::ai_chat_state::AgentComposerActionKind::Followup => {
-                matches!(agent.lifecycle.as_str(), "completed" | "interrupted")
+                agent.parent_agent_id.as_ref() == Some(&snapshot.root_agent_id)
+                    && matches!(agent.lifecycle.as_str(), "completed" | "interrupted")
             }
         };
         if !valid_state {
@@ -774,13 +1298,10 @@ impl Editor {
         chat.focus = crate::ai::chat_types::ChatFocus::TextInput;
         self.set_status_message(match kind {
             super::ai_chat_state::AgentComposerActionKind::Message => {
-                format!(
-                    "Type a message for {} and press Enter; Esc cancels",
-                    agent.task_name
-                )
+                format!("Steer {} and press Enter; Esc cancels", agent.task_name)
             }
             super::ai_chat_state::AgentComposerActionKind::Followup => format!(
-                "Type the follow-up objective for {} and press Enter; Esc cancels",
+                "Set the next objective for {} and press Enter; Esc cancels",
                 agent.task_name
             ),
         });
@@ -837,10 +1358,8 @@ impl Editor {
             arguments,
         };
         if action.kind == super::ai_chat_state::AgentComposerActionKind::Message {
-            match self.execute_ai_subagent_control_tool(&call) {
-                ToolResult::Success(_) => self.set_status_message(status),
-                ToolResult::Error(error) => return Err(error),
-            }
+            self.send_ai_subagent_operator_message(&call.arguments)?;
+            self.set_status_message(status);
         } else {
             self.spawn_ai_agent_ui_control(call, status)?;
         }
@@ -866,7 +1385,7 @@ impl Editor {
         call: ToolCallInfo,
         status: &'static str,
     ) -> Result<(), String> {
-        let prepared = self.prepare_ai_subagent_async_control(&call)?;
+        let prepared = self.prepare_ai_subagent_operator_control(&call)?;
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_| "delegated-agent controls require an async runtime".to_string())?;
         runtime.spawn(async move {
@@ -1242,6 +1761,52 @@ impl Editor {
                 .map_err(|error| format!("invalid {} arguments: {error}", call.name))?;
         }
         let root = self.active_subagent_root()?;
+        self.prepare_ai_subagent_async_control_for_root(call, root)
+    }
+
+    fn prepare_ai_subagent_operator_control(
+        &self,
+        call: &ToolCallInfo,
+    ) -> Result<PreparedAsyncSubagentControl, String> {
+        if !matches!(
+            call.name.as_str(),
+            INTERRUPT_AGENT_TOOL | FOLLOWUP_AGENT_TOOL
+        ) {
+            return Err("operator control is not available from the agent tree".into());
+        }
+        if !self
+            .ai_state
+            .subagents
+            .parent_capabilities()
+            .contains(&AgentCapability::DispatchAgents)
+        {
+            return Err("delegated-agent operator controls are disabled".into());
+        }
+        let definition = self
+            .ai_state
+            .subagents
+            .parent_tools()?
+            .into_iter()
+            .find(|definition| definition.name == call.name)
+            .ok_or_else(|| format!("unknown delegated-agent operator control {}", call.name))?;
+        if let Some(schema) = definition.custom_input_schema.as_ref() {
+            schema
+                .validate_instance(&call.arguments)
+                .map_err(|error| format!("invalid {} arguments: {error}", call.name))?;
+        }
+        let target = call
+            .arguments
+            .get("agent_id")
+            .and_then(|value| value.as_str());
+        let root = self.operator_subagent_root(&call.name, target)?;
+        self.prepare_ai_subagent_async_control_for_root(call, root)
+    }
+
+    fn prepare_ai_subagent_async_control_for_root(
+        &self,
+        call: &ToolCallInfo,
+        root: ActiveSubagentRoot,
+    ) -> Result<PreparedAsyncSubagentControl, String> {
         let run = self.ai_state.subagents.run(
             root.store,
             root.run_id,
@@ -1524,6 +2089,87 @@ impl Editor {
         })
     }
 
+    /// Resolve the durable run for a human control independently of whether
+    /// the root model still has an active turn. The operator action gets its
+    /// own user-authored causal event, chained from the selected branch tip,
+    /// while retaining the last root turn identity required by message and
+    /// follow-up records.
+    fn operator_subagent_root(
+        &self,
+        action: &str,
+        target_agent_id: Option<&str>,
+    ) -> Result<ActiveSubagentRoot, String> {
+        self.ai_state
+            .subagents
+            .ensure_compatible(&self.ai_state.config)?;
+        let services = self
+            .ai_state
+            .durable_runs
+            .as_ref()
+            .ok_or_else(|| "durable run storage is unavailable".to_string())?;
+        let binding = self
+            .ai_state
+            .durable_chat_bindings
+            .get(&self.ai_chat_conversation_key())
+            .ok_or_else(|| "the active chat has no durable root binding".to_string())?
+            .binding
+            .clone();
+        let events = services
+            .store
+            .events(&binding.run_id)
+            .map_err(|error| error.to_string())?;
+        let turn_id = events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.agent_id.as_ref() == Some(&binding.root_agent_id) && event.turn_id.is_some()
+            })
+            .and_then(|event| event.turn_id.clone())
+            .ok_or_else(|| {
+                "durable root has no attributed turn for operator control".to_string()
+            })?;
+        let caused_by = events
+            .iter()
+            .rev()
+            .find(|event| event.branch_id.as_ref() == Some(&binding.selected_branch_id))
+            .or_else(|| events.last())
+            .map(|event| event.event_id.clone())
+            .ok_or_else(|| "durable root has no causal history for operator control".to_string())?;
+        let operator_event = services
+            .store
+            .append(NewRunEvent {
+                run_id: binding.run_id.clone(),
+                caused_by: Some(caused_by),
+                operation_id: None,
+                provider_call_id: None,
+                actor: EventActor::User,
+                agent_id: Some(binding.root_agent_id.clone()),
+                turn_id: Some(turn_id.clone()),
+                workspace_id: Some(binding.workspace_id.clone()),
+                branch_id: Some(binding.selected_branch_id),
+                kind: EventKind::Unknown {
+                    name: "agent_operator_control".into(),
+                    payload: json!({
+                        "action": action,
+                        "target_agent_id": target_agent_id,
+                    }),
+                },
+            })
+            .map_err(|error| error.to_string())?;
+        let repository_root = self
+            .ai_repo_root()
+            .ok_or_else(|| "delegated agents require an active Git repository".to_string())?;
+        Ok(ActiveSubagentRoot {
+            store: services.store.clone(),
+            run_id: binding.run_id,
+            root_agent_id: binding.root_agent_id,
+            repository_id: binding.key.repository_id,
+            turn_id,
+            caused_by_event: operator_event.event_id,
+            repository_root,
+        })
+    }
+
     fn spawn_ai_subagent(
         &mut self,
         arguments: &serde_json::Value,
@@ -1587,10 +2233,18 @@ impl Editor {
             DelegatedAgentKind::Explorer => AgentKindName::Explorer,
             DelegatedAgentKind::Reviewer => AgentKindName::Reviewer,
         };
+        let mut capabilities = BTreeSet::from([AgentCapability::Read]);
+        if self.ai_state.subagents.policy().max_depth > 1 {
+            capabilities.insert(AgentCapability::DispatchAgents);
+        }
         let role = AgentRoleTemplate {
             name: role_name,
-            instructions: "Use only the immutable captured snapshot. Report bounded evidence and never mutate source or perform external effects.".into(),
-            capabilities: BTreeSet::from([AgentCapability::Read]),
+            instructions: if capabilities.contains(&AgentCapability::DispatchAgents) {
+                "Use only the immutable captured snapshot. You may coordinate bounded read-only descendants for independent work, then synthesize their evidence without mutating source or performing external effects beyond delegated-agent control.".into()
+            } else {
+                "Use only the immutable captured snapshot. Report bounded evidence and never mutate source or perform external effects.".into()
+            },
+            capabilities: capabilities.clone(),
             workspace_policy: WorkspacePolicy::ReadOnlyProjection,
             completion_contract: CompletionContract::ReviewReport,
         };
@@ -1613,7 +2267,15 @@ impl Editor {
                 workspace_id: workspace_id.clone(),
                 manifest_id: manifest_id.clone(),
             })),
-            effective_capabilities: vec!["read".into()],
+            effective_capabilities: capabilities
+                .iter()
+                .map(|capability| match capability {
+                    AgentCapability::Read => "read",
+                    AgentCapability::DispatchAgents => "dispatch_agents",
+                    _ => "unsupported",
+                })
+                .map(str::to_string)
+                .collect(),
             timeout_seconds: args.timeout_seconds,
             workspace_warnings: capture
                 .adapter_issues
@@ -1692,6 +2354,40 @@ impl Editor {
         let args: SendMessageArguments =
             serde_json::from_value(arguments.clone()).map_err(|error| error.to_string())?;
         let root = self.active_subagent_root()?;
+        let run = self.ai_state.subagents.run(
+            root.store,
+            root.run_id,
+            root.root_agent_id.clone(),
+            root.repository_id,
+            root.repository_root,
+        )?;
+        let recipient_agent_id =
+            AgentId::parse(args.agent_id).map_err(|error| error.to_string())?;
+        let message = run
+            .supervisor
+            .send_message(SendAgentMessageRequest {
+                sender_agent_id: root.root_agent_id,
+                recipient_agent_id,
+                causing_turn_id: root.turn_id,
+                caused_by_event: root.caused_by_event,
+                content: args.message,
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "outcome": "queued",
+            "message_event_id": message.message_event_id,
+            "agent_id": message.recipient_agent_id,
+            "state": "queued"
+        }))
+    }
+
+    fn send_ai_subagent_operator_message(
+        &self,
+        arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let args: SendMessageArguments =
+            serde_json::from_value(arguments.clone()).map_err(|error| error.to_string())?;
+        let root = self.operator_subagent_root(SEND_MESSAGE_TOOL, Some(&args.agent_id))?;
         let run = self.ai_state.subagents.run(
             root.store,
             root.run_id,
@@ -2337,6 +3033,7 @@ mod tests {
         editor.open_file(&file).unwrap();
         editor.ai_state = Box::new(AiState::with_run_storage_layout(layout).unwrap());
         editor.ai_state.config.subagents.enabled = true;
+        editor.ai_state.config.subagents.max_depth = 1;
         let profile = editor
             .ai_state
             .config
@@ -2398,14 +3095,16 @@ mod tests {
     }
 
     #[test]
-    fn config_changes_require_service_rebuild() {
+    fn idle_service_rebuilds_after_startup_config_merge() {
         let mut config = AiConfig::default();
         config.subagents.enabled = true;
-        let service = AiSubagentService::new(&config);
+        let mut service = AiSubagentService::new(&config);
         assert!(service.ensure_compatible(&config).is_ok());
 
         config.subagents.max_concurrent = 2;
         assert!(service.ensure_compatible(&config).is_err());
+        service.reconfigure_if_idle(&config).unwrap();
+        assert!(service.ensure_compatible(&config).is_ok());
     }
 
     #[test]
@@ -2653,6 +3352,208 @@ mod tests {
             )
             .is_err());
         editor.consume_ai_subagent_updates(&payload).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delegated_parent_can_spawn_one_bounded_descendant_on_the_same_snapshot() {
+        let (_repository, _storage, mut editor) = enabled_editor();
+        editor.ai_state.config.subagents.max_depth = 2;
+        let mut service = AiSubagentService::new(&editor.ai_state.config);
+        service.provider = Arc::new(
+            FakeProviderAdapter::new("delayed_completion")
+                .with_tick_duration(std::time::Duration::from_millis(100)),
+        );
+        *editor.ai_state.subagents = service;
+        attach_root_turn(&mut editor);
+        let ToolResult::Success(spawned) =
+            editor.execute_ai_subagent_control_tool(&spawn_call("parent_explorer"))
+        else {
+            panic!("root spawn should return a durable handle")
+        };
+        let spawned: serde_json::Value = serde_json::from_str(&spawned).unwrap();
+        let parent_id = AgentId::parse(spawned["agent_id"].as_str().unwrap()).unwrap();
+        let run = editor
+            .ai_state
+            .subagents
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let parent = run
+            .supervisor
+            .dispatches()
+            .unwrap()
+            .into_iter()
+            .find(|record| record.handle.agent_id == parent_id)
+            .unwrap();
+        assert!(parent
+            .role
+            .capabilities
+            .contains(&AgentCapability::DispatchAgents));
+        let dependencies = run.input_factory.build(&parent).unwrap();
+        assert!(dependencies
+            .tool_view
+            .names()
+            .iter()
+            .any(|name| name == SPAWN_AGENT_TOOL));
+        let cause = run
+            .store
+            .events(&run.run_id)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|event| {
+                event.agent_id.as_ref() == Some(&parent_id)
+                    && event.turn_id == parent.causing_turn_id
+            })
+            .unwrap();
+        let mut child_arguments = spawn_call("nested_reviewer").arguments;
+        child_arguments["agent_kind"] = json!("reviewer");
+        child_arguments["expected_output"] = json!("review_report");
+        let nested = dependencies
+            .tool_executor
+            .execute(AgentToolCall {
+                handle: parent.handle.clone(),
+                causing_turn_id: parent.causing_turn_id.clone(),
+                caused_by_event: cause.event_id,
+                tool_call_id: "nested-spawn".into(),
+                tool_name: SPAWN_AGENT_TOOL.into(),
+                arguments: child_arguments,
+                workspace: dependencies.workspace,
+            })
+            .await
+            .unwrap();
+        let nested = nested.result.unwrap();
+        assert_eq!(nested["outcome"], "queued");
+        assert_eq!(nested["parent_agent_id"], parent_id.as_str());
+        assert_eq!(nested["depth"], 2);
+        assert_eq!(nested["remaining_depth"], 0);
+
+        let records = run.supervisor.dispatches().unwrap();
+        let child = records
+            .iter()
+            .find(|record| {
+                record
+                    .parent_agent_id
+                    .as_ref()
+                    .is_some_and(|id| id == &parent_id)
+            })
+            .unwrap();
+        let child_id = child.handle.agent_id.clone();
+        assert_ne!(child.handle.workspace, parent.handle.workspace);
+        assert!(!child
+            .role
+            .capabilities
+            .contains(&AgentCapability::DispatchAgents));
+        assert!(!run
+            .input_factory
+            .build(child)
+            .unwrap()
+            .tool_view
+            .names()
+            .iter()
+            .any(|name| name == SPAWN_AGENT_TOOL));
+        loop {
+            if matches!(
+                run.supervisor.state(&child_id).unwrap(),
+                Some(
+                    crate::agent_runtime::DispatchState::Starting
+                        | crate::agent_runtime::DispatchState::Running
+                        | crate::agent_runtime::DispatchState::WaitingForAgent
+                        | crate::agent_runtime::DispatchState::WaitingForTool
+                )
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let ToolResult::Success(steered) = editor.execute_ai_subagent_control_tool(&ToolCallInfo {
+            id: "root-steer-nested".into(),
+            name: SEND_MESSAGE_TOOL.into(),
+            arguments: json!({
+                "agent_id": child_id,
+                "message": "Also report any parser boundary risks."
+            }),
+        }) else {
+            panic!("human/root authority should steer a live descendant")
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&steered).unwrap()["outcome"],
+            "queued"
+        );
+        run.supervisor
+            .interrupt(&parent_id, "test cleanup")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn operator_can_steer_a_live_child_after_the_root_model_turn_finishes() {
+        let (_repository, _storage, mut editor) = enabled_editor();
+        let mut service = AiSubagentService::new(&editor.ai_state.config);
+        service.provider = Arc::new(
+            FakeProviderAdapter::new("delayed_completion")
+                .with_tick_duration(std::time::Duration::from_millis(100)),
+        );
+        *editor.ai_state.subagents = service;
+        attach_root_turn(&mut editor);
+        let ToolResult::Success(spawned) =
+            editor.execute_ai_subagent_control_tool(&spawn_call("operator_target"))
+        else {
+            panic!("spawn should return a durable handle")
+        };
+        let spawned: serde_json::Value = serde_json::from_str(&spawned).unwrap();
+        let agent_id = AgentId::parse(spawned["agent_id"].as_str().unwrap()).unwrap();
+        let run = editor
+            .ai_state
+            .subagents
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        while !matches!(
+            run.supervisor.state(&agent_id).unwrap(),
+            Some(
+                crate::agent_runtime::DispatchState::Starting
+                    | crate::agent_runtime::DispatchState::Running
+                    | crate::agent_runtime::DispatchState::WaitingForTool
+            )
+        ) {
+            tokio::task::yield_now().await;
+        }
+        editor.ai_runtime_complete_turn();
+        assert!(editor.active_ai_runtime_turn().is_none());
+
+        editor
+            .begin_ai_agent_composer_action(
+                agent_id.to_string(),
+                super::super::ai_chat_state::AgentComposerActionKind::Message,
+            )
+            .unwrap();
+        editor.ai_state.chat.as_mut().unwrap().input = "Prioritize the ownership boundary.".into();
+        assert!(editor.submit_ai_agent_composer_action().unwrap());
+        assert!(run.supervisor.messages().unwrap().iter().any(|message| {
+            message.recipient_agent_id == agent_id
+                && message.content == "Prioritize the ownership boundary."
+        }));
+        assert!(run.store.events(&run.run_id).unwrap().iter().any(|event| {
+            event.actor == EventActor::User
+                && matches!(
+                    &event.kind,
+                    EventKind::Unknown { name, .. } if name == "agent_operator_control"
+                )
+        }));
+        assert!(editor.ai_agent_snapshot(&run.run_id).is_ok());
+        run.supervisor
+            .interrupt(&agent_id, "test cleanup")
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

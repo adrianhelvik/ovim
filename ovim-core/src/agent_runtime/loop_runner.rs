@@ -331,6 +331,12 @@ impl ScopedToolView {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentToolCall {
     pub handle: DispatchHandle,
+    /// Durable turn and tool-start event that caused this tool execution.
+    /// Coordination tools use these identities when they create child work or
+    /// queue steering, so nested activity remains causally attached to the
+    /// agent that requested it.
+    pub causing_turn_id: Option<TurnId>,
+    pub caused_by_event: crate::run_log::EventId,
     pub tool_call_id: String,
     pub tool_name: String,
     pub arguments: Value,
@@ -1041,22 +1047,36 @@ async fn execute_tool_request(
             match decision {
                 AgentApprovalDecision::Denied { reason } => AgentToolResult::failed(reason),
                 AgentApprovalDecision::Allowed => {
-                    input
-                        .runtime_hooks
-                        .transition(&input.handle, DispatchState::WaitingForTool, None)
-                        .await?;
-                    record_tool_started(
+                    // The operation entered WaitingForTool before validation.
+                    // Only an approval-gated tool moved on to WaitingForUser
+                    // and therefore needs to transition back before execution.
+                    if descriptor.requires_approval {
+                        input
+                            .runtime_hooks
+                            .transition(&input.handle, DispatchState::WaitingForTool, None)
+                            .await?;
+                    }
+                    let started_event = record_tool_started(
                         input,
                         operation_id.clone(),
                         provider_call_id.clone(),
                         tool_name.clone(),
                     )
                     .await?;
+                    let causing_turn_id = started_event.turn_id.clone().or_else(|| {
+                        input
+                            .envelope
+                            .identity
+                            .as_ref()
+                            .map(|identity| identity.causing_turn_id.clone())
+                    });
                     match await_bounded(
                         &input.cancellation,
                         deadline,
                         input.tool_executor.execute(AgentToolCall {
                             handle: input.handle.clone(),
+                            causing_turn_id,
+                            caused_by_event: started_event.event_id,
                             tool_call_id,
                             tool_name,
                             arguments,
@@ -1688,6 +1708,58 @@ mod tests {
         assert_eq!(unknown.outcome, ToolOutcome::Failed);
         assert!(unknown.summary.unwrap().contains("outside"));
         assert_eq!(calls.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn non_approval_tool_enters_waiting_state_only_once() {
+        let harness = Arc::new(RecordingHarness::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut input = input(
+            "delayed_completion",
+            harness.clone(),
+            AgentCancellationToken::new(),
+        );
+        input.tool_view = ScopedToolView::new([ScopedTool {
+            name: "read_snapshot".into(),
+            description: "Read one snapshot path.".into(),
+            input_schema: crate::ai::tools::StrictJsonSchema::new(serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "path": { "type": "string", "minLength": 1 } },
+                "required": ["path"]
+            }))
+            .unwrap(),
+            side_effect: ToolSideEffect::Read,
+            required_capability: AgentCapability::Read,
+            requires_approval: false,
+        }])
+        .unwrap();
+        input.tool_executor = Arc::new(CountingToolExecutor {
+            calls: calls.clone(),
+        });
+
+        let result = execute_tool_request(
+            &input,
+            None,
+            "read-call".into(),
+            "read_snapshot".into(),
+            serde_json::json!({"path": "src/lib.rs"}),
+            Instant::now(),
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.outcome, ToolOutcome::Completed);
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        assert_eq!(
+            harness.states.lock().unwrap().as_slice(),
+            &[
+                DispatchState::Starting,
+                DispatchState::WaitingForTool,
+                DispatchState::Running,
+            ]
+        );
     }
 
     #[tokio::test]

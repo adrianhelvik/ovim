@@ -6,9 +6,10 @@
 
 use super::{
     AgentApprovalBroker, AgentApprovalContext, AgentCapability, AgentCapabilityCeiling,
-    AgentFuture, AgentLoopDependencies, AgentLoopInputFactory, AgentProviderAdapter, AgentToolCall,
-    AgentToolError, AgentToolExecutor, AgentToolResult, AgentWorkspaceDescriptor,
-    DelegationEnvelope, DenyAllAgentApprovals, ScopedTool, ScopedToolView, WorkspaceStrategy,
+    AgentDispatchRecord, AgentFuture, AgentLoopDependencies, AgentLoopInputFactory,
+    AgentProviderAdapter, AgentToolCall, AgentToolError, AgentToolExecutor, AgentToolResult,
+    AgentWorkspaceDescriptor, DelegationEnvelope, DenyAllAgentApprovals, ScopedTool,
+    ScopedToolView, WorkspaceStrategy,
 };
 use crate::ai::path_policy::sensitive_path_reason;
 use crate::ai::tools::StrictJsonSchema;
@@ -908,6 +909,40 @@ pub struct SnapshotToolExecutor {
     diagnostics: Option<Arc<dyn SnapshotDiagnosticAdapter>>,
 }
 
+/// Optional coordination surface layered over immutable snapshot tools.
+///
+/// The snapshot executor remains the authority for repository reads. Editor
+/// integration may add bounded, capability-gated orchestration tools without
+/// teaching the workspace layer about supervisors, provider routes, or UI.
+pub trait AgentToolExtension: Send + Sync {
+    fn scoped_tools(&self, dispatch: &AgentDispatchRecord) -> Result<Vec<ScopedTool>, String>;
+
+    fn execute(
+        &self,
+        call: AgentToolCall,
+    ) -> AgentFuture<'_, Result<AgentToolResult, AgentToolError>>;
+}
+
+#[derive(Clone)]
+struct ExtendedSnapshotToolExecutor {
+    snapshot: SnapshotToolExecutor,
+    extension: Arc<dyn AgentToolExtension>,
+    extension_names: BTreeSet<String>,
+}
+
+impl AgentToolExecutor for ExtendedSnapshotToolExecutor {
+    fn execute(
+        &self,
+        call: AgentToolCall,
+    ) -> AgentFuture<'_, Result<AgentToolResult, AgentToolError>> {
+        if self.extension_names.contains(&call.tool_name) {
+            self.extension.execute(call)
+        } else {
+            self.snapshot.execute(call)
+        }
+    }
+}
+
 impl SnapshotToolExecutor {
     pub fn new(workspace: Arc<ReadOnlyAgentWorkspace>) -> Self {
         Self {
@@ -1131,6 +1166,7 @@ pub struct SnapshotAgentLoopInputFactory {
     provider: Arc<dyn AgentProviderAdapter>,
     approval_broker: Option<Arc<AgentApprovalBroker>>,
     envelopes: Mutex<HashMap<ManifestId, PreparedDelegation>>,
+    tool_extension: Mutex<Option<Arc<dyn AgentToolExtension>>>,
 }
 
 #[derive(Clone)]
@@ -1146,6 +1182,7 @@ impl SnapshotAgentLoopInputFactory {
             provider,
             approval_broker: None,
             envelopes: Mutex::new(HashMap::new()),
+            tool_extension: Mutex::new(None),
         }
     }
 
@@ -1159,7 +1196,23 @@ impl SnapshotAgentLoopInputFactory {
             provider,
             approval_broker: Some(approval_broker),
             envelopes: Mutex::new(HashMap::new()),
+            tool_extension: Mutex::new(None),
         }
+    }
+
+    /// Install the run-owned coordination surface before any child starts.
+    /// Replacing it after provider sessions exist would change authority under
+    /// an active turn, so duplicate installation fails closed.
+    pub fn set_tool_extension(&self, extension: Arc<dyn AgentToolExtension>) -> Result<(), String> {
+        let mut slot = self
+            .tool_extension
+            .lock()
+            .map_err(|_| "agent tool extension registry is poisoned".to_string())?;
+        if slot.is_some() {
+            return Err("agent tool extension is already installed".into());
+        }
+        *slot = Some(extension);
+        Ok(())
     }
 
     /// Bind the complete typed delegation contract before queue execution can
@@ -1227,7 +1280,21 @@ impl AgentLoopInputFactory for SnapshotAgentLoopInputFactory {
         let mut envelope = prepared.envelope;
         envelope.workspace_warnings = warnings.clone();
         let executor = SnapshotToolExecutor::with_adapters(workspace, adapters);
-        let tool_view = executor.scoped_view_with_adapters();
+        let mut tools = executor.scoped_view_with_adapters().tools();
+        let extension = self
+            .tool_extension
+            .lock()
+            .map_err(|_| "agent tool extension registry is poisoned".to_string())?
+            .clone();
+        let extension_names = if let Some(extension) = &extension {
+            let extra = extension.scoped_tools(dispatch)?;
+            let names = extra.iter().map(|tool| tool.name.clone()).collect();
+            tools.extend(extra);
+            names
+        } else {
+            BTreeSet::new()
+        };
+        let tool_view = ScopedToolView::new(tools).map_err(|error| error.to_string())?;
         let workspace = AgentWorkspaceDescriptor {
             assignment: dispatch.handle.workspace.clone(),
             root: None,
@@ -1264,7 +1331,14 @@ impl AgentLoopInputFactory for SnapshotAgentLoopInputFactory {
         Ok(AgentLoopDependencies {
             provider: self.provider.clone(),
             tool_view,
-            tool_executor: Arc::new(executor),
+            tool_executor: match extension {
+                Some(extension) => Arc::new(ExtendedSnapshotToolExecutor {
+                    snapshot: executor,
+                    extension,
+                    extension_names,
+                }),
+                None => Arc::new(executor),
+            },
             approval_client,
             workspace,
             envelope,
@@ -2247,6 +2321,8 @@ mod tests {
         let result = executor
             .execute(AgentToolCall {
                 handle,
+                causing_turn_id: Some(crate::run_log::TurnId::new()),
+                caused_by_event: crate::run_log::EventId::new(),
                 tool_call_id: "tool-1".into(),
                 tool_name: SNAPSHOT_READ_FILE_TOOL.into(),
                 arguments: serde_json::json!({"path": "clean.txt"}),

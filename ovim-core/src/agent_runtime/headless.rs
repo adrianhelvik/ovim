@@ -22,7 +22,12 @@ pub struct AgentControlPlaneSnapshot {
     pub root_agent_id: AgentId,
     pub last_sequence: u64,
     pub agents: Vec<AgentSnapshot>,
+    /// Human decisions that block progress, currently pending approvals.
     pub pending_attention: usize,
+    /// Unconsumed model-to-model mailbox traffic, shown separately from
+    /// decisions so routine handoffs never masquerade as operator blockers.
+    #[serde(default)]
+    pub pending_updates: usize,
 }
 
 impl AgentControlPlaneSnapshot {
@@ -330,8 +335,6 @@ pub(crate) fn build_agent_snapshot(
             .iter()
             .filter(|approval| approval.state == "pending")
             .count();
-        let notifications = usize::from(record.parent_agent_id.as_ref() == Some(&root_agent_id))
-            .saturating_mul(pending_notifications);
         agents.push(AgentSnapshot {
             ancestry: ancestry(&record, &by_id, &root_agent_id)?,
             children: children.remove(&agent_id).unwrap_or_default(),
@@ -361,10 +364,10 @@ pub(crate) fn build_agent_snapshot(
             handoff: handoffs.get(&agent_id).cloned(),
             artifact_handles: artifacts.get(&agent_id).cloned().unwrap_or_default(),
             attention: AgentAttentionSnapshot {
-                required: pending_message_count + pending_approval_count + notifications > 0,
+                required: pending_approval_count > 0,
                 pending_approvals: pending_approval_count,
                 pending_messages: pending_message_count,
-                pending_notifications: notifications,
+                pending_notifications: 0,
             },
             recovery_status: terminal_recovery
                 .get(&agent_id)
@@ -375,11 +378,7 @@ pub(crate) fn build_agent_snapshot(
     }
     let pending_attention = agents
         .iter()
-        .map(|agent| {
-            agent.attention.pending_approvals
-                + agent.attention.pending_messages
-                + agent.attention.pending_notifications
-        })
+        .map(|agent| agent.attention.pending_approvals)
         .sum();
     Ok(AgentControlPlaneSnapshot {
         schema_version: AGENT_CONTROL_SNAPSHOT_VERSION,
@@ -388,6 +387,7 @@ pub(crate) fn build_agent_snapshot(
         last_sequence: events.last().map_or(0, |event| event.sequence),
         agents,
         pending_attention,
+        pending_updates: pending_notifications,
     })
 }
 
@@ -710,6 +710,7 @@ mod tests {
             last_sequence: 0,
             agents,
             pending_attention: 0,
+            pending_updates: 0,
         }
     }
 

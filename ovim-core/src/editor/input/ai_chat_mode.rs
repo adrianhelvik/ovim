@@ -705,7 +705,8 @@ fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             }
             KeyCode::Enter => {
                 if let (Some(chat), Some(agent_id)) = (editor.ai_state.chat.as_mut(), selected) {
-                    chat.selected_agent_id = Some(agent_id);
+                    chat.selected_agent_id = Some(agent_id.clone());
+                    chat.expanded_agent_cards.insert(agent_id);
                 }
             }
             KeyCode::Char(' ') => {

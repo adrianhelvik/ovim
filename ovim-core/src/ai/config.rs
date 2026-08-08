@@ -86,6 +86,8 @@ pub struct AiSubagentBudgetConfig {
     pub max_tool_calls_per_agent: usize,
     pub max_total_provider_events: usize,
     pub max_total_tool_calls: usize,
+    /// Reserved until delegated provider adapters expose trustworthy prices.
+    /// Validated and persisted for config compatibility, but not enforced.
     pub max_estimated_cost: f64,
 }
 
@@ -516,9 +518,9 @@ fn merge_subagent_config(parsed: AiTomlSubagentConfig) -> Result<AiSubagentConfi
     {
         anyhow::bail!("subagent workspace branch_prefix must be a non-empty relative ref prefix");
     }
-    if config.allow_writes || config.allow_network || config.max_depth != 1 {
+    if config.allow_writes || config.allow_network || !(1..=4).contains(&config.max_depth) {
         anyhow::bail!(
-            "the subagent preview supports only read-only, network-disabled children at depth 1"
+            "the subagent preview supports only read-only, network-disabled children at depth 1 through 4"
         );
     }
     validate_allowlist("allowed_models", &config.allowed_models)?;
@@ -777,6 +779,28 @@ mod tests {
         assert!(merge_subagent_config(AiTomlSubagentConfig {
             enabled: Some(true),
             max_concurrent: Some(0),
+            ..AiTomlSubagentConfig::default()
+        })
+        .is_err());
+        assert_eq!(
+            merge_subagent_config(AiTomlSubagentConfig {
+                enabled: Some(true),
+                max_depth: Some(2),
+                ..AiTomlSubagentConfig::default()
+            })
+            .unwrap()
+            .max_depth,
+            2
+        );
+        assert!(merge_subagent_config(AiTomlSubagentConfig {
+            enabled: Some(true),
+            max_depth: Some(5),
+            ..AiTomlSubagentConfig::default()
+        })
+        .is_err());
+        assert!(merge_subagent_config(AiTomlSubagentConfig {
+            enabled: Some(true),
+            max_depth: Some(0),
             ..AiTomlSubagentConfig::default()
         })
         .is_err());

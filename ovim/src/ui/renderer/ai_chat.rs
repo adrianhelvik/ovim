@@ -866,15 +866,39 @@ fn render_message_history(
         let cards = super::agent_tree::project_inline_agent_cards(snapshot, panel_width, &expanded);
         rendered_lines.push((
             Line::from(Span::styled(
-                format!(
-                    "─ delegated agents {}{}",
-                    cards.len(),
-                    if snapshot.pending_attention > 0 {
-                        format!(" · !{}", snapshot.pending_attention)
+                {
+                    let active = snapshot
+                        .agents
+                        .iter()
+                        .filter(|agent| {
+                            matches!(
+                                agent.lifecycle.as_str(),
+                                "created"
+                                    | "queued"
+                                    | "starting"
+                                    | "running"
+                                    | "waiting_for_agent"
+                                    | "waiting_for_tool"
+                                    | "waiting_for_user"
+                            )
+                        })
+                        .count();
+                    let attention = if snapshot.pending_attention > 0 {
+                        format!(" · !{} needs you", snapshot.pending_attention)
                     } else {
                         String::new()
-                    }
-                ),
+                    };
+                    let updates = if snapshot.pending_updates > 0 {
+                        format!(" · {} updates", snapshot.pending_updates)
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "─ agents {} · {} active{attention}{updates}",
+                        cards.len(),
+                        active
+                    )
+                },
                 Style::default()
                     .fg(if snapshot.pending_attention > 0 {
                         Color::Rgb(255, 191, 77)
@@ -2009,7 +2033,12 @@ fn render_text_input(
         .iter()
         .map(|image| image.file_name())
         .collect::<Vec<_>>();
-    let top = if image_names.is_empty() {
+    let composer_title = editor.ai_agent_composer_title();
+    let top = if let Some(title) = composer_title {
+        let title = truncate_with_ellipsis(&title, w.saturating_sub(4));
+        let fill = w.saturating_sub(2 + text_display_width(&title));
+        format!("╭{title}{}╮", "─".repeat(fill))
+    } else if image_names.is_empty() {
         format!("╭{}╮", "─".repeat(w.saturating_sub(2)))
     } else {
         let title = truncate_with_ellipsis(

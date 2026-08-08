@@ -274,6 +274,16 @@ impl Editor {
                 self.ai_state.config.default_profile = dp.clone();
                 self.ai_state.active_profile = dp;
             }
+            if let Err(error) = self
+                .ai_state
+                .subagents
+                .reconfigure_if_idle(&self.ai_state.config)
+            {
+                crate::log_warn!(
+                    "agent_runtime",
+                    "could not refresh delegated-agent config: {error}"
+                );
+            }
         }
     }
 

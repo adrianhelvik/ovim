@@ -9,7 +9,7 @@ use super::{
     AgentProviderFollowup, AgentProviderSession, AgentProviderStart, AgentToolExecutor,
     AgentToolResult, AgentWorkspaceDescriptor, DispatchError, DispatchHandle, DispatchRequest,
     DispatchState, FollowupAgentHandle, FollowupAgentRequest, HandoffStatus, HandoffValidator,
-    MailboxError, RootAgentBudget, ScopedToolView, SubagentModelCatalog,
+    MailboxError, MailboxWaitOutcome, RootAgentBudget, ScopedToolView, SubagentModelCatalog,
 };
 use crate::run_log::{
     AgentId, EventEnvelope, EventId, EventKind, MailboxNotificationKind, RunEventSink, RunId,
@@ -360,7 +360,13 @@ impl AgentSupervisor {
             .parent_agent_id
             .as_ref()
             .unwrap_or(&self.inner.root_agent_id);
-        if expected_parent != &request.sender_agent_id {
+        // The direct parent owns model-to-model steering. The durable root is
+        // also the human/operator authority and may steer any visible
+        // descendant from the agent inspector without impersonating the
+        // intermediate parent.
+        if expected_parent != &request.sender_agent_id
+            && self.inner.root_agent_id != request.sender_agent_id
+        {
             return Err(AgentSupervisorError::MessageSenderMismatch {
                 recipient: request.recipient_agent_id,
                 sender: request.sender_agent_id,
@@ -530,6 +536,35 @@ impl AgentSupervisor {
 
     pub async fn start_recovered(&self) -> Result<(), AgentSupervisorError> {
         self.drain_ready().await
+    }
+
+    /// Wait for a delegated child's mailbox without consuming one of the
+    /// provider-concurrency slots needed by that child. The parent remains a
+    /// live task and keeps its original permit; a temporary permit is added
+    /// while it is semantically waiting, then retired before the parent can
+    /// resume its provider loop.
+    pub async fn wait_for_agent_updates(
+        &self,
+        handle: &DispatchHandle,
+        timeout: Duration,
+    ) -> Result<MailboxWaitOutcome, AgentSupervisorError> {
+        self.inner
+            .scheduler
+            .lock()
+            .map_err(|_| poisoned())?
+            .transition(
+                handle,
+                DispatchState::WaitingForAgent,
+                Some("waiting for delegated-agent updates".into()),
+            )?;
+        let yielded = YieldedConcurrencySlot::new(self.inner.semaphore.clone());
+        if let Err(error) = self.drain_ready().await {
+            yielded.restore().await;
+            return Err(error);
+        }
+        let outcome = self.mailbox(handle.agent_id.clone())?.wait(timeout).await;
+        yielded.restore().await;
+        outcome.map_err(AgentSupervisorError::from)
     }
 
     async fn drain_ready(&self) -> Result<(), AgentSupervisorError> {
@@ -898,7 +933,7 @@ impl AgentSupervisor {
             let depth = if parent == &self.inner.root_agent_id {
                 1
             } else {
-                agent_depth(records, parent)? + 1
+                agent_depth(records, parent, &self.inner.root_agent_id)? + 1
             };
             if depth > self.inner.config.max_depth {
                 return Err(AgentSupervisorError::DepthLimit { depth });
@@ -1076,6 +1111,42 @@ impl AgentProviderSession for MessageDeliveringSession {
     }
 }
 
+struct YieldedConcurrencySlot {
+    semaphore: Arc<Semaphore>,
+    restored: bool,
+}
+
+impl YieldedConcurrencySlot {
+    fn new(semaphore: Arc<Semaphore>) -> Self {
+        semaphore.add_permits(1);
+        Self {
+            semaphore,
+            restored: false,
+        }
+    }
+
+    async fn restore(mut self) {
+        if let Ok(permit) = self.semaphore.clone().acquire_owned().await {
+            permit.forget();
+        }
+        self.restored = true;
+    }
+}
+
+impl Drop for YieldedConcurrencySlot {
+    fn drop(&mut self) {
+        if self.restored {
+            return;
+        }
+        let semaphore = self.semaphore.clone();
+        tokio::spawn(async move {
+            if let Ok(permit) = semaphore.acquire_owned().await {
+                permit.forget();
+            }
+        });
+    }
+}
+
 fn validate_config(config: &AgentSupervisorConfig) -> Result<(), AgentSupervisorError> {
     if config.max_concurrent == 0
         || config.max_queued == 0
@@ -1094,27 +1165,33 @@ fn validate_config(config: &AgentSupervisorConfig) -> Result<(), AgentSupervisor
 fn agent_depth(
     records: &[AgentDispatchRecord],
     agent_id: &AgentId,
+    root_agent_id: &AgentId,
 ) -> Result<usize, AgentSupervisorError> {
     let by_id = records
         .iter()
         .map(|record| (&record.handle.agent_id, record))
         .collect::<BTreeMap<_, _>>();
-    let mut current = Some(agent_id);
+    let mut current = agent_id;
     let mut seen = BTreeSet::new();
     let mut depth = 0;
-    while let Some(agent_id) = current {
-        if !seen.insert(agent_id.clone()) {
+    while current != root_agent_id {
+        if !seen.insert(current.clone()) {
             return Err(AgentSupervisorError::InvalidHistory(
                 "agent ancestry contains a cycle".into(),
             ));
         }
         let record = by_id
-            .get(agent_id)
-            .ok_or_else(|| AgentSupervisorError::UnknownAgent(agent_id.clone()))?;
-        current = record.parent_agent_id.as_ref();
-        if current.is_some() {
-            depth += 1;
-        }
+            .get(current)
+            .ok_or_else(|| AgentSupervisorError::UnknownAgent(current.clone()))?;
+        let Some(parent) = record.parent_agent_id.as_ref() else {
+            // Transport-neutral scheduler users may allocate a top-level
+            // agent without recording the external root as its parent. Editor
+            // runs do record that root explicitly; both shapes are durable and
+            // the next descendant is one level below either parent.
+            return Ok(depth);
+        };
+        current = parent;
+        depth += 1;
     }
     Ok(depth)
 }
@@ -1430,6 +1507,63 @@ mod tests {
         assert_eq!(
             supervisor.mailbox(root).unwrap().pending().unwrap().len(),
             3
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn waiting_parent_yields_the_only_concurrency_slot_to_its_child() {
+        let sink = Arc::new(InMemoryRunEventSink::new());
+        let factory = Arc::new(FakeInputFactory::new(Duration::from_millis(100)));
+        let config = AgentSupervisorConfig {
+            max_concurrent: 1,
+            max_depth: 2,
+            ..AgentSupervisorConfig::default()
+        };
+        let (supervisor, run_id, _root) = supervisor_with(sink.clone(), factory, config);
+        let parent = supervisor
+            .dispatch_nonblocking(request("slow parent"))
+            .unwrap();
+        while supervisor.state(&parent.agent_id).unwrap() != Some(DispatchState::Running) {
+            tokio::task::yield_now().await;
+        }
+
+        let turn_id = TurnId::new();
+        let event_id = sink
+            .append(NewRunEvent {
+                run_id: run_id.clone(),
+                caused_by: None,
+                operation_id: None,
+                provider_call_id: None,
+                actor: EventActor::Agent(parent.agent_id.clone()),
+                agent_id: Some(parent.agent_id.clone()),
+                turn_id: Some(turn_id.clone()),
+                workspace_id: Some(parent.workspace.workspace_id.clone()),
+                branch_id: None,
+                kind: EventKind::Message(MessageEvent {
+                    role: MessageRole::Agent,
+                    content: "delegate child".into(),
+                }),
+            })
+            .unwrap()
+            .event_id;
+        let mut child_request = request("fast child");
+        child_request.parent_agent_id = Some(parent.agent_id.clone());
+        child_request.causing_turn_id = Some(turn_id);
+        child_request.caused_by_event = Some(event_id);
+        let child = supervisor.dispatch_nonblocking(child_request).unwrap();
+        assert_eq!(
+            supervisor.state(&child.agent_id).unwrap(),
+            Some(DispatchState::Queued)
+        );
+
+        let outcome = supervisor
+            .wait_for_agent_updates(&parent, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert!(matches!(outcome, MailboxWaitOutcome::Updates(ref items) if !items.is_empty()));
+        assert_eq!(
+            supervisor.state(&child.agent_id).unwrap(),
+            Some(DispatchState::Completed)
         );
     }
 

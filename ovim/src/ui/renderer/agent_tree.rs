@@ -40,6 +40,10 @@ pub(crate) struct AgentCardView {
     pub depth: usize,
     pub tone: AgentTone,
     pub attention_priority: u8,
+    pub can_message: bool,
+    pub can_followup: bool,
+    pub can_interrupt: bool,
+    pub pending_approval: bool,
     pub lines: Vec<String>,
 }
 
@@ -96,19 +100,37 @@ pub(crate) fn project_agent_tree(
             }),
         };
     };
-    let attention = if snapshot.pending_attention > 0 {
-        format!(" !{}", snapshot.pending_attention)
+    let active = snapshot
+        .agents
+        .iter()
+        .filter(|agent| is_active(agent))
+        .count();
+    let mut header = if snapshot.pending_attention > 0 {
+        format!(
+            " Agents {} · {active} active · !{} needs you",
+            snapshot.agents.len(),
+            snapshot.pending_attention
+        )
+    } else if active > 0 {
+        format!(" Agents {} · {active} active", snapshot.agents.len())
     } else {
-        String::new()
+        format!(" Agents {} · idle", snapshot.agents.len())
     };
-    let header = fit(
-        &format!(" Agents {}{attention}", snapshot.agents.len()),
-        width.saturating_sub(1),
-    );
+    if snapshot.pending_updates > 0 {
+        header.push_str(&format!(" · {} updates", snapshot.pending_updates));
+    }
+    let header = fit(&header, width.saturating_sub(1));
     let cards = snapshot
         .hierarchy()
         .into_iter()
-        .map(|agent| project_agent_card(agent, width, expanded.contains(agent.agent_id.as_str())))
+        .map(|agent| {
+            let expanded = expanded.contains(agent.agent_id.as_str());
+            let mut card = project_agent_card(agent, width, expanded);
+            if !expanded && !is_active(agent) && card.attention_priority == 0 {
+                card.lines.truncate(1);
+            }
+            card
+        })
         .collect();
     AgentTreeView {
         header,
@@ -128,7 +150,14 @@ pub(crate) fn project_inline_agent_cards(
     let mut cards = snapshot
         .hierarchy()
         .into_iter()
-        .map(|agent| project_agent_card(agent, width, expanded.contains(agent.agent_id.as_str())))
+        .map(|agent| {
+            let expanded = expanded.contains(agent.agent_id.as_str());
+            let mut card = project_agent_card(agent, width, expanded);
+            if !expanded && !is_active(agent) && card.attention_priority == 0 {
+                card.lines.truncate(1);
+            }
+            card
+        })
         .collect::<Vec<_>>();
     // Pending decisions are the only safe reason to reorder the compact chat
     // cards. Stable hierarchy order is retained within each priority tier.
@@ -191,10 +220,6 @@ fn project_agent_card(agent: &AgentSnapshot, width: usize, expanded: bool) -> Ag
     let usable = width.saturating_sub(1).max(1);
     let attention_priority = if agent.attention.pending_approvals > 0 {
         3
-    } else if agent.attention.pending_messages > 0 {
-        2
-    } else if agent.attention.required {
-        1
     } else {
         0
     };
@@ -212,9 +237,22 @@ fn project_agent_card(agent: &AgentSnapshot, width: usize, expanded: bool) -> Ag
     } else {
         ""
     };
+    let children = if agent.children.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " · {} {}",
+            agent.children.len(),
+            if agent.children.len() == 1 {
+                "child"
+            } else {
+                "children"
+            }
+        )
+    };
     let mut lines = vec![fit(
         &format!(
-            "{connector}{disclosure} {} {} · {}{attention}{recovery}",
+            "{connector}{disclosure} {} {} · {}{children}{attention}{recovery}",
             lifecycle_icon(agent),
             agent.task_name,
             lifecycle_label(agent)
@@ -222,15 +260,24 @@ fn project_agent_card(agent: &AgentSnapshot, width: usize, expanded: bool) -> Ag
         usable,
     )];
 
-    let compact = format!(
-        "{}{} · {fallback}{}/{} · {} · {}",
-        "  ".repeat(agent.ancestry.len().saturating_add(1)),
-        agent.role,
-        agent.resolved_route.model,
-        agent.resolved_route.reasoning_effort,
-        activity(agent),
-        compact_usage(agent)
-    );
+    let compact = if width >= 52 {
+        format!(
+            "{}{} · {} · {fallback}{}/{} · {}",
+            "  ".repeat(agent.ancestry.len().saturating_add(1)),
+            activity(agent),
+            reported_elapsed(agent),
+            agent.resolved_route.model,
+            agent.resolved_route.reasoning_effort,
+            compact_usage(agent)
+        )
+    } else {
+        format!(
+            "{}{} · {}",
+            "  ".repeat(agent.ancestry.len().saturating_add(1)),
+            activity(agent),
+            reported_elapsed(agent)
+        )
+    };
     if width >= 28 || expanded {
         lines.push(fit(&compact, usable));
     }
@@ -249,8 +296,12 @@ fn project_agent_card(agent: &AgentSnapshot, width: usize, expanded: bool) -> Ag
         };
         lines.extend([
             fit(
+                &format!("{indent}objective {}", agent.objective.replace('\n', " ")),
+                usable,
+            ),
+            fit(
                 &format!(
-                    "{indent}depth {} · ancestry {ancestry} · gen {}",
+                    "{indent}owner {ancestry} · depth {} · generation {}",
                     agent.ancestry.len(),
                     agent.turn_generation
                 ),
@@ -258,34 +309,26 @@ fn project_agent_card(agent: &AgentSnapshot, width: usize, expanded: bool) -> Ag
             ),
             fit(
                 &format!(
-                    "{indent}requested {}/{} · {}",
-                    agent.requested_route.catalog_model_id,
-                    agent.requested_route.reasoning_effort,
-                    agent.requested_route.fallback_policy
-                ),
-                usable,
-            ),
-            fit(
-                &format!(
-                    "{indent}effective {}/{} · {}{}",
+                    "{indent}route {fallback}{}/{} · {} · {}{}",
                     agent.resolved_route.catalog_model_id,
                     agent.resolved_route.reasoning_effort,
+                    agent.role,
                     agent.resolved_route.resolution,
                     agent
                         .resolved_route
                         .fallback_reason
                         .as_deref()
                         .map(|reason| format!(": {reason}"))
-                        .unwrap_or_default()
+                        .unwrap_or_default(),
                 ),
                 usable,
             ),
             fit(
-                &format!(
-                    "{indent}elapsed {} · {}",
-                    reported_elapsed(agent),
-                    expanded_usage(&agent.usage)
-                ),
+                &format!("{indent}elapsed {}", reported_elapsed(agent)),
+                usable,
+            ),
+            fit(
+                &format!("{indent}usage {}", expanded_usage(&agent.usage)),
                 usable,
             ),
             fit(
@@ -311,10 +354,23 @@ fn project_agent_card(agent: &AgentSnapshot, width: usize, expanded: bool) -> Ag
                 .unwrap_or_default();
             lines.push(fit(
                 &format!(
-                    "{indent}! {} approval · {} message · {} notice{pending_tool}",
-                    agent.attention.pending_approvals,
-                    agent.attention.pending_messages,
-                    agent.attention.pending_notifications
+                    "{indent}! {} approval{pending_tool}",
+                    agent.attention.pending_approvals
+                ),
+                usable,
+            ));
+        }
+        if let Some(message) = agent.messages.last() {
+            let direction = if message.recipient_agent_id == agent.agent_id {
+                "steer in"
+            } else {
+                "steer out"
+            };
+            lines.push(fit(
+                &format!(
+                    "{indent}{direction} · {} · {}",
+                    message.state,
+                    message.content.replace('\n', " ")
                 ),
                 usable,
             ));
@@ -355,6 +411,17 @@ fn project_agent_card(agent: &AgentSnapshot, width: usize, expanded: bool) -> Ag
         depth: agent.ancestry.len(),
         tone,
         attention_priority,
+        can_message: is_steerable(agent),
+        // Follow-up preserves the original direct-parent contract. The root
+        // UI may resume root-owned children; nested parents decide whether to
+        // reopen their own completed descendants.
+        can_followup: agent.ancestry.len() == 1
+            && matches!(agent.lifecycle.as_str(), "completed" | "interrupted"),
+        can_interrupt: !matches!(
+            agent.lifecycle.as_str(),
+            "completed" | "interrupted" | "failed"
+        ),
+        pending_approval: agent.attention.pending_approvals > 0,
         lines,
     }
 }
@@ -388,7 +455,7 @@ pub(crate) fn render_agent_tree_panel(
     let footer_height = if area.height >= 8 {
         2
     } else {
-        u16::from(area.height >= 6)
+        u16::from(area.height >= 4)
     };
     let content_height = area.height.saturating_sub(1 + footer_height) as usize;
     let flat = flatten_cards(&view.cards);
@@ -396,7 +463,15 @@ pub(crate) fn render_agent_tree_panel(
         .iter()
         .position(|line| line.card_index == state.cursor)
         .unwrap_or(0);
-    let scroll = selected_line.saturating_sub(content_height.saturating_sub(1));
+    let selected_has_detail = view
+        .cards
+        .get(state.cursor)
+        .is_some_and(|card| card.lines.len() > 1);
+    let scroll = if selected_has_detail {
+        selected_line
+    } else {
+        selected_line.saturating_sub(content_height.saturating_sub(1))
+    };
     if let Some(empty) = &view.empty_message {
         render_text_row(frame, area, 1, empty, AgentTone::Quiet, false, false);
     } else {
@@ -417,26 +492,47 @@ pub(crate) fn render_agent_tree_panel(
     }
 
     if footer_height > 0 {
-        let hint = if area.width >= 30 {
-            " ↵ select · f/w follow · Space details"
+        let selected_card = view.cards.get(state.cursor);
+        let mut actions = Vec::new();
+        if selected_card.is_some_and(|card| card.can_message) {
+            actions.push("m steer");
+        }
+        if selected_card.is_some_and(|card| card.can_followup) {
+            actions.push("r resume");
+        }
+        if selected_card.is_some_and(|card| card.can_interrupt) {
+            actions.push("i stop");
+        }
+        if selected_card.is_some_and(|card| card.pending_approval) {
+            actions.push("a/d decide");
+        }
+        let hint = if footer_height == 1 && !actions.is_empty() {
+            format!(" {} · Space · q close", actions.join(" · "))
+        } else if area.width >= 30 {
+            " ↵ inspect · Space details · f follow".into()
         } else {
-            " ↵ f Space · Tab"
+            " ↵ inspect · Space · Tab".into()
         };
         render_text_row(
             frame,
             area,
             area.height - footer_height,
-            hint,
+            &hint,
             AgentTone::Quiet,
             false,
             false,
         );
         if footer_height > 1 {
+            let actions = if actions.is_empty() {
+                " no actions · q close".to_string()
+            } else {
+                format!(" {} · q close", actions.join(" · "))
+            };
             render_text_row(
                 frame,
                 area,
                 area.height - 1,
-                " m message · r follow-up · i interrupt · a/d approval",
+                &actions,
                 AgentTone::Quiet,
                 false,
                 false,
@@ -534,6 +630,26 @@ fn tone(agent: &AgentSnapshot, attention_priority: u8) -> AgentTone {
     }
 }
 
+fn is_active(agent: &AgentSnapshot) -> bool {
+    matches!(
+        agent.lifecycle.as_str(),
+        "created"
+            | "queued"
+            | "starting"
+            | "running"
+            | "waiting_for_agent"
+            | "waiting_for_tool"
+            | "waiting_for_user"
+    )
+}
+
+fn is_steerable(agent: &AgentSnapshot) -> bool {
+    matches!(
+        agent.lifecycle.as_str(),
+        "starting" | "running" | "waiting_for_agent" | "waiting_for_tool" | "waiting_for_user"
+    )
+}
+
 fn tone_color(tone: AgentTone) -> Color {
     match tone {
         AgentTone::Quiet => TEXT_DIM,
@@ -549,9 +665,13 @@ fn lifecycle_icon(agent: &AgentSnapshot) -> &'static str {
     if agent.recovery_status != "none" {
         return "↻";
     }
+    if is_waiting_on_child(agent) {
+        return "◇";
+    }
     match agent.lifecycle.as_str() {
         "starting" | "running" => "▶",
-        "waiting_for_agent" | "waiting_for_tool" => "◆",
+        "waiting_for_agent" => "◇",
+        "waiting_for_tool" => "◆",
         "waiting_for_user" => "!",
         "completed" => "✓",
         "failed" => "×",
@@ -563,24 +683,47 @@ fn lifecycle_icon(agent: &AgentSnapshot) -> &'static str {
 fn lifecycle_label(agent: &AgentSnapshot) -> String {
     if agent.recovery_status != "none" {
         "interrupted/restart".into()
+    } else if is_waiting_on_child(agent) {
+        "waiting on child".into()
     } else {
-        agent.lifecycle.replace('_', " ")
+        match agent.lifecycle.as_str() {
+            "waiting_for_agent" => "waiting on child".into(),
+            "waiting_for_tool" => "using tool".into(),
+            "waiting_for_user" => "needs you".into(),
+            other => other.replace('_', " "),
+        }
     }
 }
 
 fn activity(agent: &AgentSnapshot) -> String {
+    if is_waiting_on_child(agent) {
+        return "waiting for child updates".into();
+    }
     match &agent.progress {
-        AgentReported::Reported(progress) => progress
-            .current_tool
-            .clone()
-            .or_else(|| progress.detail.clone())
-            .unwrap_or_else(|| activity_name(&progress.activity).into()),
+        AgentReported::Reported(progress) => {
+            match (progress.current_tool.as_deref(), progress.detail.as_deref()) {
+                (Some(tool), Some(detail)) if detail != tool => format!("{tool} · {detail}"),
+                (Some(tool), _) => tool.into(),
+                (_, Some(detail)) => detail.into(),
+                _ => activity_name(&progress.activity).into(),
+            }
+        }
         AgentReported::NotReported => match agent.lifecycle.as_str() {
             "waiting_for_user" => "approval".into(),
             "waiting_for_agent" => "waiting".into(),
             _ => "activity n/r".into(),
         },
     }
+}
+
+fn is_waiting_on_child(agent: &AgentSnapshot) -> bool {
+    agent.lifecycle == "waiting_for_agent"
+        || (agent.lifecycle == "waiting_for_tool"
+            && matches!(
+                &agent.progress,
+                AgentReported::Reported(progress)
+                    if progress.current_tool.as_deref() == Some("wait_agent")
+            ))
 }
 
 fn activity_name(activity: &AgentProgressActivity) -> &'static str {
@@ -840,6 +983,73 @@ mod tests {
     }
 
     #[test]
+    fn overview_leads_with_active_work_and_activity_detail() {
+        let mut waiting = agent(
+            "agt_waiting",
+            "agt_root",
+            "coordinate checks",
+            "waiting_for_tool",
+        );
+        waiting["children"] = json!(["agt_nested"]);
+        waiting["progress"]["value"]["current_tool"] = json!("wait_agent");
+        waiting["progress"]["value"]["detail"] = json!("waiting for tool wait_agent");
+        let nested = agent("agt_nested", "agt_waiting", "inspect parser", "running");
+        let mut snapshot = snapshot(vec![waiting, nested]);
+        snapshot.agents[1].ancestry = vec![
+            ovim_core::run_log::AgentId::parse("agt_root").unwrap(),
+            ovim_core::run_log::AgentId::parse("agt_waiting").unwrap(),
+        ];
+
+        let view = project_agent_tree(Some(&snapshot), 96, &HashSet::new(), true);
+        assert_eq!(view.header, " Agents 2 · 2 active");
+        assert!(view.cards[0].lines[0].contains("waiting on child · 1 child"));
+        assert!(view.cards[0].lines[1].contains("waiting for child updates"));
+        assert!(view.cards[1].lines[1].contains("read_file · src/lib.rs"));
+    }
+
+    #[test]
+    fn completed_agents_collapse_to_one_quiet_inline_row() {
+        let snapshot = snapshot(vec![agent(
+            "agt_done",
+            "agt_root",
+            "finished review",
+            "completed",
+        )]);
+        let cards = project_inline_agent_cards(&snapshot, 72, &HashSet::new());
+        assert_eq!(cards[0].lines.len(), 1);
+        assert!(cards[0].can_followup);
+        assert!(!cards[0].can_message);
+        assert!(!cards[0].can_interrupt);
+    }
+
+    #[test]
+    fn queued_agents_count_as_active_but_do_not_advertise_steering() {
+        let snapshot = snapshot(vec![agent(
+            "agt_queued",
+            "agt_root",
+            "await scheduler",
+            "queued",
+        )]);
+        let view = project_agent_tree(Some(&snapshot), 72, &HashSet::new(), true);
+        assert_eq!(view.header, " Agents 1 · 1 active");
+        assert!(!view.cards[0].can_message);
+        assert!(view.cards[0].can_interrupt);
+    }
+
+    #[test]
+    fn compact_panel_keeps_selected_controls_visible() {
+        let snapshot = snapshot(vec![agent(
+            "agt_live",
+            "agt_root",
+            "inspect parser",
+            "running",
+        )]);
+        let text = buffer_text(Some(&snapshot), 48, 5);
+        assert!(text.contains("m steer"));
+        assert!(text.contains("i stop"));
+    }
+
+    #[test]
     fn unknown_usage_and_configured_fallback_are_explicit() {
         let mut item = agent("agt_unknown", "agt_root", "route check", "running");
         item["usage"] = json!({"status": "not_reported"});
@@ -891,7 +1101,7 @@ mod tests {
             "resolution_reason": null
         }]);
         let mut snapshot = snapshot(vec![quiet, approval]);
-        snapshot.pending_attention = 3;
+        snapshot.pending_attention = 2;
         let expanded = HashSet::from(["agt_approval".to_string()]);
 
         let cards = project_inline_agent_cards(&snapshot, 80, &expanded);

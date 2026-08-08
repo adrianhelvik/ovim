@@ -170,13 +170,19 @@ directories and executable bundled scripts are not loaded.
 
 ## Read-only delegated agents (preview)
 
-Ovim can dispatch bounded explorer and reviewer children from an active AI
-chat. The feature is disabled by default and is currently configured only in
-legacy `ai.toml`. When enabled, the root model receives six controls:
+Ovim can dispatch bounded explorer and reviewer trees from an active AI chat.
+The feature is disabled by default and is currently configured only in legacy
+`ai.toml`. When enabled, the root model receives six controls:
 `spawn_agent`, `list_agents`, `wait_agent`, `send_message`,
-`followup_agent`, and `interrupt_agent`. They appear
-only while the editor owns an active durable root turn in a Git repository;
-they are not ordinary profile tools and are never exposed to a child.
+`followup_agent`, and `interrupt_agent`. The model-facing controls appear only
+while the editor owns an active durable root turn in a Git repository; they are
+not ordinary profile tools. Human controls in the agent tree remain available
+through the durable chat binding while descendants are live, even after that
+model turn ends, and record a user-authored causal event. A delegated parent receives the same
+strict controls only when `max_depth` leaves room for a descendant. Controls
+disappear at the configured depth ceiling, and every descendant remains under
+the same run-wide concurrency, count, timeout, provider-event, and tool-call
+ceilings.
 
 Every spawn must name both a catalog model and a reasoning effort. Ovim builds
 those choices from configured profiles and rejects an unknown or unsupported
@@ -192,7 +198,7 @@ max_concurrent = 3
 max_queued = 8
 max_children_per_parent = 4
 max_total_per_run = 8
-max_depth = 1
+max_depth = 2
 default_timeout_seconds = 600
 allow_writes = false
 allow_network = false
@@ -205,13 +211,22 @@ max_provider_events_per_agent = 256
 max_tool_calls_per_agent = 48
 max_total_provider_events = 1024
 max_total_tool_calls = 160
+# Reserved for provider metering; not enforced by this preview.
 max_estimated_cost = 5.0
 ```
 
+The current delegated provider adapter does not report trustworthy token or
+cost totals, so `max_estimated_cost` is validated and retained for config
+compatibility but is not a safety ceiling. Usage displays `n/r` instead of
+inventing a cost. Bound spend with the enforced agent-count, event, tool-call,
+and timeout limits and with provider-side account limits.
+
 An empty model or effort allowlist accepts every otherwise eligible catalog
 choice; the live tool schema still advertises only exact supported pairs. The
-preview rejects writes, network access, depth other than one, empty limits, and
-duplicate allowlist entries. Changing subagent policy or provider profiles
+preview rejects writes, network access, depth outside one through four, empty limits, and
+duplicate allowlist entries. The default depth remains one; use two or more
+only when delegated parents should be able to divide independent work.
+Changing subagent policy or provider profiles
 while Ovim is running requires an editor restart instead of silently changing
 authority beneath queued children.
 
@@ -219,8 +234,10 @@ Children see an immutable content-addressed snapshot captured at dispatch,
 including authoritative unsaved editor buffers. Later edits in the root
 worktree cannot change what an already-running child reads. A child receives
 only bounded snapshot read, list, search, symbol, diagnostic, and
-unsaved-buffer tools—no shell, network, navigation, mutation, approval, or
-further dispatch capability. Symbol and diagnostic indexes are copied at
+unsaved-buffer tools—no shell, network, navigation, mutation, or approval.
+A descendant inherits the same immutable content through a fresh durable
+manifest identity, so recursive delegation cannot observe newer editor state.
+Dispatch controls disappear at the configured depth. Symbol and diagnostic indexes are copied at
 dispatch and remain bound to that manifest; diagnostics without an exact
 matching analyzed buffer revision are omitted rather than shown as current.
 
@@ -231,12 +248,16 @@ parks only that provider tool call, not the editor event loop, and completes on
 a validated handoff, timeout, or new user steering. Delivered mailbox entries
 are acknowledged durably after the wait result wins. `interrupt_agent`
 interrupts the named child hierarchy while preserving partial run history.
+While a delegated parent waits, it yields its provider-concurrency slot so a
+queued descendant can run; the parent reacquires capacity before resuming.
 
-`send_message` queues a bounded parent-authored message only to a live child.
+`send_message` queues a bounded parent-authored steer only to a live child.
 It does not start a new turn. Ovim records the message before notifying the
 child, claims delivery by durable event ID, and presents it to the provider
 only between provider/tool operations. Queued, completed, and otherwise idle
-targets reject the message explicitly. A restart never blindly repeats an
+targets reject the message explicitly. The human/root authority can steer any
+visible live descendant from the agent tree; delegated models can steer their
+own direct children. A restart never blindly repeats an
 ambiguous provider delivery; the message remains visible as rejected instead.
 
 `followup_agent` starts a fresh turn on a completed or interrupted child while
@@ -249,11 +270,14 @@ handoff. Follow-up cannot reroute the child or widen its authority.
 
 ### Inspect and control delegated agents
 
-Each delegated child appears as a collapsed inline card at the live edge of AI
-chat. The compact card shows its task, lifecycle, effective model and effort,
-current activity, elapsed time, and reported usage. Attention-required cards
-sort first. Expand a card from the agent tree to inspect ancestry and
-generation, requested versus effective routing (including fallback reason),
+Each delegated child appears as a compact inline activity row at the live edge
+of AI chat. Active rows show the current tool/detail and elapsed time; completed
+rows collapse to one line so finished work does not crowd the parent chat. The
+section header summarizes active work and decisions needing the human.
+Unread agent mailbox updates are counted separately; only pending approvals use
+the `needs you` label.
+Attention-required rows sort first. Expand a card from the agent tree to inspect
+its objective, ownership path, generation, requested versus effective routing (including fallback reason),
 workspace strategy and ownership, pending approvals/messages, and the bounded
 handoff summary with evidence and artifact counts. Missing provider metrics are
 shown as `not reported`/`n/r`, never estimated as zero.
@@ -265,13 +289,14 @@ collapsed and remains compact on narrow terminals.
 
 Agent-tree keys:
 
-- `j`/`k` or Down/Up moves through the hierarchy; `Enter` selects a child.
+- `j`/`k` or Down/Up moves through the hierarchy; `Enter` selects and opens a child.
 - `Space` expands or collapses that child's detail in both the tree and chat.
 - `f` or `w` follows/unfollows the child. Following is nonblocking and adds
   `task · model · effort · state` to the status line; the model-facing
   `wait_agent` control remains available when the root actually needs to wait.
-- `m` opens the existing composer for a message to a live child. `r` opens it
-  for a follow-up objective on a completed or interrupted child. Enter submits;
+- `m` opens the existing composer for a steer to a live child. The composer
+  names the exact target. `r` opens it for a new objective on a completed or
+  interrupted child. Enter submits;
   Esc cancels and restores the root draft exactly.
 - `i` interrupts the selected child through the same durable control path used
   by the headless API and parent model.
