@@ -194,6 +194,55 @@ pub struct ProviderModelMetadata {
     pub available: bool,
 }
 
+/// Built-in capability metadata for Ovim's first-party direct-Codex routes.
+///
+/// Keep model capability knowledge here rather than smuggling one profile's
+/// default effort into the delegated-agent contract.
+pub fn builtin_subagent_model_metadata(config: &AiConfig) -> Vec<ProviderModelMetadata> {
+    config
+        .profiles
+        .values()
+        .filter_map(|profile| {
+            if profile.provider != AiProviderKind::Codex {
+                return None;
+            }
+            let (efforts, default) = match profile.model.as_str() {
+                "gpt-5.6-luna" => (vec![ReasoningEffort::max()], ReasoningEffort::max()),
+                "gpt-5.6-terra" => (
+                    vec![
+                        ReasoningEffort::low(),
+                        ReasoningEffort::medium(),
+                        ReasoningEffort::high(),
+                        ReasoningEffort::xhigh(),
+                        ReasoningEffort::max(),
+                    ],
+                    ReasoningEffort::medium(),
+                ),
+                "gpt-5.6-sol" => (
+                    vec![
+                        ReasoningEffort::low(),
+                        ReasoningEffort::medium(),
+                        ReasoningEffort::high(),
+                        ReasoningEffort::xhigh(),
+                        ReasoningEffort::max(),
+                    ],
+                    ReasoningEffort::high(),
+                ),
+                _ => return None,
+            };
+            Some(ProviderModelMetadata {
+                profile_name: profile.name.clone(),
+                provider: profile.provider,
+                model: profile.model.clone(),
+                supported_reasoning_efforts: efforts.into_iter().collect(),
+                default_reasoning_effort: default,
+                supports_tools: true,
+                available: true,
+            })
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug)]
 pub struct SubagentModelCatalog {
     generation: String,
@@ -267,26 +316,6 @@ impl SubagentModelCatalog {
                     )
                 };
             let id = catalog_model_id(profile_name, &profile.model);
-            if !config.subagents.allowed_models.is_empty()
-                && !config.subagents.allowed_models.contains(&id)
-            {
-                continue;
-            }
-            let supported_reasoning_efforts =
-                if config.subagents.allowed_reasoning_efforts.is_empty() {
-                    supported_reasoning_efforts
-                } else {
-                    supported_reasoning_efforts
-                        .into_iter()
-                        .filter(|effort| {
-                            config
-                                .subagents
-                                .allowed_reasoning_efforts
-                                .iter()
-                                .any(|allowed| allowed == effort.as_str())
-                        })
-                        .collect()
-                };
             if supported_reasoning_efforts.is_empty() {
                 continue;
             }
@@ -714,6 +743,40 @@ mod tests {
             default_reasoning_effort: efforts[0].clone(),
             supports_tools: true,
             available,
+        }
+    }
+
+    #[test]
+    fn builtin_codex_routes_encode_effort_guidance() {
+        let config = config_with_profiles(vec![
+            ("luna", AiProviderKind::Codex, "gpt-5.6-luna", Some("low")),
+            ("terra", AiProviderKind::Codex, "gpt-5.6-terra", Some("low")),
+            ("sol", AiProviderKind::Codex, "gpt-5.6-sol", Some("low")),
+        ]);
+        let metadata = builtin_subagent_model_metadata(&config);
+        let catalog = SubagentModelCatalog::from_config_with_metadata(&config, metadata).unwrap();
+
+        let luna = catalog
+            .entry(&catalog_model_id("luna", "gpt-5.6-luna"))
+            .unwrap();
+        assert_eq!(
+            luna.supported_reasoning_efforts,
+            BTreeSet::from([ReasoningEffort::max()])
+        );
+        assert_eq!(luna.default_reasoning_effort, ReasoningEffort::max());
+
+        for (profile, model, default) in [
+            ("terra", "gpt-5.6-terra", ReasoningEffort::medium()),
+            ("sol", "gpt-5.6-sol", ReasoningEffort::high()),
+        ] {
+            let entry = catalog.entry(&catalog_model_id(profile, model)).unwrap();
+            assert!(entry
+                .supported_reasoning_efforts
+                .contains(&ReasoningEffort::low()));
+            assert!(entry
+                .supported_reasoning_efforts
+                .contains(&ReasoningEffort::max()));
+            assert_eq!(entry.default_reasoning_effort, default);
         }
     }
 

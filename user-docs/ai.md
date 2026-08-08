@@ -168,67 +168,38 @@ from that branch. Restart Ovim after adding or changing a skill file.
 This first format supports instruction-only `*.md` files. Skill package
 directories and executable bundled scripts are not loaded.
 
-## Read-only delegated agents (preview)
+## Read-only delegated agents
 
-Ovim can dispatch bounded explorer and reviewer trees from an active AI chat.
-The feature is disabled by default and is currently configured only in legacy
-`ai.toml`. When enabled, the root model receives six controls:
-`spawn_agent`, `list_agents`, `wait_agent`, `send_message`,
-`followup_agent`, and `interrupt_agent`. The model-facing controls appear only
-while the editor owns an active durable root turn in a Git repository; they are
-not ordinary profile tools. Human controls in the agent tree remain available
-through the durable chat binding while descendants are live, even after that
-model turn ends, and record a user-authored causal event. A delegated parent receives the same
-strict controls only when `max_depth` leaves room for a descendant. Controls
-disappear at the configured depth ceiling, and every descendant remains under
-the same run-wide concurrency, count, timeout, provider-event, and tool-call
-ceilings.
+Ovim automatically exposes delegated-agent controls during an active durable
+AI turn in a Git repository: `spawn_agent`, `list_agents`, `wait_agent`,
+`send_message`, `followup_agent`, and `interrupt_agent`. These are harness
+capabilities, not profile tools or user configuration. Human controls in the
+agent tree remain available while descendants are live, even after the model
+turn ends.
 
-Every spawn must name both a catalog model and a reasoning effort. Ovim builds
-those choices from configured profiles and rejects an unknown or unsupported
-pair before allocating an agent, manifest, workspace, or lifecycle record.
-The catalog ID is `profile/model`, for example `codex_sol/gpt-5.6-sol`.
-`codex_app_server` profiles are not child routes because their nested provider
-session cannot be safely reconstructed inside Ovim's child harness.
+Every spawn names an exact catalog model and reasoning effort. Ovim derives the
+catalog from configured provider profiles and rejects invalid pairs before
+allocating durable state. The catalog ID is `profile/model`, for example
+`codex_sol/gpt-5.6-sol`. `codex_app_server` profiles are excluded because their
+nested provider session cannot be safely reconstructed in the child harness.
 
-```toml
-[subagents]
-enabled = true
-max_concurrent = 3
-max_queued = 8
-max_children_per_parent = 4
-max_total_per_run = 8
-max_depth = 2
-default_timeout_seconds = 600
-allow_writes = false
-allow_network = false
-allowed_models = ["codex_sol/gpt-5.6-sol", "codex_terra/gpt-5.6-terra"]
-allowed_agent_kinds = ["explorer", "reviewer"]
-allowed_reasoning_efforts = ["low", "medium"]
+The built-in harness allows explorer and reviewer trees to depth two, with at
+most three concurrent agents, eight queued agents, four children per parent,
+and eight children per root run. Children are always read-only and
+network-isolated. Provider-event, tool-call, and timeout ceilings also apply
+across the tree. These safety limits are owned by Ovim rather than `ai.toml`.
 
-[subagents.budgets]
-max_provider_events_per_agent = 256
-max_tool_calls_per_agent = 48
-max_total_provider_events = 1024
-max_total_tool_calls = 160
-# Reserved for provider metering; not enforced by this preview.
-max_estimated_cost = 5.0
-```
+Routing guidance is intentionally short: use Luna at `max` for explicit,
+well-specified implementation or checklist work; use Terra for bounded
+implementation or measurement with an explicit protocol; use Sol for subtle
+correctness, concurrency, architecture, or skeptical review. Choose Terra/Sol
+effort by task difficulty and risk.
 
-The current delegated provider adapter does not report trustworthy token or
-cost totals, so `max_estimated_cost` is validated and retained for config
-compatibility but is not a safety ceiling. Usage displays `n/r` instead of
-inventing a cost. Bound spend with the enforced agent-count, event, tool-call,
-and timeout limits and with provider-side account limits.
-
-An empty model or effort allowlist accepts every otherwise eligible catalog
-choice; the live tool schema still advertises only exact supported pairs. The
-preview rejects writes, network access, depth outside one through four, empty limits, and
-duplicate allowlist entries. The default depth remains one; use two or more
-only when delegated parents should be able to divide independent work.
-Changing subagent policy or provider profiles
-while Ovim is running requires an editor restart instead of silently changing
-authority beneath queued children.
+The delegated provider adapter does not yet report trustworthy token or cost
+totals, so usage displays `n/r`. Bound spend with the enforced agent-count,
+event, tool-call, timeout, and provider-account limits. Changing provider
+profiles while Ovim is running requires a restart rather than silently changing
+routes beneath queued children.
 
 Children see an immutable content-addressed snapshot captured at dispatch,
 including authoritative unsaved editor buffers. Later edits in the root
@@ -351,7 +322,7 @@ vim.ai.setup({
     codex_luna = {
       provider = "codex",
       model = "gpt-5.6-luna",
-      reasoning_effort = "medium",
+      reasoning_effort = "max",
     },
     codex_terra = {
       provider = "codex",

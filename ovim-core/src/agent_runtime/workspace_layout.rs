@@ -4,7 +4,7 @@
 //! history and a write worktree have different retention semantics: removing
 //! history must never silently remove the only copy of unresolved agent work.
 
-use crate::ai::AiSubagentWorkspaceConfig;
+use super::DelegatedAgentWorkspacePolicy;
 use crate::run_log::{AgentId, BaseManifestId, RepositoryId, RunId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -70,7 +70,7 @@ impl WorkspaceStorageLayout {
     }
 
     /// Resolve production storage using environment, config, platform order.
-    pub fn discover(config: &AiSubagentWorkspaceConfig) -> Result<Self, WorkspaceLayoutError> {
+    pub fn discover(config: &DelegatedAgentWorkspacePolicy) -> Result<Self, WorkspaceLayoutError> {
         Self::from_locations(
             std::env::var_os(OVIM_WORKSPACES_DIR_ENV),
             config,
@@ -81,7 +81,7 @@ impl WorkspaceStorageLayout {
     /// Injectable discovery that never reads or mutates process-global state.
     pub fn from_locations(
         environment_root: Option<OsString>,
-        config: &AiSubagentWorkspaceConfig,
+        config: &DelegatedAgentWorkspacePolicy,
         data_local_dir: Option<PathBuf>,
     ) -> Result<Self, WorkspaceLayoutError> {
         if let Some(root) = environment_root.filter(|value| !value.is_empty()) {
@@ -1548,7 +1548,7 @@ mod tests {
 
     #[test]
     fn environment_then_config_then_platform_default_precedence_is_injectable() {
-        let mut config = AiSubagentWorkspaceConfig {
+        let mut config = DelegatedAgentWorkspacePolicy {
             root: Some(PathBuf::from("/configured/workspaces")),
             ..Default::default()
         };

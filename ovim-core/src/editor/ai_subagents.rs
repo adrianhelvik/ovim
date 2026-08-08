@@ -1,21 +1,21 @@
-//! Editor-owned assembly for the read-only delegated-agent preview.
+//! Editor integration for Ovim's delegated-agent harness.
 //!
 //! Root chat remains in its existing orchestration path. This service owns a
 //! separate per-run supervisor and immutable snapshot stack, while sharing the
 //! exact durable run sink and configured provider profiles.
 
 use crate::agent_runtime::{
-    AgentApprovalBroker, AgentApprovalKey, AgentApprovalResponse, AgentApprovalResponseDecision,
-    AgentCapability, AgentControlPlaneSnapshot, AgentDispatchRecord, AgentFuture, AgentKindName,
-    AgentLoopBudget, AgentLoopInputFactory, AgentProviderAdapter, AgentRoleTemplate,
-    AgentSupervisor, AgentSupervisorConfig, AgentToolCall, AgentToolError, AgentToolExtension,
-    AgentToolResult, AgentWorkspaceManager, CapturedSnapshotDiagnostics,
-    CapturedSnapshotSymbolIndex, CompletionContract, DelegatedAgentKind, DelegationContextMode,
-    DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity, DispatchRequest,
-    FollowupAgentRequest, ModelFallbackPolicy, ProfileAgentProvider, ReasoningEffort,
-    RequestedModelRoute, ScopedTool, SendAgentMessageRequest, SnapshotAgentLoopInputFactory,
-    SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog, WorkspaceAssignment, WorkspacePolicy,
-    WorkspaceStrategy,
+    builtin_subagent_model_metadata, AgentApprovalBroker, AgentApprovalKey, AgentApprovalResponse,
+    AgentApprovalResponseDecision, AgentCapability, AgentControlPlaneSnapshot, AgentDispatchRecord,
+    AgentFuture, AgentKindName, AgentLoopBudget, AgentLoopInputFactory, AgentProviderAdapter,
+    AgentRoleTemplate, AgentSupervisor, AgentSupervisorConfig, AgentToolCall, AgentToolError,
+    AgentToolExtension, AgentToolResult, AgentWorkspaceManager, CapturedSnapshotDiagnostics,
+    CapturedSnapshotSymbolIndex, CompletionContract, DelegatedAgentKind, DelegatedAgentPolicy,
+    DelegationContextMode, DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity,
+    DispatchRequest, FollowupAgentRequest, ModelFallbackPolicy, ProfileAgentProvider,
+    ReasoningEffort, RequestedModelRoute, ScopedTool, SendAgentMessageRequest,
+    SnapshotAgentLoopInputFactory, SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog,
+    WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy,
 };
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::subagents::{
@@ -24,7 +24,7 @@ use crate::ai::tools::subagents::{
 };
 use crate::ai::tools::ToolDefinition;
 use crate::ai::tools::ToolResult;
-use crate::ai::{AiConfig, AiSubagentConfig};
+use crate::ai::AiConfig;
 use crate::run_log::{
     AgentId, ArtifactStore, BaseManifest, BaseManifestId, EventActor, EventId, EventKind,
     LocalRunStore, ManifestId, NewRunEvent, OperationId, RepoPath, RepositoryId, RunEventSink,
@@ -91,7 +91,7 @@ struct FollowupAgentArguments {
 }
 
 pub(crate) struct AiSubagentService {
-    startup_policy: AiSubagentConfig,
+    startup_policy: DelegatedAgentPolicy,
     config_fingerprint: String,
     catalog: Result<Arc<SubagentModelCatalog>, String>,
     provider: Arc<dyn AgentProviderAdapter>,
@@ -130,12 +130,12 @@ pub(crate) struct AiSubagentRun {
 /// factory, which owns this extension for the lifetime of provider sessions.
 struct EditorAgentToolExtension {
     run: Mutex<Weak<AiSubagentRun>>,
-    policy: AiSubagentConfig,
+    policy: DelegatedAgentPolicy,
     catalog: Arc<SubagentModelCatalog>,
 }
 
 impl EditorAgentToolExtension {
-    fn new(policy: AiSubagentConfig, catalog: Arc<SubagentModelCatalog>) -> Self {
+    fn new(policy: DelegatedAgentPolicy, catalog: Arc<SubagentModelCatalog>) -> Self {
         Self {
             run: Mutex::new(Weak::new()),
             policy,
@@ -197,12 +197,19 @@ impl DurablePreparedDelegation {
 
 impl AiSubagentService {
     pub fn new(config: &AiConfig) -> Self {
+        Self::with_policy(config, DelegatedAgentPolicy::default())
+    }
+
+    fn with_policy(config: &AiConfig, startup_policy: DelegatedAgentPolicy) -> Self {
         Self {
-            startup_policy: config.subagents.clone(),
+            startup_policy,
             config_fingerprint: subagent_config_fingerprint(config),
-            catalog: SubagentModelCatalog::from_config(config)
-                .map(Arc::new)
-                .map_err(|error| error.to_string()),
+            catalog: SubagentModelCatalog::from_config_with_metadata(
+                config,
+                builtin_subagent_model_metadata(config),
+            )
+            .map(Arc::new)
+            .map_err(|error| error.to_string()),
             provider: Arc::new(ProfileAgentProvider::new(config)),
             runs: Mutex::new(HashMap::new()),
             snapshot_cache: Mutex::new(None),
@@ -264,7 +271,7 @@ impl AiSubagentService {
         }
     }
 
-    pub fn policy(&self) -> &AiSubagentConfig {
+    pub fn policy(&self) -> &DelegatedAgentPolicy {
         &self.startup_policy
     }
 
@@ -273,9 +280,6 @@ impl AiSubagentService {
     }
 
     pub fn parent_tools(&self) -> Result<Vec<ToolDefinition>, String> {
-        if !self.startup_policy.enabled {
-            return Ok(Vec::new());
-        }
         crate::ai::tools::subagents::parent_control_tools(
             self.catalog()?.as_ref(),
             &self.startup_policy,
@@ -284,11 +288,7 @@ impl AiSubagentService {
     }
 
     pub fn parent_capabilities(&self) -> BTreeSet<AgentCapability> {
-        if self.startup_policy.enabled {
-            BTreeSet::from([AgentCapability::DispatchAgents])
-        } else {
-            BTreeSet::new()
-        }
+        BTreeSet::from([AgentCapability::DispatchAgents])
     }
 
     pub fn attention_generation(&self) -> u64 {
@@ -311,24 +311,18 @@ impl AiSubagentService {
             .ok_or_else(|| format!("unknown or inactive delegated-agent run {run_id}"))
     }
 
-    /// Running supervisors keep the exact startup policy/profile snapshot.
-    /// A mutable Lua/config reload must rebuild AiState rather than silently
-    /// changing routing or authority beneath queued children.
+    /// Running supervisors keep the exact startup profile snapshot. A mutable
+    /// Lua reload must not change routing beneath queued children.
     pub fn ensure_compatible(&self, current: &AiConfig) -> Result<(), String> {
-        if !self.startup_policy.enabled {
-            return Err("the subagent preview is disabled".into());
-        }
-        if current.subagents != self.startup_policy
-            || subagent_config_fingerprint(current) != self.config_fingerprint
-        {
+        if subagent_config_fingerprint(current) != self.config_fingerprint {
             return Err(
-                "AI subagent configuration changed after editor startup; restart Ovim before dispatching"
+                "AI provider profiles changed after editor startup; restart Ovim before dispatching"
                     .into(),
             );
         }
         let catalog = self.catalog()?;
         if catalog.entries().next().is_none() {
-            return Err("the subagent preview has no allowed model routes".into());
+            return Err("no configured provider profile supports delegated agents".into());
         }
         Ok(())
     }
@@ -661,7 +655,7 @@ impl AiSubagentRun {
     fn spawn_nested_agent(
         &self,
         call: &AgentToolCall,
-        policy: &AiSubagentConfig,
+        policy: &DelegatedAgentPolicy,
         catalog: &SubagentModelCatalog,
     ) -> Result<serde_json::Value, String> {
         let args: SpawnAgentArguments =
@@ -952,7 +946,7 @@ impl AiSubagentRun {
     async fn followup_nested_agent(
         &self,
         call: &AgentToolCall,
-        policy: &AiSubagentConfig,
+        policy: &DelegatedAgentPolicy,
     ) -> Result<serde_json::Value, String> {
         let args: FollowupAgentArguments =
             serde_json::from_value(call.arguments.clone()).map_err(|error| error.to_string())?;
@@ -1058,9 +1052,7 @@ impl Editor {
     /// snapshot projection and the per-tick repaint check so both agree on which
     /// run is live without duplicating the binding lookup.
     fn current_subagent_run_id(&self) -> Option<RunId> {
-        if !self.ai_state.subagents.policy().enabled || self.ai_state.chat.is_none() {
-            return None;
-        }
+        self.ai_state.chat.as_ref()?;
         self.ai_state
             .durable_chat_bindings
             .get(&self.ai_chat_conversation_key())
@@ -1686,11 +1678,12 @@ impl Editor {
     /// tools. Merely registering a profile or opening a chat never exposes
     /// them; the durable root binding must be active and exact.
     pub(crate) fn ai_subagent_parent_tools_visible(&self) -> bool {
-        self.ai_state
-            .subagents
-            .parent_capabilities()
-            .contains(&AgentCapability::DispatchAgents)
-            && self.active_subagent_root().is_ok()
+        self.active_subagent_root().is_ok()
+            && self
+                .ai_state
+                .subagents
+                .parent_tools()
+                .is_ok_and(|tools| !tools.is_empty())
     }
 
     pub(crate) fn ai_subagent_parent_tools(&self) -> Vec<ToolDefinition> {
@@ -2754,7 +2747,7 @@ impl PreparedAsyncSubagentControl {
     }
 }
 
-fn supervisor_config(policy: &AiSubagentConfig) -> AgentSupervisorConfig {
+fn supervisor_config(policy: &DelegatedAgentPolicy) -> AgentSupervisorConfig {
     AgentSupervisorConfig {
         max_concurrent: policy.max_concurrent,
         max_queued: policy.max_queued,
@@ -3046,8 +3039,6 @@ mod tests {
         let mut editor = Editor::default();
         editor.open_file(&file).unwrap();
         editor.ai_state = Box::new(AiState::with_run_storage_layout(layout).unwrap());
-        editor.ai_state.config.subagents.enabled = true;
-        editor.ai_state.config.subagents.max_depth = 1;
         let profile = editor
             .ai_state
             .config
@@ -3057,7 +3048,11 @@ mod tests {
         profile.provider = AiProviderKind::OpenAi;
         profile.model = "test-model".into();
         profile.reasoning_effort = Some("high".into());
-        let mut service = AiSubagentService::new(&editor.ai_state.config);
+        let policy = DelegatedAgentPolicy {
+            max_depth: 1,
+            ..DelegatedAgentPolicy::default()
+        };
+        let mut service = AiSubagentService::with_policy(&editor.ai_state.config, policy);
         service.provider = Arc::new(FakeProviderAdapter::new("delayed_completion"));
         *editor.ai_state.subagents = service;
         editor.open_ai_chat(ChatOpts::default()).unwrap();
@@ -3109,13 +3104,12 @@ mod tests {
     }
 
     #[test]
-    fn idle_service_rebuilds_after_startup_config_merge() {
+    fn idle_service_rebuilds_after_profile_merge() {
         let mut config = AiConfig::default();
-        config.subagents.enabled = true;
         let mut service = AiSubagentService::new(&config);
         assert!(service.ensure_compatible(&config).is_ok());
 
-        config.subagents.max_concurrent = 2;
+        config.profiles.get_mut(PROFILE_LOCAL).unwrap().model = "changed-model".into();
         assert!(service.ensure_compatible(&config).is_err());
         service.reconfigure_if_idle(&config).unwrap();
         assert!(service.ensure_compatible(&config).is_ok());
@@ -3127,8 +3121,7 @@ mod tests {
         git2::Repository::init(directory.path()).unwrap();
         let layout = crate::run_log::RunStorageLayout::new(directory.path().join("runs"));
         let store = Arc::new(LocalRunStore::new(layout));
-        let mut config = AiConfig::default();
-        config.subagents.enabled = true;
+        let config = AiConfig::default();
         let service = AiSubagentService::new(&config);
         let run_id = RunId::new();
         let root = AgentId::new();
@@ -3179,7 +3172,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn parent_tools_require_feature_dispatch_capability_and_active_durable_root() {
+    async fn parent_tools_require_an_active_durable_root() {
         let (_repository, _storage, mut editor) = enabled_editor();
         assert!(!editor.ai_subagent_parent_tools_visible());
         assert!(editor.ai_subagent_parent_tools().is_empty());
@@ -3191,10 +3184,10 @@ mod tests {
             .subagents
             .parent_capabilities()
             .contains(&AgentCapability::DispatchAgents));
-        let names = editor
-            .ai_subagent_parent_tools()
-            .into_iter()
-            .map(|tool| tool.name)
+        let tools = editor.ai_subagent_parent_tools();
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.clone())
             .collect::<BTreeSet<_>>();
         assert_eq!(
             names,
@@ -3207,9 +3200,6 @@ mod tests {
                 FOLLOWUP_AGENT_TOOL.into(),
             ])
         );
-
-        editor.ai_state.config.subagents.enabled = false;
-        assert!(!editor.ai_subagent_parent_tools_visible());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3371,8 +3361,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn delegated_parent_can_spawn_one_bounded_descendant_on_the_same_snapshot() {
         let (_repository, _storage, mut editor) = enabled_editor();
-        editor.ai_state.config.subagents.max_depth = 2;
-        let mut service = AiSubagentService::new(&editor.ai_state.config);
+        let policy = DelegatedAgentPolicy {
+            max_depth: 2,
+            ..DelegatedAgentPolicy::default()
+        };
+        let mut service = AiSubagentService::with_policy(&editor.ai_state.config, policy);
         service.provider = Arc::new(
             FakeProviderAdapter::new("delayed_completion")
                 .with_tick_duration(std::time::Duration::from_millis(100)),

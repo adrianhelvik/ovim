@@ -162,7 +162,7 @@ vim.ai.setup({
             context = vim.ai.context_policies.hybrid,
             syntax_check = true,
             retry = { max = 1 },
-            reasoning_effort = "medium",
+            reasoning_effort = "max",
         },
 
         codex_terra = {

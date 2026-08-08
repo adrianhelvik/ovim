@@ -829,9 +829,12 @@ fn delegation_system_prompt(
             crate::agent_runtime::AgentCapability::DispatchAgents
         )
     }) {
-        "You may coordinate bounded descendants with the advertised agent controls. Descendants inherit the same immutable snapshot and a narrower remaining depth; use them only for independent work, observe their state, and incorporate their handoffs before finishing."
+        format!(
+            "You may coordinate independent descendants; observe their handoffs before finishing. {}",
+            crate::agent_runtime::DELEGATION_GUIDANCE
+        )
     } else {
-        "No subagent-dispatch capability remains at this depth."
+        "No subagent-dispatch capability remains at this depth.".into()
     };
     let prompt = format!(
         "You are an Ovim delegated child operating against an immutable read-only snapshot.\n\

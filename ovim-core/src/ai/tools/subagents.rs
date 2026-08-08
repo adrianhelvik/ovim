@@ -1,8 +1,10 @@
 //! Strict, catalog-derived parent control-tool contracts.
 
 use super::{SideEffect, StrictJsonSchema, ToolDefinition, ToolSchemaError};
-use crate::agent_runtime::{AgentCapability, ScopedTool, SubagentModelCatalog};
-use crate::ai::{AiSubagentConfig, FileScope, RequiredScope};
+use crate::agent_runtime::{
+    AgentCapability, DelegatedAgentPolicy, ScopedTool, SubagentModelCatalog,
+};
+use crate::ai::{FileScope, RequiredScope};
 use crate::run_log::ToolSideEffect;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -28,7 +30,7 @@ pub fn is_parent_control_tool(name: &str) -> bool {
 
 pub fn parent_control_tools(
     catalog: &SubagentModelCatalog,
-    policy: &AiSubagentConfig,
+    policy: &DelegatedAgentPolicy,
 ) -> Result<Vec<ToolDefinition>, ToolSchemaError> {
     let entries = catalog
         .entries()
@@ -48,15 +50,7 @@ pub fn parent_control_tools(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let roles = policy
-        .allowed_agent_kinds
-        .iter()
-        .filter(|role| matches!(role.as_str(), "explorer" | "reviewer"))
-        .cloned()
-        .collect::<Vec<_>>();
-    if roles.is_empty() {
-        return Err(ToolSchemaError::EmptyStringEnum);
-    }
+    let roles = ["explorer", "reviewer"];
     let pairing = entries
         .iter()
         .map(|entry| {
@@ -78,7 +72,7 @@ pub fn parent_control_tools(
         definition(
             SPAWN_AGENT_TOOL,
             format!(
-                "Dispatch one bounded independent read-only task and return its durable task and agent IDs immediately. Model and reasoning_effort are required and must be an advertised pair ({pairing}). Delegate independent research, review, or verification; avoid duplicate, tiny, or sequential work, and continue the local critical path while the child runs."
+                "Dispatch one bounded independent read-only task and return its durable task and agent IDs immediately. Model and reasoning_effort must be an advertised pair ({pairing}). Avoid duplicate, tiny, or sequential work; continue the local critical path while the child runs."
             ),
             strict(json!({
                 "type": "object",
@@ -187,7 +181,7 @@ pub fn parent_control_tools(
 /// so root and nested agents cannot drift onto subtly different schemas.
 pub fn delegated_parent_control_tools(
     catalog: &SubagentModelCatalog,
-    policy: &AiSubagentConfig,
+    policy: &DelegatedAgentPolicy,
 ) -> Result<Vec<ScopedTool>, ToolSchemaError> {
     parent_control_tools(catalog, policy)?
         .into_iter()
@@ -248,21 +242,19 @@ mod tests {
     use crate::ai::tools::schema::tools_to_openai_schema;
     use crate::ai::{AiConfig, AiProviderKind};
 
-    fn configured() -> (AiConfig, SubagentModelCatalog) {
+    fn configured() -> SubagentModelCatalog {
         let mut config = AiConfig::default();
-        config.subagents.enabled = true;
         let profile = config.profiles.get_mut("local").unwrap();
         profile.provider = AiProviderKind::OpenAi;
         profile.model = "test-model".into();
         profile.reasoning_effort = Some(ReasoningEffort::high().to_string());
-        let catalog = SubagentModelCatalog::from_config(&config).unwrap();
-        (config, catalog)
+        SubagentModelCatalog::from_config(&config).unwrap()
     }
 
     #[test]
     fn spawn_schema_is_dynamic_strict_and_requires_every_contract_field() {
-        let (config, catalog) = configured();
-        let tools = parent_control_tools(&catalog, &config.subagents).unwrap();
+        let catalog = configured();
+        let tools = parent_control_tools(&catalog, &DelegatedAgentPolicy::default()).unwrap();
         let spawn = tools
             .iter()
             .find(|tool| tool.name == SPAWN_AGENT_TOOL)
@@ -300,9 +292,10 @@ mod tests {
 
     #[test]
     fn delegated_parent_controls_reuse_root_contracts_and_require_dispatch_capability() {
-        let (config, catalog) = configured();
-        let root = parent_control_tools(&catalog, &config.subagents).unwrap();
-        let delegated = delegated_parent_control_tools(&catalog, &config.subagents).unwrap();
+        let catalog = configured();
+        let root = parent_control_tools(&catalog, &DelegatedAgentPolicy::default()).unwrap();
+        let delegated =
+            delegated_parent_control_tools(&catalog, &DelegatedAgentPolicy::default()).unwrap();
         assert_eq!(delegated.len(), root.len());
         for (root, delegated) in root.iter().zip(&delegated) {
             assert_eq!(delegated.name, root.name);
@@ -336,8 +329,8 @@ mod tests {
 
     #[test]
     fn spawn_schema_rejects_missing_fields_unknown_fields_and_bad_shapes() {
-        let (config, catalog) = configured();
-        let tools = parent_control_tools(&catalog, &config.subagents).unwrap();
+        let catalog = configured();
+        let tools = parent_control_tools(&catalog, &DelegatedAgentPolicy::default()).unwrap();
         let schema = tools
             .iter()
             .find(|tool| tool.name == SPAWN_AGENT_TOOL)
@@ -367,8 +360,8 @@ mod tests {
 
     #[test]
     fn send_message_schema_is_bounded_and_strict() {
-        let (config, catalog) = configured();
-        let tools = parent_control_tools(&catalog, &config.subagents).unwrap();
+        let catalog = configured();
+        let tools = parent_control_tools(&catalog, &DelegatedAgentPolicy::default()).unwrap();
         let schema = tools
             .iter()
             .find(|tool| tool.name == SEND_MESSAGE_TOOL)
@@ -399,8 +392,8 @@ mod tests {
 
     #[test]
     fn followup_schema_is_bounded_and_strict() {
-        let (config, catalog) = configured();
-        let tools = parent_control_tools(&catalog, &config.subagents).unwrap();
+        let catalog = configured();
+        let tools = parent_control_tools(&catalog, &DelegatedAgentPolicy::default()).unwrap();
         let schema = tools
             .iter()
             .find(|tool| tool.name == FOLLOWUP_AGENT_TOOL)
