@@ -89,7 +89,7 @@ fn test_3r() {
     test.keys("3r").press('X'); // Replace 3 chars with 'X'
 
     assert_eq!(test.buffer_content(), "XXXlo\n");
-    test.assert_cursor(0, 0); // Cursor stays at start after replace
+    test.assert_cursor(0, 2); // Cursor lands on the final replaced character
 }
 
 #[test]
@@ -98,9 +98,9 @@ fn test_r_count_exceeds_line() {
 
     test.keys("99r").press('X'); // Try to replace 99 chars (only 5 available)
 
-    // When count exceeds available chars, replaces what's available
-    assert_eq!(test.buffer_content(), "XXXXX\n");
-    test.assert_cursor(0, 0); // Cursor at start after replace
+    // Verified with Neovim 0.12.4: an oversized count aborts the command.
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn test_5r_middle_of_line() {
         .press('='); // Replace 5 chars
 
     assert_eq!(test.buffer_content(), "hello ===== test\n");
-    test.assert_cursor(0, 6); // Cursor at start of replaced region
+    test.assert_cursor(0, 10); // Cursor at end of replaced region
 }
 
 // ============================================================================
@@ -469,13 +469,12 @@ fn test_3r_dot_repeat() {
 
     test.keys("3r")
         .press('X') // Replace 3 chars with 'X'
-        .press('.'); // Repeat (cursor at 0, so replaces from start again)
+        .press('.'); // Repeat from the final replaced character
 
-    // First 3rX replaces "abc" -> "XXX", cursor stays at 0
-    // . repeats 3rX at position 0, replacing "XXX" with "XXX" (no visible change)
-    // Cursor stays at start position (Vim behavior)
-    assert_eq!(test.buffer_content(), "XXXdefgh\n");
-    test.assert_cursor(0, 0);
+    // Verified with Neovim 0.12.4: the repeat begins on the last character
+    // of the first replacement, so the two three-character spans overlap.
+    assert_eq!(test.buffer_content(), "XXXXXfgh\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================

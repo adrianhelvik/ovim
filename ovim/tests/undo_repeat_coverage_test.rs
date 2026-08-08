@@ -872,13 +872,16 @@ fn test_3r_undo_redo() {
     let mut test = EditorTest::new("hello");
     test.keys("3ra");
     assert_eq!(test.buffer_content(), "aaalo\n");
+    test.assert_cursor(0, 2);
 
     // Single undo restores all 3 chars
     test.keys("u");
     assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 0);
 
     test.keys("<C-r>");
     assert_eq!(test.buffer_content(), "aaalo\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]

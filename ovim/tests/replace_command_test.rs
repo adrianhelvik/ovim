@@ -22,7 +22,7 @@ fn test_replace_multiple_chars() {
     test.keys("3rx");
 
     assert_eq!(test.buffer_content(), "xxxlo\n");
-    test.assert_cursor(0, 0);
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -42,8 +42,9 @@ fn test_replace_respects_line_length() {
     // Try to replace 5 chars when only 2 exist
     test.keys("5rx");
 
-    // Should only replace the 2 available chars
-    assert_eq!(test.buffer_content(), "xx\n");
+    // Verified with Neovim 0.12.4: an oversized count aborts the command.
+    assert_eq!(test.buffer_content(), "hi\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -54,7 +55,7 @@ fn test_replace_with_count_and_position() {
     test.keys("2l3rz");
 
     assert_eq!(test.buffer_content(), "abzzzfgh\n");
-    test.assert_cursor(0, 2);
+    test.assert_cursor(0, 4);
 }
 
 #[test]

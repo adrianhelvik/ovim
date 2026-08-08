@@ -1016,7 +1016,8 @@ impl Buffer {
     }
 
     /// Replaces count characters at cursor with ch (r command).
-    /// Returns the replaced (old) text, or empty string if at EOL.
+    /// Returns the replaced (old) text, or an empty string if the replacement
+    /// cannot cover the requested count before end-of-line.
     pub fn replace_chars_at_cursor(&mut self, ch: char, count: usize) -> String {
         let line_idx = self.cursor().line();
         let grapheme_col = self.cursor().col();
@@ -1027,21 +1028,21 @@ impl Buffer {
         // Replace whole graphemes, not scalars, so composed clusters aren't corrupted.
         let grapheme_len = grapheme_count(&line_text);
 
-        if grapheme_col.0 >= grapheme_len {
+        let available = grapheme_len.saturating_sub(grapheme_col.0);
+        if count == 0 || count > available {
             return String::new();
         }
 
-        let replace_count = count.min(grapheme_len - grapheme_col.0);
         let start_char = grapheme_to_char_col(&line_text, grapheme_col);
-        let end_char =
-            grapheme_to_char_col(&line_text, GraphemeCol(grapheme_col.0 + replace_count));
+        let end_char = grapheme_to_char_col(&line_text, GraphemeCol(grapheme_col.0 + count));
 
         let deleted = self.delete_range(line_idx, start_char, line_idx, end_char);
-        let replacement = ch.to_string().repeat(replace_count);
+        let replacement = ch.to_string().repeat(count);
         self.insert_text_at(line_idx, start_char, &replacement);
 
-        // Cursor stays at original position (Vim behavior for r)
-        self.cursor_mut().set_position(line_idx, grapheme_col);
+        // Vim leaves the cursor on the final replaced character.
+        self.cursor_mut()
+            .set_position(line_idx, GraphemeCol(grapheme_col.0 + count - 1));
 
         deleted
     }
