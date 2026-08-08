@@ -1901,6 +1901,12 @@ impl Editor {
                     self.registers.set_with_type(Some(reg), text, reg_type);
                     return;
                 }
+                r if r.is_ascii_digit() => {
+                    // Preserve numbered-register delete routing. Numbered
+                    // registers are managed as a rotating history rather than
+                    // ordinary named-register slots.
+                    self.registers.delete_with_type(text.clone(), reg_type);
+                }
                 _ => {
                     self.registers
                         .set_with_type(Some(reg), text.clone(), reg_type);
@@ -1944,8 +1950,9 @@ impl Editor {
                 _ => {
                     self.registers
                         .set_with_type(Some(reg), text.clone(), reg_type);
-                    // Also update unnamed + delete history (Vim behavior)
-                    self.registers.delete_with_type(text.clone(), reg_type);
+                    // Explicit-register deletes also update unnamed, but do not
+                    // rotate numbered or small-delete registers.
+                    self.registers.set_with_type(None, text.clone(), reg_type);
                 }
             }
         } else {

@@ -478,6 +478,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             if ch.is_ascii_alphanumeric()
                 || ch == '"'
                 || ch == '_'
+                || ch == '-'
                 || ch == '+'
                 || ch == '*'
                 || ch == '%'

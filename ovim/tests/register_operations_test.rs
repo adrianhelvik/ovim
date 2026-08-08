@@ -197,7 +197,7 @@ fn test_register_0_yank() {
     let mut test = EditorTest::new("hello world");
 
     test.keys("yiw") // Yank "hello" (goes to "0, no trailing space)
-        .keys("dw") // Delete "hello " (with space, goes to "1, doesn't affect "0)
+        .keys("dw") // Delete "hello " (goes to "-, doesn't affect "0)
         .keys("\"0p"); // Paste from "0 (should be "hello")
 
     // After yiw: "0 = "hello"
@@ -209,21 +209,14 @@ fn test_register_0_yank() {
 
 #[test]
 fn test_numbered_delete_history() {
-    let mut test = EditorTest::new("one two three four five");
+    let mut test = EditorTest::new("one\ntwo\nthree\nfour\nfive");
 
-    test.keys("dw") // Delete "one " -> "1
-        .keys("dw") // Delete "two " -> "1, "one " -> "2
-        .keys("dw") // Delete "three " -> "1, "two " -> "2, "one " -> "3
-        .keys("\"1p") // Paste most recent delete ("three ") after 'f'
-        .keys("\"2p") // Paste second most recent ("two ") after ' '
-        .keys("\"3p"); // Paste third most recent ("one ") after ' '
+    test.keys("dd").keys("dd").keys("dd");
 
-    // After 3 dw: buffer = "four five", cursor at 0
-    // "1p: paste "three " after 'f', cursor on last pasted char (space at 6)
-    // "2p: paste "two " after space, cursor on last pasted char
-    // "3p: paste "one " after that
-    assert_eq!(test.buffer_content(), "fthree two one our five\n");
-    test.assert_cursor(0, 14);
+    assert_eq!(test.buffer_content(), "four\nfive\n");
+    assert_eq!(test.editor.registers().get(Some('1')), "three\n");
+    assert_eq!(test.editor.registers().get(Some('2')), "two\n");
+    assert_eq!(test.editor.registers().get(Some('3')), "one\n");
 }
 
 #[test]
@@ -261,19 +254,34 @@ fn test_small_delete_register() {
 
 #[test]
 fn test_small_delete_vs_numbered() {
+    let mut test = EditorTest::new("hello world\nsecond");
+
+    test.press('x');
+    assert_eq!(test.editor.registers().get(Some('-')), "h");
+    assert_eq!(test.editor.registers().get(Some('1')), "");
+
+    test.keys("dw");
+    assert_eq!(test.editor.registers().get(Some('-')), "ello ");
+    assert_eq!(test.editor.registers().get(Some('1')), "");
+
+    test.keys("dd");
+    assert_eq!(test.editor.registers().get(Some('-')), "ello ");
+    assert_eq!(test.editor.registers().get(Some('1')), "world\n");
+    assert_eq!(test.editor.registers().get(None), "world\n");
+}
+
+#[test]
+fn test_explicit_named_delete_does_not_rotate_implicit_delete_registers() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('x') // Delete 'h' (to "-)
-        .keys("dw") // Delete "ello " (to "1, not "-)
-        .keys("\"-p") // Paste 'h' from "- after 'w'
-        .keys("\"1p"); // Paste "ello " from "1 after 'h'
+    // Verified with Neovim 0.12.4: an explicit named delete updates the
+    // named and unnamed registers, but neither "- nor "1.
+    test.keys("\"adw");
 
-    // After x: buffer = "ello world", cursor at 0
-    // After dw: buffer = "world", cursor at 0
-    // "-p: paste 'h' after 'w', giving "whorld", cursor at 1
-    // "1p: paste "ello " after 'h', giving "wello ello orld"
-    assert_eq!(test.buffer_content(), "wello ello orld\n");
-    test.assert_cursor(0, 10);
+    assert_eq!(test.editor.registers().get(Some('a')), "hello ");
+    assert_eq!(test.editor.registers().get(None), "hello ");
+    assert_eq!(test.editor.registers().get(Some('-')), "");
+    assert_eq!(test.editor.registers().get(Some('1')), "");
 }
 
 // ============================================================================
@@ -587,17 +595,13 @@ fn test_register_paste_with_count() {
 
 #[test]
 fn test_delete_updates_both_unnamed_and_numbered() {
-    let mut test = EditorTest::new("hello world");
+    let mut test = EditorTest::new("hello world\nsecond line");
 
-    test.keys("dw") // Delete "hello " to both unnamed and "1
-        .press('p') // Paste "hello " from unnamed after 'w'
-        .keys("\"1p"); // Paste "hello " from "1 after ' '
+    test.keys("dd");
 
-    // After dw: buffer = "world", cursor at 0
-    // p: "whello orld", cursor at 6 (last pasted char)
-    // "1p: paste "hello " after 'l', giving "whello hello orld"
-    assert_eq!(test.buffer_content(), "whello hello orld\n");
-    test.assert_cursor(0, 12);
+    assert_eq!(test.editor.registers().get(None), "hello world\n");
+    assert_eq!(test.editor.registers().get(Some('1')), "hello world\n");
+    assert_eq!(test.editor.registers().get(Some('-')), "");
 }
 
 #[test]
@@ -819,15 +823,16 @@ fn test_read_only_register_yank_still_populates_unnamed() {
 #[test]
 fn test_read_only_register_delete_still_populates_unnamed() {
     // When deleting to a read-only register, the text should still go
-    // to the unnamed and delete history registers
+    // to the unnamed and appropriate implicit delete register
     let mut test = EditorTest::new("hello world");
 
     test.keys("\"%dw");
 
     // Unnamed register should have "hello "
     assert_eq!(test.editor.registers().get(None), "hello ");
-    // Delete history register 1 should also have it
-    assert_eq!(test.editor.registers().get(Some('1')), "hello ");
+    // A within-line delete belongs to the small-delete register, not "1.
+    assert_eq!(test.editor.registers().get(Some('-')), "hello ");
+    assert_eq!(test.editor.registers().get(Some('1')), "");
 }
 
 #[test]

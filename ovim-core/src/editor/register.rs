@@ -92,6 +92,8 @@ pub struct RegisterManager {
     yank: RegisterContent,
     /// Delete registers (1-9) - circular buffer of recent deletes
     delete_history: Vec<RegisterContent>,
+    /// Small delete register (-) for characterwise deletes without a line break
+    small_delete: RegisterContent,
     /// Special registers
     current_file: String, // % - current file name
     alternate_file: String, // # - alternate file name
@@ -110,6 +112,7 @@ impl RegisterManager {
             unnamed: RegisterContent::new(String::new(), RegisterType::Character),
             yank: RegisterContent::new(String::new(), RegisterType::Character),
             delete_history: Vec::new(),
+            small_delete: RegisterContent::new(String::new(), RegisterType::Character),
             current_file: String::new(),
             alternate_file: String::new(),
             last_inserted: String::new(),
@@ -161,6 +164,9 @@ impl RegisterManager {
                 // System clipboard - sync with system
                 self.clipboard.write(value);
             }
+            Some('-') => {
+                self.small_delete = content;
+            }
             Some('_') => {
                 // Black hole register - do nothing
             }
@@ -194,6 +200,7 @@ impl RegisterManager {
             Some('/') => self.last_search.clone(),
             Some('+') | Some('*') => self.clipboard.read(),
             Some('_') => String::new(), // Black hole register always returns empty
+            Some('-') => self.small_delete.text.clone(),
             Some(c) if c.is_ascii_digit() => {
                 let idx = c.to_digit(10).unwrap() as usize;
                 if idx > 0 && idx <= self.delete_history.len() {
@@ -232,6 +239,7 @@ impl RegisterManager {
             Some('/') => (self.last_search.clone(), RegisterType::Character),
             Some('+') | Some('*') => (self.clipboard.read(), RegisterType::Character),
             Some('_') => (String::new(), RegisterType::Character),
+            Some('-') => (self.small_delete.text.clone(), self.small_delete.reg_type),
             Some(c) if c.is_ascii_digit() => {
                 let idx = c.to_digit(10).unwrap() as usize;
                 if idx > 0 && idx <= self.delete_history.len() {
@@ -269,20 +277,26 @@ impl RegisterManager {
         self.yank = content;
     }
 
-    /// Stores deleted text in unnamed register and delete history (defaults to Character type)
+    /// Stores deleted text in the unnamed and appropriate implicit delete
+    /// register (defaults to Character type).
     pub fn delete(&mut self, text: String) {
         self.delete_with_type(text, RegisterType::Character);
     }
 
-    /// Stores deleted text with explicit type
+    /// Stores deleted text in the unnamed register, plus either the small
+    /// delete register or numbered delete history according to its shape.
     pub fn delete_with_type(&mut self, text: String, reg_type: RegisterType) {
-        self.unnamed = RegisterContent::new(text.clone(), reg_type);
+        let content = RegisterContent::new(text, reg_type);
+        self.unnamed = content.clone();
 
-        // Add to delete history (1-9)
-        self.delete_history
-            .insert(0, RegisterContent::new(text, reg_type));
-        if self.delete_history.len() > 9 {
-            self.delete_history.truncate(9);
+        if reg_type == RegisterType::Character && !content.text.contains('\n') {
+            self.small_delete = content;
+        } else {
+            // Linewise and multiline deletes rotate through delete history (1-9).
+            self.delete_history.insert(0, content);
+            if self.delete_history.len() > 9 {
+                self.delete_history.truncate(9);
+            }
         }
     }
 
@@ -388,6 +402,10 @@ impl RegisterManager {
             if !entry.text.is_empty() {
                 result.push((format!("\"{}", i + 1), truncate(&entry.text, 50)));
             }
+        }
+
+        if !self.small_delete.text.is_empty() {
+            result.push(("\"-".to_string(), truncate(&self.small_delete.text, 50)));
         }
 
         // Named registers (a-z)
