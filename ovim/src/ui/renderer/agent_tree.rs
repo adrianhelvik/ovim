@@ -169,62 +169,35 @@ pub(crate) fn project_inline_agent_cards(
     cards
 }
 
-pub(crate) fn inline_agent_summary(snapshot: &AgentControlPlaneSnapshot, width: usize) -> String {
+pub(crate) fn inline_agent_summary(
+    snapshot: &AgentControlPlaneSnapshot,
+    width: usize,
+) -> Option<String> {
     let active = snapshot
         .agents
         .iter()
         .filter(|agent| is_active(agent))
         .count();
-    let completed = snapshot
-        .agents
-        .iter()
-        .filter(|agent| agent.lifecycle == "completed")
-        .count();
-    let interrupted = snapshot
-        .agents
-        .iter()
-        .filter(|agent| agent.lifecycle == "interrupted")
-        .count();
-    let failed = snapshot
-        .agents
-        .iter()
-        .filter(|agent| agent.lifecycle == "failed")
-        .count();
-
-    let summary = if active > 0 || snapshot.pending_attention > 0 {
-        let attention = if snapshot.pending_attention > 0 {
-            format!(" · !{} needs you", snapshot.pending_attention)
-        } else {
-            String::new()
-        };
-        let updates = if snapshot.pending_updates > 0 {
-            format!(" · {} updates", snapshot.pending_updates)
-        } else {
-            String::new()
-        };
-        format!(
+    if active == 0 && snapshot.pending_attention == 0 {
+        return None;
+    }
+    let attention = if snapshot.pending_attention > 0 {
+        format!(" · !{} needs you", snapshot.pending_attention)
+    } else {
+        String::new()
+    };
+    let updates = if snapshot.pending_updates > 0 {
+        format!(" · {} updates", snapshot.pending_updates)
+    } else {
+        String::new()
+    };
+    Some(fit(
+        &format!(
             "─ agents {} · {active} active{attention}{updates} · Ctrl-T inspect",
             snapshot.agents.len()
-        )
-    } else {
-        let mut outcomes = Vec::new();
-        if completed > 0 {
-            outcomes.push(format!("{completed} completed"));
-        }
-        if failed > 0 {
-            outcomes.push(format!("{failed} failed"));
-        }
-        if interrupted > 0 {
-            outcomes.push(format!("{interrupted} interrupted"));
-        }
-        let outcomes = if outcomes.is_empty() {
-            "idle".into()
-        } else {
-            outcomes.join(" · ")
-        };
-        format!("─ agent run finished · {outcomes} · Ctrl-T history")
-    };
-    fit(&summary, width)
+        ),
+        width,
+    ))
 }
 
 pub(crate) fn project_agent_approval_prompt(
@@ -1090,7 +1063,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_agents_leave_only_a_compact_inline_history_summary() {
+    fn terminal_agents_leave_no_composer_footer() {
         let snapshot = snapshot(vec![agent(
             "agt_done",
             "agt_root",
@@ -1099,10 +1072,7 @@ mod tests {
         )]);
         let cards = project_inline_agent_cards(&snapshot, 72, &HashSet::new());
         assert!(cards.is_empty());
-        assert_eq!(
-            inline_agent_summary(&snapshot, 72),
-            "─ agent run finished · 1 completed · Ctrl-T history"
-        );
+        assert_eq!(inline_agent_summary(&snapshot, 72), None);
     }
 
     #[test]
@@ -1116,7 +1086,7 @@ mod tests {
         assert_eq!(cards[0].agent_id, "agt_live");
         assert_eq!(
             inline_agent_summary(&snapshot, 72),
-            "─ agents 2 · 1 active · Ctrl-T inspect"
+            Some("─ agents 2 · 1 active · Ctrl-T inspect".into())
         );
     }
 

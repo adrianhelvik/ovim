@@ -864,26 +864,28 @@ fn render_message_history(
             .cloned()
             .unwrap_or_default();
         let cards = super::agent_tree::project_inline_agent_cards(snapshot, panel_width, &expanded);
-        rendered_lines.push((
-            Line::from(Span::styled(
-                super::agent_tree::inline_agent_summary(snapshot, panel_width),
-                Style::default()
-                    .fg(if snapshot.pending_attention > 0 {
-                        Color::Rgb(255, 191, 77)
-                    } else {
-                        TEXT_DIM
-                    })
-                    .bg(BG_PANEL)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            false,
-        ));
-        for card in &cards {
-            rendered_lines.extend(
-                super::agent_tree::inline_card_lines(card, panel_width)
-                    .into_iter()
-                    .map(|line| (line, false)),
-            );
+        if let Some(summary) = super::agent_tree::inline_agent_summary(snapshot, panel_width) {
+            rendered_lines.push((
+                Line::from(Span::styled(
+                    summary,
+                    Style::default()
+                        .fg(if snapshot.pending_attention > 0 {
+                            Color::Rgb(255, 191, 77)
+                        } else {
+                            TEXT_DIM
+                        })
+                        .bg(BG_PANEL)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                false,
+            ));
+            for card in &cards {
+                rendered_lines.extend(
+                    super::agent_tree::inline_card_lines(card, panel_width)
+                        .into_iter()
+                        .map(|line| (line, false)),
+                );
+            }
         }
     }
 
