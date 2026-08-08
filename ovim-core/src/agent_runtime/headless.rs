@@ -13,7 +13,9 @@ use crate::run_log::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const AGENT_CONTROL_SNAPSHOT_VERSION: u32 = 1;
+/// Version two adds each agent's bounded operational `trace`. The trace field
+/// defaults empty when reading version-one snapshots.
+pub const AGENT_CONTROL_SNAPSHOT_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentControlPlaneSnapshot {
