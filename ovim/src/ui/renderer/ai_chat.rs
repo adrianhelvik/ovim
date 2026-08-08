@@ -114,12 +114,65 @@ fn render_agent_conversation(
         Line::from(agent.objective.clone()),
         Line::from(""),
         Line::from(Span::styled(
-            "Activity",
+            "Conversation",
             Style::default()
                 .fg(TEXT_NORMAL)
                 .add_modifier(Modifier::BOLD),
         )),
     ];
+    let message_start = agent.messages.len().saturating_sub(3);
+    for message in &agent.messages[message_start..] {
+        let sender = if message.sender_agent_id == snapshot.root_agent_id {
+            "You"
+        } else {
+            "Agent"
+        };
+        let delivery = if message.state == "queued" {
+            " · queued for next boundary"
+        } else {
+            ""
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{sender}: "),
+                Style::default()
+                    .fg(if sender == "You" {
+                        ACCENT_USER
+                    } else {
+                        ACCENT_ASSISTANT_EDIT
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(message.content.replace('\n', " ")),
+            Span::styled(delivery, Style::default().fg(TEXT_DIM)),
+        ]));
+    }
+    if let Some(handoff) = &agent.handoff {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Agent: ",
+                Style::default()
+                    .fg(ACCENT_ASSISTANT_EDIT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(handoff.summary.replace('\n', " ")),
+        ]));
+    }
+    if agent.messages.is_empty() && agent.handoff.is_none() {
+        lines.push(Line::from(Span::styled(
+            "No messages yet",
+            Style::default().fg(TEXT_DIM),
+        )));
+    }
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled(
+            "Activity",
+            Style::default()
+                .fg(TEXT_NORMAL)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ]);
     let switcher = super::agent_tree::agent_switcher_lines(
         snapshot,
         area.width as usize,
