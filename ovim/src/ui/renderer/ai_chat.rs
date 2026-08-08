@@ -866,39 +866,7 @@ fn render_message_history(
         let cards = super::agent_tree::project_inline_agent_cards(snapshot, panel_width, &expanded);
         rendered_lines.push((
             Line::from(Span::styled(
-                {
-                    let active = snapshot
-                        .agents
-                        .iter()
-                        .filter(|agent| {
-                            matches!(
-                                agent.lifecycle.as_str(),
-                                "created"
-                                    | "queued"
-                                    | "starting"
-                                    | "running"
-                                    | "waiting_for_agent"
-                                    | "waiting_for_tool"
-                                    | "waiting_for_user"
-                            )
-                        })
-                        .count();
-                    let attention = if snapshot.pending_attention > 0 {
-                        format!(" · !{} needs you", snapshot.pending_attention)
-                    } else {
-                        String::new()
-                    };
-                    let updates = if snapshot.pending_updates > 0 {
-                        format!(" · {} updates", snapshot.pending_updates)
-                    } else {
-                        String::new()
-                    };
-                    format!(
-                        "─ agents {} · {} active{attention}{updates}",
-                        cards.len(),
-                        active
-                    )
-                },
+                super::agent_tree::inline_agent_summary(snapshot, panel_width),
                 Style::default()
                     .fg(if snapshot.pending_attention > 0 {
                         Color::Rgb(255, 191, 77)

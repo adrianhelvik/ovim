@@ -150,6 +150,10 @@ pub(crate) fn project_inline_agent_cards(
     let mut cards = snapshot
         .hierarchy()
         .into_iter()
+        // The live edge of chat is reserved for work that can still change or
+        // needs the operator. Terminal history remains available in the tree
+        // instead of permanently occupying the composer footer.
+        .filter(|agent| is_active(agent) || agent.attention.pending_approvals > 0)
         .map(|agent| {
             let expanded = expanded.contains(agent.agent_id.as_str());
             let mut card = project_agent_card(agent, width, expanded);
@@ -163,6 +167,64 @@ pub(crate) fn project_inline_agent_cards(
     // cards. Stable hierarchy order is retained within each priority tier.
     cards.sort_by_key(|card| std::cmp::Reverse(card.attention_priority));
     cards
+}
+
+pub(crate) fn inline_agent_summary(snapshot: &AgentControlPlaneSnapshot, width: usize) -> String {
+    let active = snapshot
+        .agents
+        .iter()
+        .filter(|agent| is_active(agent))
+        .count();
+    let completed = snapshot
+        .agents
+        .iter()
+        .filter(|agent| agent.lifecycle == "completed")
+        .count();
+    let interrupted = snapshot
+        .agents
+        .iter()
+        .filter(|agent| agent.lifecycle == "interrupted")
+        .count();
+    let failed = snapshot
+        .agents
+        .iter()
+        .filter(|agent| agent.lifecycle == "failed")
+        .count();
+
+    let summary = if active > 0 || snapshot.pending_attention > 0 {
+        let attention = if snapshot.pending_attention > 0 {
+            format!(" · !{} needs you", snapshot.pending_attention)
+        } else {
+            String::new()
+        };
+        let updates = if snapshot.pending_updates > 0 {
+            format!(" · {} updates", snapshot.pending_updates)
+        } else {
+            String::new()
+        };
+        format!(
+            "─ agents {} · {active} active{attention}{updates} · Ctrl-T inspect",
+            snapshot.agents.len()
+        )
+    } else {
+        let mut outcomes = Vec::new();
+        if completed > 0 {
+            outcomes.push(format!("{completed} completed"));
+        }
+        if failed > 0 {
+            outcomes.push(format!("{failed} failed"));
+        }
+        if interrupted > 0 {
+            outcomes.push(format!("{interrupted} interrupted"));
+        }
+        let outcomes = if outcomes.is_empty() {
+            "idle".into()
+        } else {
+            outcomes.join(" · ")
+        };
+        format!("─ agent run finished · {outcomes} · Ctrl-T history")
+    };
+    fit(&summary, width)
 }
 
 pub(crate) fn project_agent_approval_prompt(
@@ -1008,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_agents_collapse_to_one_quiet_inline_row() {
+    fn terminal_agents_leave_only_a_compact_inline_history_summary() {
         let snapshot = snapshot(vec![agent(
             "agt_done",
             "agt_root",
@@ -1016,10 +1078,26 @@ mod tests {
             "completed",
         )]);
         let cards = project_inline_agent_cards(&snapshot, 72, &HashSet::new());
-        assert_eq!(cards[0].lines.len(), 1);
-        assert!(cards[0].can_followup);
-        assert!(!cards[0].can_message);
-        assert!(!cards[0].can_interrupt);
+        assert!(cards.is_empty());
+        assert_eq!(
+            inline_agent_summary(&snapshot, 72),
+            "─ agent run finished · 1 completed · Ctrl-T history"
+        );
+    }
+
+    #[test]
+    fn inline_footer_lists_only_live_agents_but_summarizes_the_whole_run() {
+        let snapshot = snapshot(vec![
+            agent("agt_done", "agt_root", "finished review", "completed"),
+            agent("agt_live", "agt_root", "inspect parser", "running"),
+        ]);
+        let cards = project_inline_agent_cards(&snapshot, 72, &HashSet::new());
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].agent_id, "agt_live");
+        assert_eq!(
+            inline_agent_summary(&snapshot, 72),
+            "─ agents 2 · 1 active · Ctrl-T inspect"
+        );
     }
 
     #[test]
@@ -1137,7 +1215,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_inline_card_bounds_handoff_and_shows_evidence_and_artifacts() {
+    fn completed_history_card_bounds_handoff_and_shows_evidence_and_artifacts() {
         let mut item = agent("agt_done", "agt_root", "report findings", "completed");
         item["handoff"] = json!({
             "event_id": "evt_handoff",
@@ -1158,11 +1236,11 @@ mod tests {
         }]);
         let snapshot = snapshot(vec![item]);
         let expanded = HashSet::from(["agt_done".to_string()]);
-        let cards = project_inline_agent_cards(&snapshot, 48, &expanded);
-        let text = cards[0].lines.join("\n");
+        let view = project_agent_tree(Some(&snapshot), 48, &expanded, true);
+        let text = view.cards[0].lines.join("\n");
 
         assert!(text.contains("handoff completed · 1e · 1a"));
-        assert!(cards[0]
+        assert!(view.cards[0]
             .lines
             .iter()
             .all(|line| UnicodeWidthStr::width(line.as_str()) <= 47));
