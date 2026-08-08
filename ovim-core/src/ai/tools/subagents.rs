@@ -92,7 +92,11 @@ pub fn parent_control_tools(
                     "objective": { "type": "string", "minLength": 1, "maxLength": 8192 },
                     "agent_kind": { "type": "string", "enum": roles },
                     "model": { "type": "string", "enum": models },
-                    "reasoning_effort": { "type": "string", "enum": efforts },
+                    "reasoning_effort": {
+                        "type": "string",
+                        "enum": efforts,
+                        "description": "Choose the lowest advertised effort that fits the risk. Sol review normally uses medium or high; reserve xhigh for an explicitly named subtle concurrency or architecture risk."
+                    },
                     "context_mode": { "type": "string", "enum": ["brief"] },
                     "expected_output": {
                         "type": "string",
