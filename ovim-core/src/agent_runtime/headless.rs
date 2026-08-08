@@ -30,6 +30,115 @@ pub struct AgentControlPlaneSnapshot {
     pub pending_updates: usize,
 }
 
+const MAX_AGENT_TRACE_EVENTS: usize = 64;
+const MAX_AGENT_TRACE_SUMMARY_CHARS: usize = 240;
+
+fn agent_trace(events: &[EventEnvelope], agent_id: &AgentId) -> Vec<AgentTraceEventSnapshot> {
+    let mut trace = events
+        .iter()
+        .filter(|event| event.agent_id.as_ref() == Some(agent_id))
+        .filter_map(trace_event)
+        .collect::<Vec<_>>();
+    if trace.len() > MAX_AGENT_TRACE_EVENTS {
+        trace.drain(..trace.len() - MAX_AGENT_TRACE_EVENTS);
+    }
+
+    trace
+}
+
+fn trace_event(event: &EventEnvelope) -> Option<AgentTraceEventSnapshot> {
+    let (kind, summary) = match &event.kind {
+        EventKind::AgentLifecycle(value) => (
+            "lifecycle",
+            value
+                .detail
+                .clone()
+                .unwrap_or_else(|| format!("state {}", wire_name(&value.state))),
+        ),
+        EventKind::AgentProvider(value) => (
+            "provider",
+            format!(
+                "{} · {}/{}",
+                wire_name(&value.state),
+                value.model,
+                value.reasoning_effort
+            ),
+        ),
+        EventKind::AgentProgress(value) => (
+            "progress",
+            value
+                .detail
+                .clone()
+                .or_else(|| {
+                    value
+                        .current_tool
+                        .as_ref()
+                        .map(|tool| format!("tool {tool}"))
+                })
+                .unwrap_or_else(|| wire_name(&value.activity)),
+        ),
+        EventKind::ToolStarted(value) => ("tool_started", value.tool_name.clone()),
+        EventKind::ToolResult(value) => (
+            "tool_result",
+            value
+                .summary
+                .clone()
+                .map(|summary| format!("{} · {summary}", wire_name(&value.outcome)))
+                .unwrap_or_else(|| wire_name(&value.outcome)),
+        ),
+        EventKind::AgentHandoff(value) => (
+            "handoff",
+            format!(
+                "{} · {}",
+                wire_name(&value.handoff.status()),
+                value.handoff.as_handoff().summary
+            ),
+        ),
+        EventKind::AgentApprovalRequested(value) => (
+            "approval_requested",
+            format!("{} · {}", value.tool_name, value.reason),
+        ),
+        EventKind::AgentApprovalResolved(value) => (
+            "approval_resolved",
+            format!("{} · {}", wire_name(&value.decision), value.reason),
+        ),
+        EventKind::AgentFollowup(_) => ("followup", "follow-up turn started".into()),
+        EventKind::AgentMessage(_) => ("message", "steering message queued".into()),
+        EventKind::AgentMessageDelivery(_) => {
+            ("message_delivery", "steering delivery updated".into())
+        }
+        _ => return None,
+    };
+    Some(AgentTraceEventSnapshot {
+        sequence: event.sequence,
+        recorded_at: event.recorded_at.clone(),
+        kind: kind.into(),
+        summary: bounded_trace_summary(&summary),
+        turn_id: event.turn_id.clone(),
+        provider_call_id: event.provider_call_id.clone(),
+    })
+}
+
+fn wire_name(value: &impl Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn bounded_trace_summary(value: &str) -> String {
+    let mut chars = value.chars();
+    let bounded = chars
+        .by_ref()
+        .take(MAX_AGENT_TRACE_SUMMARY_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        format!("{bounded}…")
+    } else {
+        bounded
+    }
+}
+
 impl AgentControlPlaneSnapshot {
     /// Return agents in stable parent-before-child order.
     ///
@@ -175,6 +284,23 @@ pub struct AgentSnapshot {
     pub artifact_handles: Vec<AgentArtifactHandle>,
     pub attention: AgentAttentionSnapshot,
     pub recovery_status: String,
+    /// Bounded, ordered operational history. This intentionally contains
+    /// auditable state/tool summaries rather than provider chain-of-thought or
+    /// raw tool payloads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<AgentTraceEventSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTraceEventSnapshot {
+    pub sequence: u64,
+    pub recorded_at: String,
+    pub kind: String,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<TurnId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_call_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -373,6 +499,7 @@ pub(crate) fn build_agent_snapshot(
                 .get(&agent_id)
                 .cloned()
                 .unwrap_or_else(|| "none".into()),
+            trace: agent_trace(events, &agent_id),
             agent_id,
         });
     }
@@ -636,6 +763,31 @@ fn state_name(state: &DispatchState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run_log::{
+        EventActor, ToolStartedEvent, EVENT_PAYLOAD_VERSION, EVENT_SCHEMA_VERSION,
+    };
+
+    fn tool_event(agent_id: &AgentId, sequence: u64, tool_name: &str) -> EventEnvelope {
+        EventEnvelope {
+            schema_version: EVENT_SCHEMA_VERSION,
+            payload_version: EVENT_PAYLOAD_VERSION,
+            event_id: EventId::new(),
+            run_id: RunId::new(),
+            sequence,
+            recorded_at: format!("2026-08-08T00:00:{sequence:02}Z"),
+            caused_by: None,
+            operation_id: None,
+            provider_call_id: Some(format!("call_{sequence}")),
+            actor: EventActor::Agent(agent_id.clone()),
+            agent_id: Some(agent_id.clone()),
+            turn_id: None,
+            workspace_id: None,
+            branch_id: None,
+            kind: EventKind::ToolStarted(ToolStartedEvent {
+                tool_name: tool_name.into(),
+            }),
+        }
+    }
 
     fn pending_approval(created_at: &str) -> AgentApprovalSnapshot {
         AgentApprovalSnapshot {
@@ -699,6 +851,7 @@ mod tests {
             artifact_handles: Vec::new(),
             attention: AgentAttentionSnapshot::default(),
             recovery_status: "none".into(),
+            trace: Vec::new(),
         }
     }
 
@@ -712,6 +865,26 @@ mod tests {
             pending_attention: 0,
             pending_updates: 0,
         }
+    }
+
+    #[test]
+    fn operational_trace_is_ordered_bounded_and_omits_raw_payloads() {
+        let agent_id = AgentId::new();
+        let events = (0..70)
+            .map(|sequence| tool_event(&agent_id, sequence, &format!("tool_{sequence}")))
+            .collect::<Vec<_>>();
+
+        let trace = agent_trace(&events, &agent_id);
+
+        assert_eq!(trace.len(), MAX_AGENT_TRACE_EVENTS);
+        assert_eq!(trace.first().unwrap().sequence, 6);
+        assert_eq!(trace.last().unwrap().sequence, 69);
+        assert_eq!(trace.last().unwrap().kind, "tool_started");
+        assert_eq!(trace.last().unwrap().summary, "tool_69");
+        assert_eq!(
+            trace.last().unwrap().provider_call_id.as_deref(),
+            Some("call_69")
+        );
     }
 
     #[test]

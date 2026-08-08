@@ -422,6 +422,26 @@ fn project_agent_card(agent: &AgentSnapshot, width: usize, expanded: bool) -> Ag
                 usable,
             ));
         }
+        if agent.trace.is_empty() {
+            lines.push(fit(&format!("{indent}trace not reported"), usable));
+        } else {
+            lines.push(fit(
+                &format!("{indent}trace · {} events", agent.trace.len()),
+                usable,
+            ));
+            let start = agent.trace.len().saturating_sub(8);
+            for event in &agent.trace[start..] {
+                lines.push(fit(
+                    &format!(
+                        "{indent}  #{} {} · {}",
+                        event.sequence,
+                        event.kind.replace('_', " "),
+                        event.summary.replace('\n', " ")
+                    ),
+                    usable,
+                ));
+            }
+        }
         if let Some(message) = agent.messages.last() {
             let direction = if message.recipient_agent_id == agent.agent_id {
                 "steer in"
@@ -571,9 +591,9 @@ pub(crate) fn render_agent_tree_panel(
         let hint = if footer_height == 1 && !actions.is_empty() {
             format!(" {} · Space · q close", actions.join(" · "))
         } else if area.width >= 30 {
-            " ↵ inspect · Space details · f follow".into()
+            " ↵ trace · Space details · f follow".into()
         } else {
-            " ↵ inspect · Space · Tab".into()
+            " ↵ trace · Space · Tab".into()
         };
         render_text_row(
             frame,
@@ -1244,6 +1264,25 @@ mod tests {
             .lines
             .iter()
             .all(|line| UnicodeWidthStr::width(line.as_str()) <= 47));
+    }
+
+    #[test]
+    fn expanded_agent_card_exposes_bounded_operational_trace() {
+        let mut item = agent("agt_trace", "agt_root", "inspect runtime", "running");
+        item["trace"] = json!([{
+            "sequence": 41,
+            "recorded_at": "2026-08-08T00:00:00Z",
+            "kind": "tool_started",
+            "summary": "read_file · src/runtime.rs",
+            "provider_call_id": "call_41"
+        }]);
+        let snapshot = snapshot(vec![item]);
+        let expanded = HashSet::from(["agt_trace".to_string()]);
+        let view = project_agent_tree(Some(&snapshot), 80, &expanded, true);
+        let text = view.cards[0].lines.join("\n");
+
+        assert!(text.contains("trace · 1 events"));
+        assert!(text.contains("#41 tool started · read_file · src/runtime.rs"));
     }
 
     #[test]
