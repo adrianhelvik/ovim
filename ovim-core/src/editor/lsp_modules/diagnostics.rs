@@ -222,16 +222,8 @@ impl Editor {
 
     /// Get the current diagnostic at the cursor position
     pub fn current_diagnostic(&self) -> Option<String> {
-        if self.diagnostics_cache_stale() {
-            return None;
-        }
-        let line = self.buffer().cursor().line();
-        let diagnostics = &self.lsp.state.current_file_diagnostics;
-
-        diagnostics
-            .iter()
-            .find(|d| d.range.start.line as usize == line)
-            .map(|d| d.message.clone())
+        self.diagnostic_nearest_to_cursor()
+            .map(|diagnostic| diagnostic.message.clone())
     }
 
     /// Get the total number of diagnostics
@@ -257,39 +249,10 @@ impl Editor {
 
         let line = self.buffer().cursor().line();
         let col = self.buffer().cursor().col().0;
-        let diagnostics = self.diagnostics_for_line(line);
-
-        if diagnostics.is_empty() {
+        let Some(diagnostic) = self.diagnostic_nearest_to_cursor() else {
             self.set_lsp_status("No diagnostics at cursor".to_string());
             return;
-        }
-
-        // Convert diagnostic positions from UTF-16 to char columns for comparison
-        let line_text: String = {
-            let rope = self.buffer().rope();
-            if line < rope.len_lines() {
-                rope.line(line).chars().take_while(|&c| c != '\n').collect()
-            } else {
-                String::new()
-            }
         };
-
-        // Pick diagnostic under cursor when possible; otherwise pick the nearest one
-        // on the line by column distance (instead of arbitrary first entry).
-        let diagnostic = diagnostics
-            .iter()
-            .min_by_key(|d| {
-                let start = crate::lsp::utf16_to_char_col(&line_text, d.range.start.character);
-                let end = crate::lsp::utf16_to_char_col(&line_text, d.range.end.character);
-                if col >= start && col <= end {
-                    0usize
-                } else if col < start {
-                    start - col
-                } else {
-                    col.saturating_sub(end)
-                }
-            })
-            .unwrap();
 
         // Format severity with markdown for nice rendering
         let severity_label = match diagnostic.severity {
@@ -323,6 +286,40 @@ impl Editor {
         self.lsp.state.hover_content_type = crate::editor::lsp_state::HoverContentType::Diagnostic;
         self.set_mode(Mode::HoverPreview);
     }
+
+    /// Pick the diagnostic under the cursor, or the nearest diagnostic on the
+    /// same line. LSP columns are UTF-16 offsets while the editor cursor is
+    /// grapheme-indexed, so both are normalized to scalar-value columns before
+    /// comparing them.
+    fn diagnostic_nearest_to_cursor(&self) -> Option<&lsp_types::Diagnostic> {
+        let line = self.buffer().cursor().line();
+        let diagnostics = self.diagnostics_for_line(line);
+        if diagnostics.is_empty() {
+            return None;
+        }
+
+        let line_text: String = {
+            let rope = self.buffer().rope();
+            if line < rope.len_lines() {
+                rope.line(line).chars().take_while(|&c| c != '\n').collect()
+            } else {
+                String::new()
+            }
+        };
+        let col = crate::unicode::grapheme_to_char_col(&line_text, self.buffer().cursor().col()).0;
+
+        diagnostics.into_iter().min_by_key(|diagnostic| {
+            let start = crate::lsp::utf16_to_char_col(&line_text, diagnostic.range.start.character);
+            let end = crate::lsp::utf16_to_char_col(&line_text, diagnostic.range.end.character);
+            if col >= start && col <= end {
+                0
+            } else if col < start {
+                start - col
+            } else {
+                col.saturating_sub(end)
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -337,6 +334,14 @@ mod tests {
             range: Range::new(Position::new(0, 0), Position::new(0, 1)),
             severity,
             message: "x".to_string(),
+            ..Diagnostic::default()
+        }
+    }
+
+    fn ranged_diag(start: u32, end: u32, message: &str) -> Diagnostic {
+        Diagnostic {
+            range: Range::new(Position::new(0, start), Position::new(0, end)),
+            message: message.to_string(),
             ..Diagnostic::default()
         }
     }
@@ -360,6 +365,42 @@ mod tests {
         // errors for servers that omit `severity`.
         let diags = vec![diag(None), diag(Some(DiagnosticSeverity::WARNING))];
         assert_eq!(diagnostic_counts(&diags), (1, 1, 0, 0));
+    }
+
+    #[test]
+    fn current_diagnostic_uses_cursor_column_on_shared_line() {
+        let mut editor = Editor::with_content("first second\n");
+        editor.lsp.state.set_current_file_diagnostics(vec![
+            ranged_diag(0, 5, "first diagnostic"),
+            ranged_diag(6, 12, "second diagnostic"),
+        ]);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(0, crate::unicode::GraphemeCol(9));
+
+        assert_eq!(
+            editor.current_diagnostic().as_deref(),
+            Some("second diagnostic")
+        );
+    }
+
+    #[test]
+    fn current_diagnostic_normalizes_grapheme_and_utf16_columns() {
+        let mut editor = Editor::with_content("👨‍👩‍👧‍👦 alpha beta\n");
+        editor.lsp.state.set_current_file_diagnostics(vec![
+            ranged_diag(12, 17, "alpha diagnostic"),
+            ranged_diag(18, 22, "beta diagnostic"),
+        ]);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(0, crate::unicode::GraphemeCol(8));
+
+        assert_eq!(
+            editor.current_diagnostic().as_deref(),
+            Some("beta diagnostic")
+        );
     }
 
     /// Helper: fire a pre-built `DiagnosticResult` into the diagnostics slot so
