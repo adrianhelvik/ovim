@@ -31,6 +31,19 @@ pub(crate) struct DurableCodexSession {
     key: crate::run_log::ProviderSessionKey,
 }
 
+fn format_provider_steer_batch(batch: &[(u64, String)]) -> String {
+    if let [(.., content)] = batch {
+        return content.clone();
+    }
+    let messages = batch
+        .iter()
+        .enumerate()
+        .map(|(index, (_, content))| format!("{}. {content}", index + 1))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("User steering messages queued before this tool boundary, oldest first:\n\n{messages}")
+}
+
 impl DurableCodexSession {
     pub(crate) fn new(
         catalog: Arc<crate::run_log::RunCatalog>,
@@ -714,23 +727,25 @@ impl AppServerClient {
                     while let Ok(update) = rx.try_recv() {
                         apply_provider_steer_update(&mut pending_steers, update);
                     }
-                    while let Some((id, content)) = pending_steers.pop_front() {
-                        match self
+                    let batch = pending_steers.drain(..).collect::<Vec<_>>();
+                    if !batch.is_empty() {
+                        let content = format_provider_steer_batch(&batch);
+                        let result = self
                             .steer_turn(thread_id, turn_id, &content, stream_tx.as_ref())
-                            .await
-                        {
-                            Ok(()) => {
-                                if let Some(tx) = stream_tx.as_ref() {
-                                    let _ = tx.send(StreamChunk::SteerAccepted { id, content });
-                                }
-                            }
-                            Err(error) => {
-                                if let Some(tx) = stream_tx.as_ref() {
-                                    let _ = tx.send(StreamChunk::SteerRejected {
+                            .await;
+                        for (id, original) in batch {
+                            if let Some(tx) = stream_tx.as_ref() {
+                                let chunk = match &result {
+                                    Ok(()) => StreamChunk::SteerAccepted {
+                                        id,
+                                        content: original,
+                                    },
+                                    Err(error) => StreamChunk::SteerRejected {
                                         id,
                                         error: error.to_string(),
-                                    });
-                                }
+                                    },
+                                };
+                                let _ = tx.send(chunk);
                             }
                         }
                     }
@@ -1295,6 +1310,15 @@ mod tests {
             syntax_check: None,
             retry: RetryPolicy::default(),
         }
+    }
+
+    #[test]
+    fn provider_steering_preserves_single_messages_and_batches_bursts() {
+        assert_eq!(format_provider_steer_batch(&[(1, "first".into())]), "first");
+        assert_eq!(
+            format_provider_steer_batch(&[(1, "first".into()), (2, "second".into())]),
+            "User steering messages queued before this tool boundary, oldest first:\n\n1. first\n\n2. second"
+        );
     }
 
     fn tool_schema(name: &str) -> Value {
