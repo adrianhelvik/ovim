@@ -631,6 +631,37 @@ impl AgentProviderSession for ProfileAgentSession {
         Box::pin(async move { outcome })
     }
 
+    fn repair_handoff(
+        &mut self,
+        payload: &[u8],
+        validation_error: &str,
+    ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
+        let outcome = if !self.terminal || self.active.is_some() {
+            Err(AgentProviderError::new(
+                "handoff repair requires a retained terminal provider boundary",
+            ))
+        } else {
+            let payload = redact_high_risk_tokens(&String::from_utf8_lossy(payload));
+            self.messages.push(ChatMessage {
+                role: ChatRole::User,
+                content: format!(
+                    "Your previous submit_handoff result failed validation. Repair only the result envelope; do not redo the investigation. Preserve every finding and evidence item, correct the schema contradiction, and call submit_handoff exactly once.\n\nValidation error: {}\n\nRejected payload:\n{}",
+                    redact_high_risk_tokens(validation_error),
+                    payload
+                ),
+                model: None,
+                timestamp: Instant::now(),
+                images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                provider_state: Vec::new(),
+            });
+            self.terminal = false;
+            self.begin_round()
+        };
+        Box::pin(async move { outcome })
+    }
+
     fn can_followup(&self) -> bool {
         self.terminal && self.active.is_none()
     }
@@ -1138,6 +1169,71 @@ mod tests {
             .await
             .expect("session event timed out")
             .expect("session event failed")
+    }
+
+    async fn next_handoff(session: &mut Box<dyn AgentProviderSession>) -> Vec<u8> {
+        for _ in 0..16 {
+            if let AgentProviderEvent::Handoff { payload } = next(session).await {
+                return payload;
+            }
+        }
+        panic!("provider did not produce a handoff")
+    }
+
+    #[tokio::test]
+    async fn retained_profile_session_repairs_only_the_invalid_handoff_envelope() {
+        let mut invalid = completed_handoff();
+        invalid["blockers"] = json!(["verification unavailable"]);
+        let transport = Arc::new(ScriptedTransport::new([
+            RoundScript {
+                chunks: vec![
+                    ScriptChunk::Tool {
+                        id: "bad-handoff",
+                        name: SUBMIT_HANDOFF_TOOL,
+                        arguments: invalid.clone(),
+                    },
+                    ScriptChunk::Done,
+                ],
+                error: None,
+            },
+            RoundScript {
+                chunks: vec![
+                    ScriptChunk::Tool {
+                        id: "repaired-handoff",
+                        name: SUBMIT_HANDOFF_TOOL,
+                        arguments: completed_handoff(),
+                    },
+                    ScriptChunk::Done,
+                ],
+                error: None,
+            },
+        ]));
+        let adapter = provider(AiProviderKind::OpenAi, transport.clone());
+        let mut session = adapter
+            .start(start_request(
+                AiProviderKind::OpenAi,
+                vec![scoped_read_tool()],
+            ))
+            .await
+            .unwrap();
+        let payload = next_handoff(&mut session).await;
+
+        session
+            .repair_handoff(&payload, "completed handoff cannot contain blockers")
+            .await
+            .unwrap();
+        let repaired = next_handoff(&mut session).await;
+
+        assert_eq!(
+            serde_json::from_slice::<Value>(&repaired).unwrap(),
+            completed_handoff()
+        );
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 2);
+        let repair_prompt = requests[1].messages.last().unwrap().content.as_str();
+        assert!(repair_prompt.contains("Repair only the result envelope"));
+        assert!(repair_prompt.contains("completed handoff cannot contain blockers"));
+        assert!(repair_prompt.contains("verification unavailable"));
     }
 
     #[tokio::test]

@@ -1099,6 +1099,14 @@ impl AgentProviderSession for MessageDeliveringSession {
         self.inner.deliver_message(message_event_id, content)
     }
 
+    fn repair_handoff(
+        &mut self,
+        payload: &[u8],
+        validation_error: &str,
+    ) -> super::AgentFuture<'_, Result<(), AgentProviderError>> {
+        self.inner.repair_handoff(payload, validation_error)
+    }
+
     fn can_followup(&self) -> bool {
         self.inner.can_followup()
     }

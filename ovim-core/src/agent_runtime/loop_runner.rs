@@ -259,6 +259,20 @@ pub trait AgentProviderSession: Send {
         })
     }
 
+    /// Ask a retained session to repair only an invalid result envelope. The
+    /// runner calls this at most once and preserves the rejected payload first.
+    fn repair_handoff(
+        &mut self,
+        _payload: &[u8],
+        _validation_error: &str,
+    ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
+        Box::pin(async {
+            Err(AgentProviderError::new(
+                "provider session does not support handoff repair",
+            ))
+        })
+    }
+
     /// True only while the adapter can prove this idle session retained a
     /// bounded, non-ambiguous context suitable for a new child turn.
     fn can_followup(&self) -> bool {
@@ -726,6 +740,7 @@ impl AgentLoopRunner {
             .await?;
 
         let mut observed_tools = BTreeMap::new();
+        let mut handoff_repair_attempted = false;
         let handoff = loop {
             let event = tokio::select! {
                 reason = input.cancellation.cancelled() => {
@@ -912,7 +927,28 @@ impl AgentLoopRunner {
                         Ok(handoff) => break handoff,
                         Err(error) => {
                             let preserved =
-                                record_invalid_handoff(&input, &payload, &error, false).await?;
+                                record_invalid_handoff(&input, &payload, &error, true).await?;
+                            if !handoff_repair_attempted {
+                                handoff_repair_attempted = true;
+                                if session
+                                    .repair_handoff(&payload, &error.to_string())
+                                    .await
+                                    .is_ok()
+                                {
+                                    record_progress(
+                                        &input,
+                                        started_at,
+                                        AgentProgressActivity::FinalizingHandoff,
+                                        None,
+                                        Some(
+                                            "provider is repairing an invalid result envelope"
+                                                .into(),
+                                        ),
+                                    )
+                                    .await?;
+                                    continue;
+                                }
+                            }
                             break synthetic_handoff(
                                 HandoffStatus::Failed,
                                 format!(
@@ -1908,7 +1944,7 @@ mod tests {
             })
             .expect("invalid handoff must be preserved before terminal failure");
         assert!(!preserved.1.raw_payload.is_empty());
-        assert!(!preserved.1.repair_attempted);
+        assert!(preserved.1.repair_attempted);
         assert!(result.handoff.as_handoff().blockers[0].contains(preserved.0.event_id.as_str()));
     }
 
