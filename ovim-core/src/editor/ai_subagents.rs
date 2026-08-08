@@ -534,7 +534,7 @@ impl AiSubagentRun {
         self.workspace_manager
             .register_snapshot_adapters(
                 &manifest_id,
-                Arc::new(CapturedSnapshotSymbolIndex::new(
+                Arc::new(CapturedSnapshotSymbolIndex::active_document(
                     manifest_id.clone(),
                     symbols,
                 )),
@@ -626,7 +626,7 @@ impl AiSubagentRun {
         self.workspace_manager
             .register_snapshot_adapters(
                 manifest_id,
-                Arc::new(CapturedSnapshotSymbolIndex::new(
+                Arc::new(CapturedSnapshotSymbolIndex::active_document(
                     manifest_id.clone(),
                     prepared.symbols,
                 )),

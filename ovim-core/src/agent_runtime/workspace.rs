@@ -186,6 +186,7 @@ pub struct SnapshotSymbol {
 /// copied into a manifest-bound index.
 pub trait SnapshotSymbolAdapter: Send + Sync {
     fn manifest_id(&self) -> &ManifestId;
+    fn scope_description(&self) -> &str;
     fn search(&self, query: &str, maximum: usize) -> Result<Vec<SnapshotSymbol>, String>;
 }
 
@@ -213,6 +214,7 @@ pub trait SnapshotDiagnosticAdapter: Send + Sync {
 pub struct CapturedSnapshotSymbolIndex {
     manifest_id: ManifestId,
     symbols: Vec<SnapshotSymbol>,
+    scope_description: String,
 }
 
 impl CapturedSnapshotSymbolIndex {
@@ -220,6 +222,16 @@ impl CapturedSnapshotSymbolIndex {
         Self {
             manifest_id,
             symbols,
+            scope_description: "captured snapshot documents".into(),
+        }
+    }
+
+    pub fn active_document(manifest_id: ManifestId, symbols: Vec<SnapshotSymbol>) -> Self {
+        Self {
+            manifest_id,
+            symbols,
+            scope_description:
+                "active document at dispatch; use search_project for project-wide discovery".into(),
         }
     }
 }
@@ -227,6 +239,10 @@ impl CapturedSnapshotSymbolIndex {
 impl SnapshotSymbolAdapter for CapturedSnapshotSymbolIndex {
     fn manifest_id(&self) -> &ManifestId {
         &self.manifest_id
+    }
+
+    fn scope_description(&self) -> &str {
+        &self.scope_description
     }
 
     fn search(&self, query: &str, maximum: usize) -> Result<Vec<SnapshotSymbol>, String> {
@@ -1033,10 +1049,13 @@ impl SnapshotToolExecutor {
 
     fn scoped_view_with_adapters(&self) -> ScopedToolView {
         let mut tools = Self::scoped_view().tools();
-        if self.symbols.is_some() {
+        if let Some(symbols) = &self.symbols {
             tools.push(ScopedTool {
                 name: SNAPSHOT_SEARCH_SYMBOLS_TOOL.into(),
-                description: "Search the manifest-bound symbol index captured at dispatch.".into(),
+                description: format!(
+                    "Search the manifest-bound symbol index captured from {}.",
+                    symbols.scope_description()
+                ),
                 input_schema: strict_schema(json!({
                     "type": "object",
                     "additionalProperties": false,
