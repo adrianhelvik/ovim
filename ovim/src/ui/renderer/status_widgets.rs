@@ -18,7 +18,7 @@ fn ui_color(theme: &Theme, group: UiGroup) -> Color {
 /// Renders the LSP progress line (just above status line)
 pub fn render_progress_line(frame: &mut Frame, progress_msg: &str, area: Rect) {
     // Right-align the progress message
-    let padding_len = area.width.saturating_sub(progress_msg.len() as u16 + 2);
+    let padding_len = progress_padding(area.width, progress_msg);
     let progress_line = Line::from(vec![
         Span::raw(" ".repeat(padding_len as usize)),
         Span::styled(
@@ -31,6 +31,11 @@ pub fn render_progress_line(frame: &mut Frame, progress_msg: &str, area: Rect) {
 
     let paragraph = Paragraph::new(progress_line).style(Style::default().bg(Color::Black));
     frame.render_widget(paragraph, area);
+}
+
+fn progress_padding(area_width: u16, message: &str) -> u16 {
+    let message_width = message.width().min(u16::MAX as usize) as u16;
+    area_width.saturating_sub(message_width.saturating_add(2))
 }
 
 /// Renders the tab bar with overflow handling
@@ -1412,8 +1417,8 @@ fn truncate_middle(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_path_hint, hidden_ai_chat_status_for, truncate_middle, truncate_with_ellipsis,
-        wrap_prompt_rows, ToastLevel, ToastRow,
+        compact_path_hint, hidden_ai_chat_status_for, progress_padding, truncate_middle,
+        truncate_with_ellipsis, wrap_prompt_rows, ToastLevel, ToastRow,
     };
     use crate::editor::{ToastRequest, ToastSource};
 
@@ -1509,5 +1514,10 @@ mod tests {
         assert_eq!(truncate_with_ellipsis("alpha beta", 6), "alpha…");
         assert_eq!(truncate_with_ellipsis("界abc", 4), "界a…");
         assert_eq!(truncate_with_ellipsis("hello", 1), "…");
+    }
+
+    #[test]
+    fn progress_alignment_measures_terminal_cells_not_utf8_bytes() {
+        assert_eq!(progress_padding(20, "解析中"), 12);
     }
 }

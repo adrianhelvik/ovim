@@ -13,6 +13,18 @@ use super::ai_chat::TEXT_DIM;
 use super::helpers::{grapheme_col_to_display_col, truncate_to_width};
 use super::layout::OverlayContext;
 
+fn hover_content_width(rendered_lines: &[Line<'_>], hover_text: &str, is_preview: bool) -> usize {
+    if is_preview {
+        rendered_lines.iter().map(Line::width).max().unwrap_or(30)
+    } else {
+        hover_text
+            .lines()
+            .map(UnicodeWidthStr::width)
+            .max()
+            .unwrap_or(30)
+    }
+}
+
 /// Renders hover information as a floating window positioned near the cursor
 ///
 /// Both modes are scrollable (j/k vertical, h/l horizontal):
@@ -54,20 +66,7 @@ pub fn render_hover_window(
     };
 
     // Calculate content dimensions
-    let content_width = if is_preview {
-        rendered_lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.len())
-                    .sum::<usize>()
-            })
-            .max()
-            .unwrap_or(30)
-    } else {
-        hover_text.lines().map(|l| l.len()).max().unwrap_or(30)
-    };
+    let content_width = hover_content_width(&rendered_lines, hover_text, is_preview);
 
     let window_width = (content_width as u16 + 4)
         .clamp(MIN_WIDTH, max_width)
@@ -1507,10 +1506,24 @@ pub fn render_ai_chat_image_modal_frame(frame: &mut Frame, editor: &Editor) {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{backend::TestBackend, layout::Rect, style::Modifier, Terminal};
+    use ratatui::{
+        backend::TestBackend,
+        layout::Rect,
+        style::Modifier,
+        text::{Line, Span},
+        Terminal,
+    };
 
     use crate::editor::Editor;
     use ovim_core::ai::chat_types::{ChatOpts, ToolCallInfo};
+
+    #[test]
+    fn hover_width_uses_terminal_cells_in_preview_and_raw_modes() {
+        let rendered = vec![Line::from(vec![Span::raw("型"), Span::raw(" information")])];
+
+        assert_eq!(super::hover_content_width(&rendered, "ignored", true), 14);
+        assert_eq!(super::hover_content_width(&[], "型 information", false), 14);
+    }
 
     /// Regression test: heights 7 and 8 used to panic in `render_modal_dialog`
     /// because the clamp minimum (7) exceeded the available maximum

@@ -7,6 +7,13 @@ use ratatui::{
 };
 
 use crate::editor::lsp_manager_panel::{InstallStatus, LspManagerPanel, LspSection};
+use unicode_width::UnicodeWidthStr;
+
+fn list_row_padding(area_width: u16, language_name: &str, command: &str) -> usize {
+    usize::from(area_width)
+        .saturating_sub(6 + language_name.width() + command.width())
+        .max(2)
+}
 
 // Color palette
 mod colors {
@@ -253,11 +260,8 @@ fn render_entry_list(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
 
         // Show LSP server name
         if let Some(cmd) = &entry.lsp_command {
-            let padding = area
-                .width
-                .saturating_sub(4 + entry.language_name.len() as u16 + cmd.len() as u16 + 2)
-                .max(2);
-            spans.push(Span::styled(" ".repeat(padding as usize), Style::default()));
+            let padding = list_row_padding(area.width, &entry.language_name, cmd);
+            spans.push(Span::styled(" ".repeat(padding), Style::default()));
             spans.push(Span::styled(
                 cmd.as_str(),
                 Style::default().fg(colors::TEXT_MUTED),
@@ -349,7 +353,7 @@ fn render_detail_pane(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
-        "─".repeat((entry.language_name.len()).min(area.width as usize)),
+        "─".repeat(entry.language_name.width().min(area.width as usize)),
         Style::default().fg(colors::BORDER),
     )));
     lines.push(Line::default());
@@ -521,4 +525,15 @@ fn render_hint_bar(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::list_row_padding;
+
+    #[test]
+    fn list_padding_uses_terminal_cells_for_unicode_names_and_commands() {
+        assert_eq!(list_row_padding(30, "Rust", "rust"), 16);
+        assert_eq!(list_row_padding(30, "界界", "λx"), 18);
+    }
 }
