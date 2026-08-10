@@ -30,6 +30,7 @@ fn lua_failure_toast(title: &str, error: &anyhow::Error) -> super::ToastRequest 
         ),
     )
     .with_title(title)
+    .with_sticky(true)
 }
 
 #[cfg(feature = "lua")]

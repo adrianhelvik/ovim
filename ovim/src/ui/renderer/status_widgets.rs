@@ -1,4 +1,4 @@
-use crate::editor::{Editor, ToastLevel};
+use crate::editor::{Editor, Toast, ToastLevel};
 use crate::syntax::{Theme, UiGroup};
 use ovim_core::editor::ai_chat_input::{wrap_chat_input_rows_with_widths, ChatInputRow};
 use ratatui::{
@@ -584,7 +584,7 @@ pub fn render_rename_input(frame: &mut Frame, editor: &Editor, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn truncate_to_width(input: &str, max_width: usize) -> String {
+fn truncate_with_ellipsis(input: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
     }
@@ -594,7 +594,7 @@ fn truncate_to_width(input: &str, max_width: usize) -> String {
     }
 
     if max_width == 1 {
-        return "~".to_string();
+        return "…".to_string();
     }
 
     let mut out = String::new();
@@ -602,22 +602,70 @@ fn truncate_to_width(input: &str, max_width: usize) -> String {
 
     for ch in input.chars() {
         let w = ch.width().unwrap_or(0);
-        if used + w >= max_width {
+        if used + w > max_width - 1 {
             break;
         }
         out.push(ch);
         used += w;
     }
-    out.push('~');
+    out.push('…');
     out
 }
 
-fn toast_colors(theme: &Theme, level: ToastLevel) -> (Color, Color) {
+fn toast_accent(theme: &Theme, level: ToastLevel) -> Color {
     match level {
-        ToastLevel::Error => (Color::White, ui_color(theme, UiGroup::Error)),
-        ToastLevel::Warning => (Color::Black, ui_color(theme, UiGroup::Warning)),
-        ToastLevel::Success => (Color::Black, Color::Green),
-        ToastLevel::Info => (Color::Black, ui_color(theme, UiGroup::Info)),
+        ToastLevel::Error => ui_color(theme, UiGroup::Error),
+        ToastLevel::Warning => ui_color(theme, UiGroup::Warning),
+        ToastLevel::Success => Color::Green,
+        ToastLevel::Info => ui_color(theme, UiGroup::Info),
+    }
+}
+
+fn toast_glyph(level: ToastLevel) -> &'static str {
+    match level {
+        ToastLevel::Error => "×",
+        ToastLevel::Warning => "!",
+        ToastLevel::Success => "✓",
+        ToastLevel::Info => "•",
+    }
+}
+
+fn single_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToastRow {
+    level: ToastLevel,
+    label: String,
+    message: String,
+    repeat: u32,
+}
+
+impl ToastRow {
+    fn from_toast(toast: Toast) -> Self {
+        let label = toast
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| toast.source.label())
+            .to_string();
+        Self {
+            level: toast.level,
+            label,
+            message: single_line(&toast.message),
+            repeat: toast.repeat,
+        }
+    }
+
+    fn status(level: ToastLevel, label: &str, message: impl AsRef<str>) -> Self {
+        Self {
+            level,
+            label: label.to_string(),
+            message: single_line(message.as_ref()),
+            repeat: 1,
+        }
     }
 }
 
@@ -631,65 +679,73 @@ pub fn render_top_right_toasts(
     theme: &Theme,
     buffer_area: Rect,
 ) {
-    let mut rows: Vec<(String, ToastLevel)> = Vec::new();
+    let mut rows: Vec<ToastRow> = Vec::new();
 
-    if let Some(status) = hidden_ai_chat_status(editor) {
-        rows.push(status);
+    if let Some((message, level)) = hidden_ai_chat_status(editor) {
+        let message = message.trim();
+        rows.push(ToastRow::status(
+            level,
+            "AI",
+            message.strip_prefix("AI ").unwrap_or(message),
+        ));
     }
 
     if !editor.diagnostic_badge_dismissed() {
         let (errors, warnings, _, _) = editor.cached_diagnostic_count();
         if errors > 0 || warnings > 0 {
-            let text = if errors > 0 && warnings > 0 {
-                format!(" E:{} W:{} ", errors, warnings)
+            let message = if errors > 0 && warnings > 0 {
+                format!("{errors} errors · {warnings} warnings")
             } else if errors > 0 {
-                format!(" E:{} ", errors)
+                format!("{errors} errors")
             } else {
-                format!(" W:{} ", warnings)
+                format!("{warnings} warnings")
             };
-            rows.push((
-                text,
+            rows.push(ToastRow::status(
                 if errors > 0 {
                     ToastLevel::Error
                 } else {
                     ToastLevel::Warning
                 },
+                "Diagnostics",
+                message,
             ));
         }
     }
 
-    for toast in editor.visible_toasts_newest_first(4) {
-        let mut text = format!(" [{}] ", toast.source.label());
-        if let Some(title) = &toast.title {
-            text.push_str(title);
-            text.push_str(": ");
-        }
-        text.push_str(&toast.message);
-        if toast.repeat > 1 {
-            text.push_str(&format!(" x{}", toast.repeat));
-        }
-        text.push(' ');
-        rows.push((text, toast.level));
-    }
+    rows.extend(
+        editor
+            .visible_toasts_newest_first(4)
+            .into_iter()
+            .map(ToastRow::from_toast),
+    );
 
     if rows.is_empty() {
         return;
     }
 
     let max_rows = buffer_area.height.min(5) as usize;
-    for (index, (raw_text, level)) in rows.into_iter().take(max_rows).enumerate() {
+    for (index, row) in rows.into_iter().take(max_rows).enumerate() {
         let y = buffer_area.y.saturating_add(index as u16);
         if y >= buffer_area.bottom() {
             break;
         }
 
         let available = buffer_area.width.saturating_sub(2) as usize;
-        if available < 4 {
+        if available < 8 {
             continue;
         }
 
-        let text = truncate_to_width(&raw_text, available);
-        let width = text.width() as u16;
+        let glyph = format!(" {} ", toast_glyph(row.level));
+        let label = format!("{} · ", row.label);
+        let repeat = if row.repeat > 1 {
+            format!(" ({})", row.repeat)
+        } else {
+            String::new()
+        };
+        let trailing = " ";
+        let fixed_width = glyph.width() + label.width() + repeat.width() + trailing.width();
+        let message = truncate_with_ellipsis(&row.message, available.saturating_sub(fixed_width));
+        let width = (fixed_width + message.width()).min(available) as u16;
         if width == 0 {
             continue;
         }
@@ -702,12 +758,18 @@ pub fn render_top_right_toasts(
             height: 1,
         };
 
-        let (fg, bg) = toast_colors(theme, level);
-        let badge = Paragraph::new(Span::styled(
-            text,
-            Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
-        ));
-        frame.render_widget(badge, area);
+        let background = ui_color(theme, UiGroup::MenuBackground);
+        let foreground = ui_color(theme, UiGroup::Foreground);
+        let accent = toast_accent(theme, row.level);
+        let base = Style::default().bg(background);
+        let line = Line::from(vec![
+            Span::styled(glyph, base.fg(accent).add_modifier(Modifier::BOLD)),
+            Span::styled(label, base.fg(foreground).add_modifier(Modifier::BOLD)),
+            Span::styled(message, base.fg(foreground)),
+            Span::styled(repeat, base.fg(foreground).add_modifier(Modifier::DIM)),
+            Span::styled(trailing, base),
+        ]);
+        frame.render_widget(Paragraph::new(line).style(base), area);
     }
 }
 
@@ -1350,8 +1412,10 @@ fn truncate_middle(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_path_hint, hidden_ai_chat_status_for, truncate_middle, wrap_prompt_rows, ToastLevel,
+        compact_path_hint, hidden_ai_chat_status_for, truncate_middle, truncate_with_ellipsis,
+        wrap_prompt_rows, ToastLevel, ToastRow,
     };
+    use crate::editor::{ToastRequest, ToastSource};
 
     #[test]
     fn test_wrap_prompt_rows_preserves_text_across_rows() {
@@ -1420,5 +1484,30 @@ mod tests {
                 .expect("walkthrough status");
         assert_eq!(text, " AI walkthrough ready ");
         assert_eq!(level, ToastLevel::Warning);
+    }
+
+    #[test]
+    fn toast_row_uses_title_once_and_flattens_multiline_messages() {
+        let mut center = crate::editor::ToastCenter::new();
+        center.push(
+            ToastRequest::new(
+                ToastSource::Lsp,
+                ToastLevel::Error,
+                "Completion failed\nNo server is available",
+            )
+            .with_title("LSP"),
+        );
+
+        let row = ToastRow::from_toast(center.visible_toasts_newest_first(1).remove(0));
+
+        assert_eq!(row.label, "LSP");
+        assert_eq!(row.message, "Completion failed No server is available");
+    }
+
+    #[test]
+    fn toast_truncation_uses_a_single_width_aware_ellipsis() {
+        assert_eq!(truncate_with_ellipsis("alpha beta", 6), "alpha…");
+        assert_eq!(truncate_with_ellipsis("界abc", 4), "界a…");
+        assert_eq!(truncate_with_ellipsis("hello", 1), "…");
     }
 }

@@ -16,12 +16,8 @@ impl ToastLevel {
             Self::Info => Some(Duration::from_millis(3500)),
             Self::Success => Some(Duration::from_millis(2500)),
             Self::Warning => Some(Duration::from_millis(5000)),
-            Self::Error => None,
+            Self::Error => Some(Duration::from_millis(8000)),
         }
-    }
-
-    fn default_sticky(self) -> bool {
-        matches!(self, Self::Error)
     }
 }
 
@@ -69,7 +65,7 @@ impl ToastRequest {
             title: None,
             message: message.into(),
             ttl: level.default_ttl(),
-            sticky: level.default_sticky(),
+            sticky: false,
             dedupe_key: None,
         }
     }
@@ -162,22 +158,35 @@ impl ToastCenter {
         let now = Instant::now();
 
         if let Some(key) = request.dedupe_key.as_deref() {
-            if let Some(existing) = self
+            if let Some(index) = self
                 .toasts
-                .iter_mut()
-                .rev()
-                .find(|t| t.dedupe_key.as_deref() == Some(key))
+                .iter()
+                .rposition(|toast| toast.dedupe_key.as_deref() == Some(key))
             {
+                let existing = &self.toasts[index];
                 if existing.level == request.level
                     && existing.source == request.source
                     && existing.message == request.message
                 {
+                    let mut existing = self
+                        .toasts
+                        .remove(index)
+                        .expect("toast index came from this queue");
                     existing.created_at = now;
                     existing.repeat = existing.repeat.saturating_add(1);
                     existing.title = request.title;
                     existing.ttl = request.ttl;
                     existing.sticky = request.sticky;
-                    return existing.id;
+                    let id = existing.id;
+
+                    // A refreshed toast is the newest live item. Moving it to
+                    // the back also prevents an active deduped toast from
+                    // falling outside a small visible stack.
+                    self.toasts.push_back(existing.clone());
+                    if let Some(history) = self.history.iter_mut().find(|toast| toast.id == id) {
+                        *history = existing;
+                    }
+                    return id;
                 }
             }
         }
@@ -190,7 +199,15 @@ impl ToastCenter {
         self.history.push_back(toast);
 
         while self.toasts.len() > self.max_live {
-            self.toasts.pop_front();
+            // Prefer evicting a transient notification. Sticky alerts convey
+            // an unresolved condition and should not disappear merely because
+            // several routine messages arrived afterward.
+            let index = self
+                .toasts
+                .iter()
+                .position(|toast| !toast.sticky)
+                .unwrap_or(0);
+            self.toasts.remove(index);
         }
         while self.history.len() > self.max_history {
             self.history.pop_front();
@@ -267,6 +284,29 @@ mod tests {
         let visible = center.visible_toasts_newest_first(10);
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].repeat, 2);
+        assert_eq!(center.history_newest_first(10)[0].repeat, 2);
+    }
+
+    #[test]
+    fn dedupe_refresh_moves_toast_to_front_of_visible_stack() {
+        let mut center = ToastCenter::new();
+
+        let first_id = center.push(
+            ToastRequest::new(ToastSource::Lsp, ToastLevel::Warning, "Timed out")
+                .with_dedupe_key("lsp:timeout"),
+        );
+        center.push(ToastRequest::new(
+            ToastSource::System,
+            ToastLevel::Info,
+            "Indexed files",
+        ));
+        let refreshed_id = center.push(
+            ToastRequest::new(ToastSource::Lsp, ToastLevel::Warning, "Timed out")
+                .with_dedupe_key("lsp:timeout"),
+        );
+
+        assert_eq!(first_id, refreshed_id);
+        assert_eq!(center.visible_toasts_newest_first(1)[0].id, first_id);
     }
 
     #[test]
@@ -301,5 +341,41 @@ mod tests {
 
         assert!(!center.prune_expired());
         assert!(center.has_visible());
+    }
+
+    #[test]
+    fn errors_expire_by_default() {
+        let request = ToastRequest::new(ToastSource::Lsp, ToastLevel::Error, "Server failed");
+
+        assert!(!request.sticky);
+        assert_eq!(request.ttl, Some(Duration::from_secs(8)));
+    }
+
+    #[test]
+    fn live_limit_evicts_transient_toasts_before_sticky_alerts() {
+        let mut center = ToastCenter::new();
+        center.max_live = 2;
+
+        let sticky_id = center.push(
+            ToastRequest::new(ToastSource::System, ToastLevel::Error, "Config failed")
+                .with_sticky(true),
+        );
+        center.push(ToastRequest::new(
+            ToastSource::System,
+            ToastLevel::Info,
+            "First transient",
+        ));
+        center.push(ToastRequest::new(
+            ToastSource::System,
+            ToastLevel::Info,
+            "Second transient",
+        ));
+
+        let visible = center.visible_toasts_newest_first(10);
+        assert_eq!(visible.len(), 2);
+        assert!(visible.iter().any(|toast| toast.id == sticky_id));
+        assert!(visible
+            .iter()
+            .any(|toast| toast.message == "Second transient"));
     }
 }

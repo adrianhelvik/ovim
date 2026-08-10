@@ -40,7 +40,13 @@ fn is_lsp_toast_candidate(status_lower: &str) -> bool {
         || status_lower.contains("diagnostic")
 }
 
-fn classify_status_toast(status: &str) -> Option<(ToastLevel, Option<Duration>, bool, String)> {
+struct StatusToast {
+    level: ToastLevel,
+    ttl: Duration,
+    dedupe_key: String,
+}
+
+fn classify_status_toast(status: &str) -> Option<StatusToast> {
     if status.is_empty() {
         return None;
     }
@@ -51,7 +57,11 @@ fn classify_status_toast(status: &str) -> Option<(ToastLevel, Option<Duration>, 
     }
 
     if lower.contains("failed") || lower.contains("error") {
-        return Some((ToastLevel::Error, None, true, dedupe_key_for_status(&lower)));
+        return Some(StatusToast {
+            level: ToastLevel::Error,
+            ttl: Duration::from_secs(8),
+            dedupe_key: dedupe_key_for_status(&lower),
+        });
     }
 
     if lower.contains("timed out")
@@ -59,12 +69,11 @@ fn classify_status_toast(status: &str) -> Option<(ToastLevel, Option<Duration>, 
         || lower.contains("cancelled")
         || lower.contains("canceled")
     {
-        return Some((
-            ToastLevel::Warning,
-            Some(Duration::from_secs(6)),
-            false,
-            dedupe_key_for_status(&lower),
-        ));
+        return Some(StatusToast {
+            level: ToastLevel::Warning,
+            ttl: Duration::from_secs(6),
+            dedupe_key: dedupe_key_for_status(&lower),
+        });
     }
 
     None
@@ -195,12 +204,11 @@ impl Editor {
         self.lsp.state.status = status.clone();
         self.set_status_message(status.clone());
 
-        if let Some((level, ttl, sticky, dedupe_key)) = classify_status_toast(&status) {
-            let request = ToastRequest::new(ToastSource::Lsp, level, status)
+        if let Some(policy) = classify_status_toast(&status) {
+            let request = ToastRequest::new(ToastSource::Lsp, policy.level, status)
                 .with_title("LSP")
-                .with_ttl(ttl)
-                .with_sticky(sticky)
-                .with_dedupe_key(format!("lsp:{dedupe_key}"));
+                .with_ttl(Some(policy.ttl))
+                .with_dedupe_key(format!("lsp:{}", policy.dedupe_key));
             self.push_toast(request);
         }
     }

@@ -126,6 +126,7 @@ impl Editor {
                 ToastLevel::Error,
                 format!("{action} failed: {err}"),
             )
+            .with_sticky(true)
             .with_dedupe_key(format!("{}-resource-op-failure", action.to_lowercase()));
             self.push_toast(request);
         }

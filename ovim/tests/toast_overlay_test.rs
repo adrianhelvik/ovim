@@ -45,6 +45,8 @@ fn test_lsp_status_error_emits_deduped_toast() {
     assert_eq!(toasts[0].source, ToastSource::Lsp);
     assert_eq!(toasts[0].level, ToastLevel::Error);
     assert_eq!(toasts[0].repeat, 2);
+    assert!(!toasts[0].sticky, "routine LSP failures must auto-dismiss");
+    assert_eq!(toasts[0].ttl, Some(std::time::Duration::from_secs(8)));
 }
 
 #[test]
