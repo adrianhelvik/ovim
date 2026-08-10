@@ -1,7 +1,7 @@
 //! Markdown parser for hover window rendering
 //!
 //! Parses LSP hover markdown and converts it to styled text spans for ratatui.
-//! Supports: **bold**, `inline code`, ```code blocks```, and basic structure.
+//! Supports links, images, emphasis, `inline code`, ```code blocks```, and basic structure.
 
 use crate::syntax::{HighlightGroup, SyntaxHighlighter, Theme};
 use ovim_core::language_catalog::LanguageCatalog;
@@ -25,6 +25,8 @@ pub mod colors {
     pub const HEADING: Color = Color::Rgb(245, 194, 231);
     pub const PARAM: Color = Color::Rgb(250, 179, 135);
     pub const RETURN: Color = Color::Rgb(166, 227, 161);
+    pub const LINK: Color = Color::Rgb(137, 180, 250);
+    pub const MUTED: Color = Color::Rgb(127, 132, 156);
 }
 
 /// Parsed markdown element
@@ -34,8 +36,14 @@ pub enum MarkdownElement {
     Text(String),
     /// Bold text (**text**)
     Bold(String),
+    /// Italic text (`_text_` or `*text*`)
+    Italic(String),
     /// Inline code (`code`)
     InlineCode(String),
+    /// Link (`[label](destination)`).
+    Link(String),
+    /// Image (`![alt](source)`). Terminal previews use a compact text substitute.
+    Image(String),
     /// Code block with optional language
     CodeBlock {
         language: Option<String>,
@@ -239,59 +247,85 @@ fn is_table_separator(cell: &str) -> bool {
     dashes.len() >= 3 && dashes.chars().all(|character| character == '-')
 }
 
-/// Parse inline markdown elements (bold, inline code) from a line
+/// Parse inline markdown elements from a line.
 fn parse_inline_elements(line: &str, elements: &mut Vec<MarkdownElement>) {
     let mut current_text = String::new();
-    let mut chars = line.chars().peekable();
+    let chars = line.chars().collect::<Vec<_>>();
+    let mut index = 0;
 
-    while let Some(c) = chars.next() {
-        match c {
-            '*' if chars.peek() == Some(&'*') => {
-                // Bold text
-                chars.next(); // consume second *
+    while index < chars.len() {
+        match chars[index] {
+            '*' if chars.get(index + 1) == Some(&'*') => {
                 if !current_text.is_empty() {
-                    elements.push(MarkdownElement::Text(current_text.clone()));
-                    current_text.clear();
+                    elements.push(MarkdownElement::Text(std::mem::take(&mut current_text)));
                 }
-                let mut bold_text = String::new();
-                let mut closed = false;
-                while let Some(bc) = chars.next() {
-                    if bc == '*' && chars.peek() == Some(&'*') {
-                        chars.next();
-                        closed = true;
+                let content_start = index + 2;
+                let mut end = content_start;
+                while end + 1 < chars.len() {
+                    if chars[end] == '*' && chars[end + 1] == '*' {
                         break;
                     }
-                    bold_text.push(bc);
+                    end += 1;
                 }
-                if closed && !bold_text.is_empty() {
+
+                if end + 1 < chars.len() {
+                    let bold_text = chars[content_start..end].iter().collect::<String>();
                     push_bold_elements(&bold_text, elements);
-                } else if !closed {
+                    index = end + 2;
+                } else {
+                    let bold_text = chars[content_start..].iter().collect::<String>();
                     elements.push(MarkdownElement::Text(format!("**{bold_text}")));
+                    index = chars.len();
                 }
             }
             '`' => {
-                // Inline code
                 if !current_text.is_empty() {
-                    elements.push(MarkdownElement::Text(current_text.clone()));
-                    current_text.clear();
+                    elements.push(MarkdownElement::Text(std::mem::take(&mut current_text)));
                 }
-                let mut code_text = String::new();
-                let mut closed = false;
-                for cc in chars.by_ref() {
-                    if cc == '`' {
-                        closed = true;
-                        break;
-                    }
-                    code_text.push(cc);
-                }
-                if closed && !code_text.is_empty() {
+                let content_start = index + 1;
+                if let Some(relative_end) = chars[content_start..]
+                    .iter()
+                    .position(|character| *character == '`')
+                {
+                    let end = content_start + relative_end;
+                    let code_text = chars[content_start..end].iter().collect::<String>();
                     elements.push(MarkdownElement::InlineCode(code_text));
-                } else if !closed {
+                    index = end + 1;
+                } else {
+                    let code_text = chars[content_start..].iter().collect::<String>();
                     elements.push(MarkdownElement::Text(format!("`{code_text}")));
+                    index = chars.len();
+                }
+            }
+            '*' | '_' if is_emphasis_opener(&chars, index) => {
+                let delimiter = chars[index];
+                if let Some(end) = find_emphasis_closer(&chars, index + 1, delimiter) {
+                    if !current_text.is_empty() {
+                        elements.push(MarkdownElement::Text(std::mem::take(&mut current_text)));
+                    }
+                    let text = chars[index + 1..end].iter().collect::<String>();
+                    elements.push(MarkdownElement::Italic(text));
+                    index = end + 1;
+                } else {
+                    current_text.push(delimiter);
+                    index += 1;
+                }
+            }
+            '!' | '[' => {
+                if let Some((element, next_index)) = parse_link_or_image(&chars, index) {
+                    if !current_text.is_empty() {
+                        elements.push(MarkdownElement::Text(std::mem::take(&mut current_text)));
+                    }
+                    elements.push(element);
+                    index = next_index;
+                } else {
+                    current_text.push(chars[index]);
+                    index += 1;
                 }
             }
             _ => {
-                current_text.push(c);
+                current_text.push(chars[index]);
+                index += 1;
             }
         }
     }
@@ -299,6 +333,85 @@ fn parse_inline_elements(line: &str, elements: &mut Vec<MarkdownElement>) {
     if !current_text.is_empty() {
         elements.push(MarkdownElement::Text(current_text));
     }
+}
+
+fn is_emphasis_opener(chars: &[char], index: usize) -> bool {
+    let delimiter = chars[index];
+    let Some(next) = chars.get(index + 1) else {
+        return false;
+    };
+    if (index > 0 && chars[index - 1] == '\\') || next.is_whitespace() || *next == delimiter {
+        return false;
+    }
+    delimiter != '_' || index == 0 || !chars[index - 1].is_alphanumeric()
+}
+
+fn find_emphasis_closer(chars: &[char], start: usize, delimiter: char) -> Option<usize> {
+    (start..chars.len()).find(|&index| {
+        chars[index] == delimiter
+            && chars[index - 1] != '\\'
+            && !chars[index - 1].is_whitespace()
+            && (delimiter != '_'
+                || chars
+                    .get(index + 1)
+                    .is_none_or(|next| !next.is_alphanumeric()))
+    })
+}
+
+fn parse_link_or_image(chars: &[char], start: usize) -> Option<(MarkdownElement, usize)> {
+    let is_image = chars.get(start) == Some(&'!');
+    let open_bracket = start + usize::from(is_image);
+    if chars.get(open_bracket) != Some(&'[') {
+        return None;
+    }
+
+    let label_start = open_bracket + 1;
+    let close_bracket = find_unescaped(chars, label_start, ']')?;
+    if chars.get(close_bracket + 1) != Some(&'(') {
+        return None;
+    }
+
+    let destination_start = close_bracket + 2;
+    let mut index = destination_start;
+    let mut depth = 1usize;
+    while index < chars.len() {
+        match chars[index] {
+            '\\' => index = (index + 2).min(chars.len()),
+            '(' => {
+                depth += 1;
+                index += 1;
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let label = chars[label_start..close_bracket].iter().collect::<String>();
+                    let element = if is_image {
+                        MarkdownElement::Image(label)
+                    } else {
+                        MarkdownElement::Link(label)
+                    };
+                    return Some((element, index + 1));
+                }
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn find_unescaped(chars: &[char], start: usize, needle: char) -> Option<usize> {
+    let mut index = start;
+    while index < chars.len() {
+        if chars[index] == '\\' {
+            index += 2;
+        } else if chars[index] == needle {
+            return Some(index);
+        } else {
+            index += 1;
+        }
+    }
+    None
 }
 
 /// Preserve inline-code semantics inside a bold run instead of displaying
@@ -434,7 +547,23 @@ fn table_cell_spans(
         .filter_map(|element| match element {
             MarkdownElement::Text(text) => Some(Span::styled(text, text_style)),
             MarkdownElement::Bold(text) => Some(Span::styled(text, bold_style)),
+            MarkdownElement::Italic(text) => Some(Span::styled(
+                text,
+                text_style.add_modifier(Modifier::ITALIC),
+            )),
             MarkdownElement::InlineCode(code) => Some(Span::styled(code, code_style)),
+            MarkdownElement::Link(label) => Some(Span::styled(
+                format!("{} ↗", link_label(&label)),
+                Style::default()
+                    .fg(colors::LINK)
+                    .add_modifier(Modifier::UNDERLINED),
+            )),
+            MarkdownElement::Image(alt) => Some(Span::styled(
+                format!("Image: {}", image_label(&alt)),
+                Style::default()
+                    .fg(colors::MUTED)
+                    .add_modifier(Modifier::ITALIC),
+            )),
             _ => None,
         })
         .collect()
@@ -448,10 +577,31 @@ fn table_cell_width(cell: &str) -> usize {
         .map(|element| match element {
             MarkdownElement::Text(text)
             | MarkdownElement::Bold(text)
+            | MarkdownElement::Italic(text)
             | MarkdownElement::InlineCode(text) => UnicodeWidthStr::width(text.as_str()),
+            MarkdownElement::Link(label) => UnicodeWidthStr::width(link_label(label)) + 2,
+            MarkdownElement::Image(alt) => {
+                UnicodeWidthStr::width(image_label(alt)) + "Image: ".len()
+            }
             _ => 0,
         })
         .sum()
+}
+
+fn link_label(label: &str) -> &str {
+    if label.trim().is_empty() {
+        "link"
+    } else {
+        label
+    }
+}
+
+fn image_label(alt: &str) -> &str {
+    if alt.trim().is_empty() {
+        "image"
+    } else {
+        alt
+    }
 }
 
 fn render_table(
@@ -552,9 +702,16 @@ pub fn render_markdown(
     let bold_style = Style::default()
         .fg(colors::BOLD)
         .add_modifier(Modifier::BOLD);
+    let italic_style = text_style.add_modifier(Modifier::ITALIC);
     let code_style = Style::default()
         .fg(colors::CODE_SPAN_FG)
         .bg(colors::CODE_SPAN_BG);
+    let link_style = Style::default()
+        .fg(colors::LINK)
+        .add_modifier(Modifier::UNDERLINED);
+    let muted_style = Style::default()
+        .fg(colors::MUTED)
+        .add_modifier(Modifier::ITALIC);
     let heading_style = Style::default()
         .fg(colors::HEADING)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
@@ -578,8 +735,19 @@ pub fn render_markdown(
             MarkdownElement::Bold(text) => {
                 current_spans.push(Span::styled(text.clone(), bold_style));
             }
+            MarkdownElement::Italic(text) => {
+                current_spans.push(Span::styled(text.clone(), italic_style));
+            }
             MarkdownElement::InlineCode(code) => {
                 current_spans.push(Span::styled(code.clone(), code_style));
+            }
+            MarkdownElement::Link(label) => {
+                current_spans.push(Span::styled(link_label(label).to_string(), link_style));
+                current_spans.push(Span::styled(" ↗", muted_style));
+            }
+            MarkdownElement::Image(alt) => {
+                current_spans.push(Span::styled("Image: ", muted_style));
+                current_spans.push(Span::styled(image_label(alt).to_string(), text_style));
             }
             MarkdownElement::CodeBlock { language, code } => {
                 // Flush current line
@@ -712,6 +880,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_emphasis_without_mangling_snake_case_identifiers() {
+        let elements = parse_markdown("_available_ and *portable*, but keep some_name_here");
+
+        assert!(elements.iter().any(
+            |element| matches!(element, MarkdownElement::Italic(text) if text == "available")
+        ));
+        assert!(elements
+            .iter()
+            .any(|element| matches!(element, MarkdownElement::Italic(text) if text == "portable")));
+        assert!(elements.iter().any(
+            |element| matches!(element, MarkdownElement::Text(text) if text.contains("some_name_here"))
+        ));
+    }
+
+    #[test]
     fn inline_code_does_not_add_padding_for_concealed_backticks() {
         let elements = parse_markdown("Use `code` now");
         let lines = render_markdown(&elements, 80, None);
@@ -728,6 +911,51 @@ mod tests {
             .find(|span| span.content == "code")
             .expect("inline code span");
         assert_eq!(code.style.bg, Some(colors::CODE_SPAN_BG));
+    }
+
+    #[test]
+    fn lsp_links_and_images_render_without_markdown_syntax_or_payloads() {
+        let markdown = concat!(
+            "The `span` element is a generic inline container.\n\n",
+            "![Baseline icon](data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgi) _Widely available_\n\n",
+            "![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA)\n\n",
+            "[MDN Reference](https://developer.mozilla.org/docs/Web/HTML/Reference/Elements/span)"
+        );
+        let elements = parse_markdown(markdown);
+        let lines = render_markdown(&elements, 100, None);
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("The span element is a generic inline container."));
+        assert!(rendered.contains("Image: Baseline icon"));
+        assert!(rendered.contains("Image: image"));
+        assert!(rendered.contains("Widely available"));
+        assert!(rendered.contains("MDN Reference ↗"));
+        assert!(!rendered.contains("!["));
+        assert!(!rendered.contains("]("));
+        assert!(!rendered.contains("data:image"));
+
+        let italic = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content == "Widely available")
+            .expect("rendered italic text");
+        assert!(italic.style.add_modifier.contains(Modifier::ITALIC));
+
+        let link = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content == "MDN Reference")
+            .expect("rendered link label");
+        assert!(link.style.add_modifier.contains(Modifier::UNDERLINED));
     }
 
     #[test]

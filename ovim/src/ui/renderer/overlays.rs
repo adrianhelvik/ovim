@@ -25,6 +25,25 @@ fn hover_content_width(rendered_lines: &[Line<'_>], hover_text: &str, is_preview
     }
 }
 
+fn render_hover_preview_lines(
+    hover_text: &str,
+    max_window_width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    use super::markdown::{parse_markdown, render_markdown};
+
+    let content_width = max_window_width.saturating_sub(4).max(1);
+    render_markdown(&parse_markdown(hover_text), content_width, Some(theme))
+        .iter()
+        .flat_map(|line| super::ai_chat::styled_word_wrap_line(line, content_width))
+        .map(Line::from)
+        .collect()
+}
+
+fn hover_raw_lines(hover_text: &str) -> Vec<&str> {
+    hover_text.split('\n').collect()
+}
+
 /// Renders hover information as a floating window positioned near the cursor
 ///
 /// Both modes are scrollable (j/k vertical, h/l horizontal):
@@ -45,7 +64,7 @@ pub fn render_hover_window(
     let layout = ctx.layout;
     let viewport_start = ctx.viewport_start;
     let buffer_area = layout.buffer_area;
-    use super::markdown::{colors, parse_markdown, render_markdown};
+    use super::markdown::colors;
 
     let h_scroll = editor.hover_h_scroll();
 
@@ -56,13 +75,11 @@ pub fn render_hover_window(
     let max_width = (buffer_area.width * 4 / 5).clamp(MIN_WIDTH, 120);
     let max_height = (buffer_area.height * 4 / 5).clamp(MIN_HEIGHT, 40);
 
-    // Parse markdown for preview mode
-    let elements = parse_markdown(hover_text);
-    let rendered_lines = render_markdown(&elements, max_width as usize, Some(theme));
+    let rendered_lines = render_hover_preview_lines(hover_text, max_width as usize, theme);
     let total_lines = if is_preview {
         rendered_lines.len()
     } else {
-        hover_text.lines().count()
+        hover_raw_lines(hover_text).len()
     };
 
     // Calculate content dimensions
@@ -177,7 +194,7 @@ pub fn render_hover_window(
         (true, crate::editor::HoverContentType::AiReasoning) => " AI reasoning ".to_string(),
         (true, _) if scrollable => {
             format!(
-                " {}/{} j/k:scroll q:close ",
+                " {}/{} j/k:scroll K:raw q:close ",
                 clamped_scroll + 1,
                 total_lines
             )
@@ -222,7 +239,7 @@ pub fn render_hover_window(
         frame.render_widget(paragraph, window_area);
     } else {
         // Render raw text (navigate mode) — no wrapping, uses h/l for horizontal scroll
-        let all_lines: Vec<&str> = hover_text.lines().collect();
+        let all_lines = hover_raw_lines(hover_text);
         let visible_lines: Vec<String> = all_lines
             .iter()
             .skip(clamped_scroll)
@@ -1523,6 +1540,28 @@ mod tests {
 
         assert_eq!(super::hover_content_width(&rendered, "ignored", true), 14);
         assert_eq!(super::hover_content_width(&[], "型 information", false), 14);
+    }
+
+    #[test]
+    fn hover_preview_wraps_markdown_while_raw_mode_stays_lossless() {
+        let markdown = concat!(
+            "The `span` element doesn't mean anything on its own, but can be useful with global attributes.\n\n",
+            "![Baseline icon](data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgi)\n\n",
+            "[MDN Reference](https://developer.mozilla.org/docs/Web/HTML/Reference/Elements/span)\n"
+        );
+        let preview =
+            super::render_hover_preview_lines(markdown, 40, &crate::syntax::Theme::default());
+        let preview_text = preview
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(preview.iter().all(|line| line.width() <= 36));
+        assert!(preview_text.contains("Image: Baseline icon"));
+        assert!(preview_text.contains("MDN Reference ↗"));
+        assert!(!preview_text.contains("data:image"));
+        assert_eq!(super::hover_raw_lines(markdown).join("\n"), markdown);
     }
 
     /// Regression test: heights 7 and 8 used to panic in `render_modal_dialog`
