@@ -172,7 +172,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.editing.replace_mode_state = Some(crate::editor::ReplaceModeState {
                 start_position: cursor_before,
                 replacements: String::new(),
-                old_text: String::new(),
+                old_text: Vec::new(),
             });
             editor.set_mode(Mode::Replace);
             Ok(true)

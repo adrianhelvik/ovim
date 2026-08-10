@@ -6,7 +6,7 @@ use super::helpers;
 use crate::editor::Editor;
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
-use crate::unicode::{CharCol, GraphemeCol};
+use crate::unicode::{grapheme_at_index, grapheme_count, grapheme_to_char_col, GraphemeCol};
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -53,34 +53,34 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         }
         KeyCode::Char(c) => {
             // Replace character under cursor with the typed character.
-            // NB: This block indexes `chars` by grapheme col — correct for ASCII,
-            // wrong for multi-char graphemes. That's pre-existing (Class-2 debt);
-            // here we only port tuple positions to the typed CursorPos/ApplyPos.
             let line_idx = editor.buffer().cursor().line();
             let grapheme_col = editor.buffer().cursor().col();
-            let col = grapheme_col.0;
 
-            if let Some(line_text) = editor.buffer().line_text(line_idx) {
-                let chars: Vec<char> = line_text.chars().collect();
+            if let Some(line_text) = editor
+                .buffer()
+                .line_text(line_idx)
+                .map(|line| line.into_owned())
+            {
+                let start_col = grapheme_to_char_col(&line_text, grapheme_col);
 
-                if col < chars.len() {
-                    // Track the original character for undo
-                    let old_char = chars[col];
+                if grapheme_col.0 < grapheme_count(&line_text) {
+                    let end_col = grapheme_to_char_col(
+                        &line_text,
+                        GraphemeCol(grapheme_col.0.saturating_add(1)),
+                    );
+                    let old_grapheme = grapheme_at_index(&line_text, grapheme_col.0)
+                        .expect("grapheme column was checked against the line")
+                        .to_string();
                     if !editor.record_session_edit(|buf| {
-                        buf.delete_range_positioning_cursor(
-                            line_idx,
-                            CharCol(col),
-                            line_idx,
-                            CharCol(col + 1),
-                        )
-                        .0
+                        buf.delete_range_positioning_cursor(line_idx, start_col, line_idx, end_col)
+                            .0
                     }) {
                         return Ok(());
                     }
 
                     let new_char = c.to_string();
                     if !editor.record_session_edit(|buf| {
-                        buf.insert_text_at_positioning_cursor(line_idx, CharCol(col), &new_char)
+                        buf.insert_text_at_positioning_cursor(line_idx, start_col, &new_char)
                     }) {
                         return Ok(());
                     }
@@ -88,19 +88,20 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     // Track for dot-repeat
                     if let Some(ref mut state) = editor.editing.replace_mode_state {
                         state.replacements.push(c);
-                        state.old_text.push(old_char);
+                        state.old_text.push(Some(old_grapheme));
                     }
                 } else {
                     // At end of line, just insert (like append)
                     let new_char = c.to_string();
                     if !editor.record_session_edit(|buf| {
-                        buf.insert_text_at_positioning_cursor(line_idx, CharCol(col), &new_char)
+                        buf.insert_text_at_positioning_cursor(line_idx, start_col, &new_char)
                     }) {
                         return Ok(());
                     }
                     // Also track for dot-repeat
                     if let Some(ref mut state) = editor.editing.replace_mode_state {
                         state.replacements.push(c);
+                        state.old_text.push(None);
                     }
                 }
             }
@@ -112,8 +113,6 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         KeyCode::Backspace => {
             // Backspace in replace mode should restore original characters
             // and move cursor left, but only within the current replace session.
-            // NB: This block, like Char above, treats grapheme col as char col.
-            // Pre-existing Class-2 debt; here we only port to typed positions.
             let cursor_col = editor.buffer().cursor().col().0;
             let cursor_line = editor.buffer().cursor().line();
 
@@ -126,32 +125,36 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     && cursor_col > start_col
                     && !state.replacements.is_empty()
                 {
-                    // Shrink the replacements stack to match old_text. The
-                    // char value isn't needed — buffer.record() captures the
-                    // deleted text.
                     state.replacements.pop();
 
-                    // If there's an old character to restore, restore it
-                    if let Some(old_char) = state.old_text.pop() {
-                        let restore_col = cursor_col - 1;
+                    // Each replacement has a matching old-text entry, including
+                    // `None` for text appended beyond the original EOL.
+                    if let Some(old_grapheme) = state.old_text.pop().flatten() {
+                        let line_text = editor
+                            .buffer()
+                            .line_text(cursor_line)
+                            .map(|line| line.into_owned())
+                            .unwrap_or_default();
+                        let restore_col = GraphemeCol(cursor_col - 1);
+                        let restore_start = grapheme_to_char_col(&line_text, restore_col);
+                        let restore_end = grapheme_to_char_col(&line_text, GraphemeCol(cursor_col));
                         if !editor.record_session_edit(|buf| {
                             buf.delete_range_positioning_cursor(
                                 cursor_line,
-                                CharCol(restore_col),
+                                restore_start,
                                 cursor_line,
-                                CharCol(restore_col + 1),
+                                restore_end,
                             )
                             .0
                         }) {
                             return Ok(());
                         }
 
-                        let old_char_str = old_char.to_string();
                         if !editor.record_session_edit(|buf| {
                             buf.insert_text_at_positioning_cursor(
                                 cursor_line,
-                                CharCol(restore_col),
-                                &old_char_str,
+                                restore_start,
+                                &old_grapheme,
                             )
                         }) {
                             return Ok(());
@@ -162,13 +165,20 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                         editor.buffer_mut().cursor_mut().move_left(1);
                     } else {
                         // No old_text means this was an insertion at end of line, delete it
-                        let delete_col = cursor_col - 1;
+                        let line_text = editor
+                            .buffer()
+                            .line_text(cursor_line)
+                            .map(|line| line.into_owned())
+                            .unwrap_or_default();
+                        let delete_start =
+                            grapheme_to_char_col(&line_text, GraphemeCol(cursor_col - 1));
+                        let delete_end = grapheme_to_char_col(&line_text, GraphemeCol(cursor_col));
                         if !editor.record_session_edit(|buf| {
                             buf.delete_range_positioning_cursor(
                                 cursor_line,
-                                CharCol(delete_col),
+                                delete_start,
                                 cursor_line,
-                                CharCol(delete_col + 1),
+                                delete_end,
                             )
                             .0
                         }) {

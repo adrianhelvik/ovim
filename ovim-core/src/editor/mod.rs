@@ -476,8 +476,9 @@ pub struct ReplaceModeState {
     pub start_position: CursorPos,
     /// Characters typed during replace mode
     pub replacements: String,
-    /// Original text that was overwritten
-    pub old_text: String,
+    /// Original grapheme overwritten by each replacement. `None` means the
+    /// corresponding character was appended past the end of the line.
+    pub old_text: Vec<Option<String>>,
 }
 
 /// Cached preview data for the picker

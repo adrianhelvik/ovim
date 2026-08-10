@@ -380,21 +380,36 @@ impl RepeatAction {
             }
             Self::ReplaceMode { replacements } => {
                 let line_idx = buffer.cursor().line();
-                let col = buffer.cursor_char_col();
+                let start_grapheme = buffer.cursor().col();
                 let replacement_len = replacements.chars().count();
 
                 if let Some(line) = buffer.line_text(line_idx) {
-                    let line_len = line.chars().count();
-                    let delete_len = replacement_len.min(line_len.saturating_sub(col.0));
-                    let end_col = col + delete_len;
+                    let line = line.into_owned();
+                    let start_col = crate::unicode::grapheme_to_char_col(&line, start_grapheme);
+                    let end_grapheme = GraphemeCol(
+                        start_grapheme
+                            .0
+                            .saturating_add(replacement_len)
+                            .min(crate::unicode::grapheme_count(&line)),
+                    );
+                    let end_col = crate::unicode::grapheme_to_char_col(&line, end_grapheme);
 
-                    if delete_len > 0 {
-                        buffer.delete_range(line_idx, col, line_idx, end_col);
+                    if start_col < end_col {
+                        buffer.delete_range(line_idx, start_col, line_idx, end_col);
                     }
-                    buffer.insert_text_at(line_idx, col, replacements);
+                    buffer.insert_text_at(line_idx, start_col, replacements);
 
-                    let final_col = col + replacement_len.saturating_sub(1);
-                    buffer.set_cursor_char_col(line_idx, final_col);
+                    let final_grapheme = GraphemeCol(
+                        start_grapheme
+                            .0
+                            .saturating_add(crate::unicode::grapheme_count(replacements))
+                            .saturating_sub(1),
+                    );
+                    if let Some(updated_line) = buffer.line_text(line_idx) {
+                        let final_col =
+                            crate::unicode::grapheme_to_char_col(&updated_line, final_grapheme);
+                        buffer.set_cursor_char_col(line_idx, final_col);
+                    }
                 }
             }
             Self::PasteAfter { .. } | Self::PasteBefore { .. } => {

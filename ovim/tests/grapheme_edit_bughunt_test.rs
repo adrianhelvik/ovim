@@ -46,6 +46,53 @@ fn test_r_replaces_whole_grapheme_cluster() {
 }
 
 #[test]
+fn test_replace_mode_replaces_whole_grapheme_cluster() {
+    let mut test = EditorTest::new(&format!("{E_ACUTE}x"));
+    test.keys("RZ<Esc>");
+
+    assert_eq!(
+        test.buffer_content(),
+        "Zx\n",
+        "R should replace the whole decomposed grapheme"
+    );
+}
+
+#[test]
+fn test_replace_mode_backspace_restores_whole_grapheme_cluster() {
+    let original = format!("{E_ACUTE}x");
+    let mut test = EditorTest::new(&original);
+    test.keys("RZ<BS><Esc>");
+
+    assert_eq!(test.buffer_content(), format!("{original}\n"));
+}
+
+#[test]
+fn test_replace_mode_backspace_distinguishes_overwrite_from_eol_insert() {
+    let mut test = EditorTest::new("a");
+    test.keys("RXY<BS><Esc>");
+
+    assert_eq!(test.buffer_content(), "X\n");
+    test.press('u');
+    assert_eq!(test.buffer_content(), "a\n");
+}
+
+#[test]
+fn test_replace_mode_dot_repeat_replaces_target_graphemes() {
+    let mut test = EditorTest::new(&format!("{E_ACUTE}x\n{E_ACUTE}y"));
+    test.keys("RZ<Esc>j0.");
+
+    assert_eq!(test.buffer_content(), "Zx\nZy\n");
+}
+
+#[test]
+fn test_replace_mode_replaces_whole_zwj_emoji() {
+    let mut test = EditorTest::new("👨‍👩‍👧‍👦x");
+    test.keys("RZ<Esc>");
+
+    assert_eq!(test.buffer_content(), "Zx\n");
+}
+
+#[test]
 fn test_x_with_count_deletes_multiple_graphemes() {
     // Two é graphemes then 'x'
     let mut test = EditorTest::new(&format!("{E_ACUTE}{E_ACUTE}x"));
