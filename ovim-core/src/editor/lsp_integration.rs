@@ -14,7 +14,6 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 fn dedupe_key_for_status(status_lower: &str) -> String {
     status_lower
@@ -108,20 +107,12 @@ struct DocumentSyncRequestPlan {
 impl Editor {
     /// Enables LSP support
     pub fn enable_lsp(&mut self) {
-        let (tx, rx) = mpsc::unbounded_channel();
         self.lsp.state.lsp_manager = Some(Arc::new(LspManager::new()));
-        self.lsp.command_tx = Some(tx);
-        self.lsp.command_rx = Some(rx);
     }
 
     /// Gets a reference to the LSP manager
     pub fn lsp_manager(&self) -> Option<Arc<LspManager>> {
         self.lsp.state.lsp_manager.clone()
-    }
-
-    /// Gets a reference to the LSP command sender for background tasks
-    pub fn lsp_command_sender(&self) -> Option<mpsc::UnboundedSender<LspCommand>> {
-        self.lsp.command_tx.clone()
     }
 
     /// Close the LSP for the current file

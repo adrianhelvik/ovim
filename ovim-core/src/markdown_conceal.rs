@@ -18,15 +18,21 @@ pub struct LineTransform {
     pub src_to_view: Vec<usize>,
 }
 
+fn map_source_char(src_to_view: &mut [usize], byte_idx: usize, ch: char, view_idx: usize) {
+    for mapped in src_to_view.iter_mut().skip(byte_idx).take(ch.len_utf8()) {
+        *mapped = view_idx;
+    }
+}
+
 impl LineTransform {
     pub fn identity(src: &str) -> Self {
-        let mut src_to_view = Vec::with_capacity(src.len() + 1);
+        let mut src_to_view = vec![0; src.len() + 1];
         let mut view_idx = 0;
-        for (_byte_idx, _) in src.char_indices() {
-            src_to_view.push(view_idx);
+        for (byte_idx, ch) in src.char_indices() {
+            map_source_char(&mut src_to_view, byte_idx, ch, view_idx);
             view_idx += 1;
         }
-        src_to_view.push(view_idx);
+        src_to_view[src.len()] = view_idx;
         Self {
             text: src.to_string(),
             src_to_view,
@@ -52,7 +58,8 @@ pub fn apply_conceal(src: &str, spans: &[ConcealSpan]) -> LineTransform {
         // copy text before the span
         if cursor < start {
             for (b, ch) in src[cursor..start].char_indices() {
-                src_to_view[cursor + b] = view_idx;
+                let byte_idx = cursor + b;
+                map_source_char(&mut src_to_view, byte_idx, ch, view_idx);
                 out.push(ch);
                 view_idx += 1;
             }
@@ -75,7 +82,8 @@ pub fn apply_conceal(src: &str, spans: &[ConcealSpan]) -> LineTransform {
     // tail
     if cursor < src.len() {
         for (b, ch) in src[cursor..].char_indices() {
-            src_to_view[cursor + b] = view_idx;
+            let byte_idx = cursor + b;
+            map_source_char(&mut src_to_view, byte_idx, ch, view_idx);
             out.push(ch);
             view_idx += 1;
         }
@@ -227,8 +235,12 @@ pub fn extract_concealed_links(
     let mut links = Vec::new();
     for span in spans {
         if let Some(ref url) = span.url {
-            let view_start =
-                transform.src_to_view[span.src_start.min(transform.src_to_view.len() - 1)];
+            let view_start = transform
+                .src_to_view
+                .get(span.src_start)
+                .or_else(|| transform.src_to_view.last())
+                .copied()
+                .unwrap_or(0);
             let replacement_len = span.replacement.chars().count();
             let view_end = view_start + replacement_len;
             links.push(ConcealedLink {
@@ -252,6 +264,43 @@ mod tests {
         assert_eq!(t.text, "label");
         // first byte maps to view 0
         assert_eq!(t.src_to_view[0], 0);
+    }
+
+    #[test]
+    fn identity_maps_every_utf8_byte_to_its_view_character() {
+        let transform = LineTransform::identity("éx");
+
+        assert_eq!(transform.src_to_view, vec![0, 0, 1, 2]);
+    }
+
+    #[test]
+    fn conceal_maps_multibyte_prefix_bytes_consistently() {
+        let src = "é [x](url)";
+        let spans = scan_markdown_conceal(src);
+        let transform = apply_conceal(src, &spans);
+
+        assert_eq!(transform.text, "é x");
+        assert_eq!(transform.src_to_view[0], 0);
+        assert_eq!(transform.src_to_view[1], 0);
+        assert_eq!(transform.src_to_view[2], 1);
+    }
+
+    #[test]
+    fn concealed_link_extraction_tolerates_an_empty_transform_map() {
+        let spans = vec![ConcealSpan {
+            src_start: 4,
+            src_end: 8,
+            replacement: "link".to_string(),
+            url: Some("https://example.com".to_string()),
+        }];
+        let transform = LineTransform {
+            text: String::new(),
+            src_to_view: Vec::new(),
+        };
+
+        let links = extract_concealed_links(&spans, &transform);
+        assert_eq!(links[0].view_start, 0);
+        assert_eq!(links[0].view_end, 4);
     }
 
     #[test]

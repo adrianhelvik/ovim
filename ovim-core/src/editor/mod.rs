@@ -296,29 +296,6 @@ use crate::unicode::{grapheme_to_char_col, GraphemeCol};
 use anyhow::Result;
 use std::collections::HashMap;
 
-/// Commands sent from background tasks to the LSP manager via channel
-#[derive(Debug)]
-pub enum LspCommand {
-    /// Start a language server
-    StartServer {
-        language: String,
-        command: String,
-        args: Vec<String>,
-        root_path: std::path::PathBuf,
-        response_tx: tokio::sync::oneshot::Sender<Result<()>>,
-    },
-    /// Send didOpen notification
-    DidOpen {
-        uri: lsp_types::Uri,
-        language_id: String,
-        version: i32,
-        text: String,
-        response_tx: tokio::sync::oneshot::Sender<Result<()>>,
-    },
-    /// Start notification listener
-    StartNotificationListener { language_id: String },
-}
-
 /// Cached preview highlights: line_idx -> Vec<(range, highlight_group)>
 pub type PreviewHighlights =
     HashMap<usize, Vec<(std::ops::Range<usize>, crate::syntax::HighlightGroup)>>;

@@ -1,8 +1,7 @@
 use super::lsp_slot::LspSlots;
 use super::lsp_state::{LspIntents, LspState};
 use super::lsp_ui::LspUi;
-use super::{LspCommand, PendingLspInstall};
-use tokio::sync::mpsc;
+use super::PendingLspInstall;
 
 /// Grouped state for all LSP-related concerns.
 #[derive(Default)]
@@ -13,10 +12,6 @@ pub(crate) struct LspSubsystem {
     pub(crate) slots: LspSlots,
     /// Per-feature intent flags (replaces old single-slot LspAction dispatch)
     pub(crate) intents: LspIntents,
-    /// Channel sender for LSP commands from background tasks
-    pub(crate) command_tx: Option<mpsc::UnboundedSender<LspCommand>>,
-    /// Channel receiver for LSP commands from background tasks
-    pub(crate) command_rx: Option<mpsc::UnboundedReceiver<LspCommand>>,
     /// LSP UI panel state (manager panel and install progress)
     pub(crate) ui: LspUi,
     /// Pending LSP auto-install awaiting user consent
