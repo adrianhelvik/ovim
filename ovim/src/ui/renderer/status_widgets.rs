@@ -5,10 +5,11 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// Convert a core color to a ratatui color (convenience wrapper)
 fn ui_color(theme: &Theme, group: UiGroup) -> Color {
@@ -605,12 +606,12 @@ fn truncate_with_ellipsis(input: &str, max_width: usize) -> String {
     let mut out = String::new();
     let mut used = 0usize;
 
-    for ch in input.chars() {
-        let w = ch.width().unwrap_or(0);
+    for grapheme in input.graphemes(true) {
+        let w = grapheme.width();
         if used + w > max_width - 1 {
             break;
         }
-        out.push(ch);
+        out.push_str(grapheme);
         used += w;
     }
     out.push('…');
@@ -621,7 +622,7 @@ fn toast_accent(theme: &Theme, level: ToastLevel) -> Color {
     match level {
         ToastLevel::Error => ui_color(theme, UiGroup::Error),
         ToastLevel::Warning => ui_color(theme, UiGroup::Warning),
-        ToastLevel::Success => Color::Green,
+        ToastLevel::Success => ui_color(theme, UiGroup::Success),
         ToastLevel::Info => ui_color(theme, UiGroup::Info),
     }
 }
@@ -637,6 +638,14 @@ fn toast_glyph(level: ToastLevel) -> &'static str {
 
 fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_toast_message(text: &str) -> String {
+    text.trim()
+        .split('\n')
+        .map(single_line)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -659,7 +668,7 @@ impl ToastRow {
         Self {
             level: toast.level,
             label,
-            message: single_line(&toast.message),
+            message: normalize_toast_message(&toast.message),
             repeat: toast.repeat,
         }
     }
@@ -668,10 +677,120 @@ impl ToastRow {
         Self {
             level,
             label: label.to_string(),
-            message: single_line(message.as_ref()),
+            message: normalize_toast_message(message.as_ref()),
             repeat: 1,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToastCardLayout {
+    width: usize,
+    title: String,
+    body: Vec<String>,
+}
+
+impl ToastCardLayout {
+    fn height(&self) -> usize {
+        self.body.len() + 2
+    }
+}
+
+fn toast_title(row: &ToastRow) -> String {
+    if row.repeat > 1 {
+        format!("{} {} · {}×", toast_glyph(row.level), row.label, row.repeat)
+    } else {
+        format!("{} {}", toast_glyph(row.level), row.label)
+    }
+}
+
+fn wrap_toast_message(message: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    for logical_line in message.split('\n') {
+        if logical_line.is_empty() {
+            rows.push(String::new());
+            continue;
+        }
+        let line = Line::from(logical_line.to_string());
+        rows.extend(
+            super::ai_chat::styled_word_wrap_line(&line, width)
+                .into_iter()
+                .map(|spans| {
+                    spans
+                        .into_iter()
+                        .map(|span| span.content.into_owned())
+                        .collect()
+                }),
+        );
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows
+}
+
+fn line_with_ellipsis(line: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let mut out = String::new();
+    let mut used = 0usize;
+    for grapheme in line.graphemes(true) {
+        let width = grapheme.width();
+        if used + width > max_width - 1 {
+            break;
+        }
+        out.push_str(grapheme);
+        used += width;
+    }
+    out.push('…');
+    out
+}
+
+fn layout_toast_card(
+    row: &ToastRow,
+    max_width: usize,
+    max_body_rows: usize,
+) -> Option<ToastCardLayout> {
+    const MIN_WIDTH: usize = 24;
+    const MAX_WIDTH: usize = 56;
+
+    if max_width < 12 || max_body_rows == 0 {
+        return None;
+    }
+
+    let title = toast_title(row);
+    let natural_body_width = row
+        .message
+        .split('\n')
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or_default();
+    let desired_width = natural_body_width
+        .saturating_add(4)
+        .max(title.width().saturating_add(4));
+    let upper = max_width.min(MAX_WIDTH);
+    let lower = MIN_WIDTH.min(upper);
+    let width = desired_width.clamp(lower, upper);
+    let content_width = width.saturating_sub(4).max(1);
+    let mut body = wrap_toast_message(&row.message, content_width);
+
+    if body.len() > max_body_rows {
+        body.truncate(max_body_rows);
+        if let Some(last) = body.last_mut() {
+            *last = line_with_ellipsis(last, content_width);
+        }
+    }
+
+    Some(ToastCardLayout {
+        width,
+        title: truncate_with_ellipsis(&title, width.saturating_sub(4)),
+        body,
+    })
 }
 
 /// Renders a top-right toast stack over the buffer area.
@@ -728,53 +847,70 @@ pub fn render_top_right_toasts(
         return;
     }
 
-    let max_rows = buffer_area.height.min(5) as usize;
-    for (index, row) in rows.into_iter().take(max_rows).enumerate() {
-        let y = buffer_area.y.saturating_add(index as u16);
-        if y >= buffer_area.bottom() {
+    if buffer_area.height < 3 {
+        return;
+    }
+
+    let available_width = buffer_area.width.saturating_sub(2) as usize;
+    let stack_height = ((buffer_area.height as usize * 2) / 3)
+        .max(3)
+        .min(buffer_area.height as usize)
+        .min(24);
+    let mut y = buffer_area.y;
+    let mut used_height = 0usize;
+
+    for row in rows.into_iter().take(5) {
+        let remaining_height = stack_height.saturating_sub(used_height);
+        if remaining_height < 3 {
+            break;
+        }
+        let max_body_rows = remaining_height.saturating_sub(2).min(6);
+        let Some(card) = layout_toast_card(&row, available_width, max_body_rows) else {
+            continue;
+        };
+        let card_height = card.height();
+        if card_height > remaining_height {
             break;
         }
 
-        let available = buffer_area.width.saturating_sub(2) as usize;
-        if available < 8 {
-            continue;
-        }
-
-        let glyph = format!(" {} ", toast_glyph(row.level));
-        let label = format!("{} · ", row.label);
-        let repeat = if row.repeat > 1 {
-            format!(" ({})", row.repeat)
-        } else {
-            String::new()
-        };
-        let trailing = " ";
-        let fixed_width = glyph.width() + label.width() + repeat.width() + trailing.width();
-        let message = truncate_with_ellipsis(&row.message, available.saturating_sub(fixed_width));
-        let width = (fixed_width + message.width()).min(available) as u16;
-        if width == 0 {
-            continue;
-        }
-
+        let width = card.width as u16;
+        let height = card_height as u16;
         let x = buffer_area.right().saturating_sub(width + 1);
         let area = Rect {
             x,
             y,
             width,
-            height: 1,
+            height,
         };
 
         let background = ui_color(theme, UiGroup::MenuBackground);
         let foreground = ui_color(theme, UiGroup::Foreground);
         let accent = toast_accent(theme, row.level);
-        let base = Style::default().bg(background);
-        let line = Line::from(vec![
-            Span::styled(glyph, base.fg(accent).add_modifier(Modifier::BOLD)),
-            Span::styled(label, base.fg(foreground).add_modifier(Modifier::BOLD)),
-            Span::styled(message, base.fg(foreground)),
-            Span::styled(repeat, base.fg(foreground).add_modifier(Modifier::DIM)),
-            Span::styled(trailing, base),
-        ]);
-        frame.render_widget(Paragraph::new(line).style(base), area);
+        let base = Style::default().fg(foreground).bg(background);
+        let content = card
+            .body
+            .into_iter()
+            .map(|line| Line::from(Span::styled(format!(" {line}"), base)))
+            .collect::<Vec<_>>();
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(accent).bg(background))
+            .style(base)
+            .title(Span::styled(
+                format!(" {} ", card.title),
+                Style::default()
+                    .fg(accent)
+                    .bg(background)
+                    .add_modifier(Modifier::BOLD),
+            ));
+
+        frame.render_widget(Clear, area);
+        frame.render_widget(Paragraph::new(content).style(base).block(block), area);
+
+        let occupied = card_height + 1;
+        used_height = used_height.saturating_add(occupied);
+        y = y.saturating_add(occupied as u16);
     }
 }
 
@@ -1421,6 +1557,7 @@ mod tests {
         truncate_with_ellipsis, wrap_prompt_rows, ToastLevel, ToastRow,
     };
     use crate::editor::{ToastRequest, ToastSource};
+    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn test_wrap_prompt_rows_preserves_text_across_rows() {
@@ -1492,7 +1629,7 @@ mod tests {
     }
 
     #[test]
-    fn toast_row_uses_title_once_and_flattens_multiline_messages() {
+    fn toast_row_uses_title_once_and_preserves_multiline_messages() {
         let mut center = crate::editor::ToastCenter::new();
         center.push(
             ToastRequest::new(
@@ -1506,13 +1643,156 @@ mod tests {
         let row = ToastRow::from_toast(center.visible_toasts_newest_first(1).remove(0));
 
         assert_eq!(row.label, "LSP");
-        assert_eq!(row.message, "Completion failed No server is available");
+        assert_eq!(row.message, "Completion failed\nNo server is available");
+    }
+
+    #[test]
+    fn toast_card_wraps_complete_unicode_text_at_word_boundaries() {
+        let row = ToastRow::status(
+            ToastLevel::Warning,
+            "LSP",
+            "解析中: the language server did not respond in time. Retry with :LspRestart.",
+        );
+        let card = super::layout_toast_card(&row, 34, 6).expect("toast card layout");
+        let content_width = card.width.saturating_sub(4);
+
+        assert!(card.width <= 34);
+        assert!(card.body.len() > 1);
+        assert!(card.body.iter().all(|line| line.width() <= content_width));
+        assert_eq!(
+            card.body.join(" "),
+            "解析中: the language server did not respond in time. Retry with :LspRestart."
+        );
+    }
+
+    #[test]
+    fn toast_card_caps_extreme_messages_with_one_ellipsis() {
+        let row = ToastRow::status(
+            ToastLevel::Error,
+            "Plugin failed",
+            "First recovery detail that wraps across rows and keeps going with more context than a notification should cover.",
+        );
+        let card = super::layout_toast_card(&row, 30, 2).expect("toast card layout");
+
+        assert_eq!(card.body.len(), 2);
+        assert!(card.body.last().is_some_and(|line| line.ends_with('…')));
+        assert_eq!(card.body.join(" ").matches('…').count(), 1);
+        assert_eq!(super::line_with_ellipsis("full", 4), "ful…");
+    }
+
+    #[test]
+    fn toast_levels_have_distinct_theme_aware_accents() {
+        let theme = crate::syntax::Theme::default();
+        let accents = [
+            ToastLevel::Info,
+            ToastLevel::Success,
+            ToastLevel::Warning,
+            ToastLevel::Error,
+        ]
+        .map(|level| super::toast_accent(&theme, level));
+
+        for (index, accent) in accents.iter().enumerate() {
+            assert!(!accents[..index].contains(accent));
+        }
+    }
+
+    #[test]
+    fn toast_renderer_draws_a_rounded_type_colored_badge() {
+        use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+
+        let mut editor = crate::editor::Editor::with_content("fn main() {}\n");
+        editor.push_toast(
+            ToastRequest::new(
+                ToastSource::Lsp,
+                ToastLevel::Warning,
+                "Completion failed because no language server is available for this document. Install one and retry.",
+            )
+            .with_title("LSP")
+            .with_sticky(true),
+        );
+        let theme = crate::syntax::Theme::default();
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                super::render_top_right_toasts(frame, &editor, &theme, Rect::new(0, 0, 60, 18))
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rows = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let top_left = buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "╭")
+            .expect("rounded toast border");
+
+        assert!(rows.iter().any(|row| row.contains("! LSP")), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.contains("Completion failed")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("Install one and retry.")),
+            "{rows:?}"
+        );
+        assert_eq!(
+            top_left.fg,
+            super::toast_accent(&theme, ToastLevel::Warning)
+        );
+    }
+
+    #[test]
+    fn toast_renderer_separates_stacked_badges() {
+        use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+
+        let mut editor = crate::editor::Editor::with_content("fn main() {}\n");
+        for (level, title, message) in [
+            (ToastLevel::Success, "Saved", "All changes were written."),
+            (
+                ToastLevel::Info,
+                "Update",
+                "A newer language server is available.",
+            ),
+        ] {
+            editor.push_toast(
+                ToastRequest::new(ToastSource::System, level, message)
+                    .with_title(title)
+                    .with_sticky(true),
+            );
+        }
+
+        let theme = crate::syntax::Theme::default();
+        let backend = TestBackend::new(60, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render_top_right_toasts(frame, &editor, &theme, Rect::new(0, 0, 60, 22))
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let border_rows = (0..buffer.area.height)
+            .filter(|&y| (0..buffer.area.width).any(|x| buffer[(x, y)].symbol() == "╭"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(border_rows.len(), 2);
+        assert!(border_rows[1] >= border_rows[0] + 4, "{border_rows:?}");
     }
 
     #[test]
     fn toast_truncation_uses_a_single_width_aware_ellipsis() {
         assert_eq!(truncate_with_ellipsis("alpha beta", 6), "alpha…");
         assert_eq!(truncate_with_ellipsis("界abc", 4), "界a…");
+        assert_eq!(truncate_with_ellipsis("👩‍💻abc", 3), "👩‍💻…");
         assert_eq!(truncate_with_ellipsis("hello", 1), "…");
     }
 

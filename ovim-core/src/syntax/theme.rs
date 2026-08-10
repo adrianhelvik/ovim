@@ -70,6 +70,8 @@ pub enum UiGroup {
     Warning,
     /// Info message
     Info,
+    /// Successful operation
+    Success,
     /// Picker/menu background
     MenuBackground,
     /// Picker/menu selected item
@@ -174,6 +176,7 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::Error, Color::Red);
         scheme.set_ui(UiGroup::Warning, Color::Yellow);
         scheme.set_ui(UiGroup::Info, Color::Cyan);
+        scheme.set_ui(UiGroup::Success, Color::Green);
         scheme.set_ui(UiGroup::MenuBackground, Color::Rgb(30, 30, 30));
         scheme.set_ui(UiGroup::MenuSelected, Color::Rgb(60, 60, 80));
         scheme.set_ui(UiGroup::Border, Color::Gray);
@@ -243,6 +246,7 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::Error, red);
         scheme.set_ui(UiGroup::Warning, yellow);
         scheme.set_ui(UiGroup::Info, aqua);
+        scheme.set_ui(UiGroup::Success, green);
         scheme.set_ui(UiGroup::MenuBackground, Color::Rgb(50, 48, 47));
         scheme.set_ui(UiGroup::MenuSelected, Color::Rgb(80, 73, 69));
         scheme.set_ui(UiGroup::Border, gray);
@@ -312,6 +316,7 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::Error, red);
         scheme.set_ui(UiGroup::Warning, yellow);
         scheme.set_ui(UiGroup::Info, aqua);
+        scheme.set_ui(UiGroup::Success, green);
         scheme.set_ui(UiGroup::MenuBackground, Color::Rgb(235, 219, 178));
         scheme.set_ui(UiGroup::MenuSelected, Color::Rgb(213, 196, 161));
         scheme.set_ui(UiGroup::Border, gray);
@@ -383,6 +388,7 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::Error, red);
         scheme.set_ui(UiGroup::Warning, orange);
         scheme.set_ui(UiGroup::Info, cyan);
+        scheme.set_ui(UiGroup::Success, green);
         scheme.set_ui(UiGroup::MenuBackground, base02);
         scheme.set_ui(UiGroup::MenuSelected, base01);
         scheme.set_ui(UiGroup::Border, base01);
@@ -454,6 +460,7 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::Error, red);
         scheme.set_ui(UiGroup::Warning, orange);
         scheme.set_ui(UiGroup::Info, cyan);
+        scheme.set_ui(UiGroup::Success, green);
         scheme.set_ui(UiGroup::MenuBackground, base2);
         scheme.set_ui(UiGroup::MenuSelected, base1);
         scheme.set_ui(UiGroup::Border, base1);
@@ -522,6 +529,7 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::Error, pink);
         scheme.set_ui(UiGroup::Warning, orange);
         scheme.set_ui(UiGroup::Info, blue);
+        scheme.set_ui(UiGroup::Success, green);
         scheme.set_ui(UiGroup::MenuBackground, Color::Rgb(49, 50, 44));
         scheme.set_ui(UiGroup::MenuSelected, Color::Rgb(73, 72, 62));
         scheme.set_ui(UiGroup::Border, gray);
@@ -592,6 +600,7 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::Error, red);
         scheme.set_ui(UiGroup::Warning, orange);
         scheme.set_ui(UiGroup::Info, cyan);
+        scheme.set_ui(UiGroup::Success, green);
         scheme.set_ui(UiGroup::MenuBackground, selection);
         scheme.set_ui(UiGroup::MenuSelected, Color::Rgb(80, 82, 100));
         scheme.set_ui(UiGroup::Border, comment);
@@ -668,6 +677,7 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::Error, red);
         scheme.set_ui(UiGroup::Warning, yellow);
         scheme.set_ui(UiGroup::Info, cyan);
+        scheme.set_ui(UiGroup::Success, green);
         scheme.set_ui(UiGroup::MenuBackground, bg_dark);
         scheme.set_ui(UiGroup::MenuSelected, bg_highlight);
         scheme.set_ui(UiGroup::Border, Color::Rgb(58, 65, 95)); // #3a415f  more visible borders
