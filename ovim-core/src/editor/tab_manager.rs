@@ -32,6 +32,7 @@ impl Editor {
 
         // Switch editor to the new buffer
         self.current_buffer_index = new_buffer_index;
+        self.clear_lsp_state();
         self.lsp.state.needs_lsp_init = true;
     }
 
@@ -52,6 +53,7 @@ impl Editor {
 
         // Switch editor to the new buffer
         self.current_buffer_index = new_buffer_index;
+        self.clear_lsp_state();
         // Don't need LSP for scratch buffers
         self.lsp.state.needs_lsp_init = false;
         self.mark_dirty();

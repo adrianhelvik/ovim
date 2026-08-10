@@ -1718,18 +1718,11 @@ impl Editor {
         // Check if file is already open in a buffer
         for (i, buf) in self.buffers.iter().enumerate() {
             if buf.file_path() == Some(&path_str) {
-                // File already open - just switch to it
-                // Save current file to alternate file register
-                if let Some(current_path) = self.buffer().file_path() {
-                    self.registers.set_alternate_file(current_path.to_string());
-                }
-                self.current_buffer_index = i;
-                // Update current file register
-                self.registers.set_current_file(path_str);
+                // File already open - use the canonical switch path so every
+                // file-scoped UI/LSP cache is reset consistently.
+                self.switch_to_buffer(i);
                 // Point the current tab at the existing buffer
                 self.sync_current_tab_buffer();
-                // Still need to initialize LSP for this file if it hasn't been yet
-                self.lsp.state.needs_lsp_init = true;
                 return Ok(());
             }
         }

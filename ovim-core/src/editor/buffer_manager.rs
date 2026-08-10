@@ -266,7 +266,9 @@ impl Editor {
             self.current_buffer_index = self.buffers.len() - 1;
         }
 
+        self.clear_lsp_state();
         self.lsp.state.needs_lsp_init = true;
+        self.request_diagnostics_refresh();
         false
     }
 
@@ -275,6 +277,7 @@ impl Editor {
         buffer.set_language_catalog(self.language_catalog.clone());
         self.buffers.push(buffer);
         self.current_buffer_index = self.buffers.len() - 1;
+        self.clear_lsp_state();
         self.lsp.state.needs_lsp_init = true;
     }
 
@@ -561,6 +564,50 @@ mod tests {
         // Switching from scratch to real file should NOT set # to scratch path
         editor.switch_to_buffer(0);
         assert_eq!(editor.registers().get(Some('#')), expected_path);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn file_switch_clears_stale_lsp_status_but_keeps_running_servers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let javascript = dir.path().join("app.js");
+        let markdown = dir.path().join("README.md");
+        fs::write(&javascript, "const value = 1;\n").expect("write javascript");
+        fs::write(&markdown, "# Notes\n").expect("write markdown");
+
+        let mut editor = Editor::default();
+        editor.open_file(&javascript).expect("open javascript");
+        editor.register_lsp_server("javascript".into(), "typescript-language-server".into());
+        editor.lsp.state.diagnostic_count = (2, 1, 0, 0);
+
+        assert_eq!(
+            editor.current_lsp_server_name(),
+            Some("typescript-language-server")
+        );
+        assert_eq!(
+            editor.status_message(),
+            "LSP: typescript-language-server ready"
+        );
+
+        editor.open_file(&markdown).expect("open markdown");
+
+        assert!(editor.active_lsp_servers().contains_key("javascript"));
+        assert_eq!(editor.current_lsp_server_name(), None);
+        assert_eq!(editor.lsp_status(), "");
+        assert_eq!(editor.status_message(), "");
+        assert_eq!(editor.cached_diagnostic_count(), (0, 0, 0, 0));
+
+        // The already-open async path must use the same switch cleanup.
+        editor
+            .load_file_async(&javascript)
+            .await
+            .expect("switch to existing javascript buffer");
+        editor.set_lsp_status("Hover failed: stale test status".into());
+        editor
+            .load_file_async(&markdown)
+            .await
+            .expect("switch to existing markdown buffer");
+        assert_eq!(editor.lsp_status(), "");
+        assert_eq!(editor.status_message(), "");
     }
 
     /// OV-00231: When a workspace edit modifies a file the user has not

@@ -1081,13 +1081,28 @@ impl Editor {
         }
     }
 
-    /// Clear all LSP state (hover, code actions, completions, pending action, pending responses)
+    /// Clear file-scoped LSP state while retaining the global server registry.
     pub(crate) fn clear_lsp_state(&mut self) {
+        let lsp_status_was_visible =
+            !self.lsp.state.status.is_empty() && self.status_message() == self.lsp_status();
+        self.lsp.state.status.clear();
+        if lsp_status_was_visible {
+            self.clear_status_message();
+        }
+
+        self.lsp.state.diagnostic_count = (0, 0, 0, 0);
         self.lsp.state.hover_info = None;
         self.lsp.state.hover_scroll = 0;
         self.lsp.state.hover_h_scroll = 0;
+        self.lsp.state.hover_position = None;
         self.lsp.state.available_code_actions.clear();
         self.lsp.state.available_completions.clear();
+        self.lsp.state.available_references.clear();
+        self.lsp.state.available_document_symbols.clear();
+        self.lsp.state.available_workspace_symbols.clear();
+        self.lsp.state.available_call_hierarchy.clear();
+        self.lsp.state.available_type_hierarchy.clear();
+        self.lsp.state.active_lsp_result_type = None;
         self.lsp.state.inlay_hints.clear();
         // Drop the cached diagnostic vector too — it belongs to the file we're
         // leaving. The decorations get wiped below regardless, but leaving the
@@ -1109,6 +1124,19 @@ impl Editor {
     /// Get active LSP servers map
     pub fn active_lsp_servers(&self) -> &HashMap<String, String> {
         &self.lsp.state.active_lsp_servers
+    }
+
+    /// Running server for the current buffer's language, if one is active.
+    pub fn current_lsp_server_name(&self) -> Option<&str> {
+        let language_id = self
+            .buffer()
+            .file_path()
+            .and_then(|path| self.language_id_for_path(path))?;
+        self.lsp
+            .state
+            .active_lsp_servers
+            .get(&language_id)
+            .map(String::as_str)
     }
 
     /// Get LSP progress message (e.g., "indexing...")

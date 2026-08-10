@@ -376,7 +376,7 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
 
         let status_message = if !editor.status_message().is_empty() {
             format!(" {} ", editor.status_message())
-        } else if !editor.active_lsp_servers().is_empty() {
+        } else if editor.current_lsp_server_name().is_some() {
             " LSP ".to_string()
         } else {
             String::new()
@@ -884,7 +884,7 @@ pub fn render_margin_widgets(
     let right_margin_width =
         (full_area.x + full_area.width).saturating_sub(right_margin_start) as usize;
     let (errors, warnings, _, _) = editor.cached_diagnostic_count();
-    let has_lsp = !editor.active_lsp_servers().is_empty();
+    let has_lsp = editor.current_lsp_server_name().is_some();
     if right_margin_width >= 12 && (errors > 0 || warnings > 0 || has_lsp) {
         let mut spans: Vec<Span> = Vec::new();
         spans.push(Span::raw(" ")); // 1 col gap after buffer
