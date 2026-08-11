@@ -35,6 +35,11 @@ pub fn process_external_file_change(editor: &mut Editor) {
             Ok(true) => {
                 editor.mark_saved();
                 editor.mark_buffer_modified_force_send();
+                // The on-disk file IS the new buffer content, so a didSave is
+                // truthful here — and servers that run flycheck on save
+                // (rust-analyzer's cargo/clippy check) need it to produce
+                // their full diagnostics for the reloaded text. (OV-00324)
+                editor.mark_buffer_saved();
                 editor.request_diagnostics_refresh();
                 if editor.buffer().needs_rehighlight() {
                     editor.process_viewport_rehighlight();

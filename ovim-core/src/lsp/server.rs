@@ -833,11 +833,20 @@ impl LanguageServer {
         // Each language server has different requirements for optimal behavior
         let initialization_options = match self.inner.language.as_str() {
             "rust" => {
-                // rust-analyzer specific configuration
+                // rust-analyzer specific configuration.
+                //
+                // `checkOnSave` is a plain boolean in current rust-analyzer;
+                // the command moved to the `check` table. The old
+                // `checkOnSave: { command, extraArgs }` shape is rejected with
+                // "invalid config value" and silently falls back to defaults.
+                // Deliberately no `-D warnings`: promoting every clippy
+                // warning to an error made the editor disagree with plain
+                // `cargo build`/`cargo test`, which users read as bogus
+                // errors. (OV-00325)
                 Some(json!({
-                    "checkOnSave": {
-                        "command": "clippy",
-                        "extraArgs": ["--", "-D", "warnings"]
+                    "checkOnSave": true,
+                    "check": {
+                        "command": "clippy"
                     },
                     "hover": {
                         "documentation": true,

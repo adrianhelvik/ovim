@@ -26,6 +26,12 @@ pub struct DocumentSyncState {
     pub target_lsp_version: Option<i32>,
     /// Track whether we've sent didOpen for this document
     pub did_open_sent: bool,
+    /// The buffer content changed without the server hearing about it (e.g.
+    /// reload after an external write). The next sync MUST send a full
+    /// document update: reconcile seeding and the content-equality no-op
+    /// guard are both bypassed, because they assume "server text == buffer
+    /// text", which is exactly what is broken here. (OV-00324)
+    pub force_full_resend: bool,
 }
 
 impl DocumentSyncState {

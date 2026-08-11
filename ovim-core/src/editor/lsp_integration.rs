@@ -420,6 +420,15 @@ impl Editor {
                     self.mark_dirty();
                     self.set_lsp_status(String::new());
                     true
+                } else if self.has_diagnostics_on_line(self.buffer().cursor().line()) {
+                    // The server has nothing to say about the symbol, but the
+                    // line has a diagnostic — that message is almost always
+                    // what the user pressed hover to read. Show it instead of
+                    // a dead-end "No hover info available" status (which also
+                    // lingered and suppressed the message-line echo).
+                    crate::lsp_debug!("LSP-HOVER", "No hover info; showing diagnostic");
+                    self.show_diagnostic_at_cursor();
+                    true
                 } else {
                     crate::lsp_debug!("LSP-HOVER", "No hover info available");
                     self.set_lsp_status("No hover info available".to_string());
@@ -1278,7 +1287,7 @@ impl Editor {
             state.did_open_sent = true;
         }
 
-        if sent_version > 0 && state.last_flushed_content.is_none() {
+        if sent_version > 0 && state.last_flushed_content.is_none() && !state.force_full_resend {
             let seeded_content = state
                 .last_queued_content
                 .clone()
@@ -1376,6 +1385,13 @@ impl Editor {
             // last_flushed_content, incremental diffs against it would produce
             // further incorrect updates.
             state.last_flushed_content = None;
+            // Clearing last_flushed_content alone is not enough: the manager
+            // reconcile treats "None" as "unknown, assume in sync" and re-seeds
+            // it with the CURRENT buffer content, after which the no-op guard
+            // in send_lsp_changes_if_modified compares equal and silently
+            // drops the update — the server keeps analyzing the pre-reload
+            // text and its stale diagnostics never clear. (OV-00324)
+            state.force_full_resend = true;
         }
         self.lsp.slots.inlay_hints.invalidate();
         self.lsp.slots.diagnostics.invalidate();
@@ -1571,24 +1587,31 @@ impl Editor {
             let content: Arc<str> =
                 content.unwrap_or_else(|| Arc::from(self.buffer().rope().to_string()));
 
-            {
+            let force_full_resend = {
                 let state = self
                     .lsp
                     .state
                     .document_sync
                     .entry(state_key.clone())
                     .or_default();
-                if state.target_lsp_version.is_none() && state.flushed_content() == Some(&*content)
-                {
-                    state.buffer_modified = false;
-                    state.last_queued_content = None;
-                    return;
-                }
+                // A forced resend bypasses both no-op guards: they assume the
+                // sync-state snapshots reflect what the server has, which is
+                // exactly what a reload after an external write broke.
+                if !state.force_full_resend {
+                    if state.target_lsp_version.is_none()
+                        && state.flushed_content() == Some(&*content)
+                    {
+                        state.buffer_modified = false;
+                        state.last_queued_content = None;
+                        return;
+                    }
 
-                if state.queued_content() == Some(&*content) {
-                    return;
+                    if state.queued_content() == Some(&*content) {
+                        return;
+                    }
                 }
-            }
+                state.force_full_resend
+            };
 
             // Get language_id from file extension
             let language_id = match self.language_id_for_path(&file_path) {
@@ -1596,13 +1619,17 @@ impl Editor {
                 None => return,
             };
 
-            // Get old content for incremental sync
-            let old_content = self
-                .lsp
-                .state
-                .document_sync
-                .get(&state_key)
-                .and_then(|state| state.last_flushed_content.clone());
+            // Get old content for incremental sync. Under a forced resend
+            // there is no trustworthy baseline — send the full document.
+            let old_content = if force_full_resend {
+                None
+            } else {
+                self.lsp
+                    .state
+                    .document_sync
+                    .get(&state_key)
+                    .and_then(|state| state.last_flushed_content.clone())
+            };
 
             // Send the didChange notification to all servers for this language
             if lsp
@@ -1622,6 +1649,7 @@ impl Editor {
             // promote it to flushed once last_sent catches up.
             let state = self.lsp.state.document_sync.entry(state_key).or_default();
             state.mark_change_queued(content, queued_version);
+            state.force_full_resend = false;
 
             // Note: slot invalidation for inlay_hints and diagnostics happens
             // upstream in the canonical `mark_buffer_modified` hook (and in

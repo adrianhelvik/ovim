@@ -885,14 +885,6 @@ fn apply_inline_decorations(
 /// Width of the gap (in columns) between rendered code and an EOL diagnostic.
 const EOL_DIAG_GAP: usize = 2;
 
-/// Longest EOL diagnostic message rendered inline, as a function of the row's
-/// final width: a third of the row, with a floor so narrow terminals still get
-/// a readable snippet. The inline text is a cue, not the full report — the
-/// complete message lives in the `<Space>e` diagnostic float.
-fn eol_message_budget(final_width: usize) -> usize {
-    (final_width / 3).max(40)
-}
-
 /// Truncate `text` to at most `max_chars` characters, appending `...` when
 /// truncation happens. If `max_chars` is too small to fit even the ellipsis,
 /// returns whatever prefix fits with no marker.
@@ -914,6 +906,27 @@ fn fit_with_ellipsis(text: &str, max_chars: usize) -> String {
 /// Total display width of all spans in a Line.
 fn line_display_width(line: &Line<'_>) -> usize {
     line.spans
+        .iter()
+        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
+        .sum()
+}
+
+/// Display width of the row's real content: trailing all-space spans with a
+/// default style (the padding `split_line_into_rows` appends) are ignored.
+/// Placement decisions must use this, not `line_display_width` — under soft
+/// wrap every row arrives padded to `text_width`, and measuring the padding
+/// made `place_eol_on_line` treat every short line as "full", pushing its
+/// diagnostic to the far screen edge instead of next to the code.
+fn content_display_width(line: &Line<'_>) -> usize {
+    let mut spans = line.spans.as_slice();
+    while let Some(last) = spans.last() {
+        if last.content.chars().all(|c| c == ' ') && last.style == Style::default() {
+            spans = &spans[..spans.len() - 1];
+        } else {
+            break;
+        }
+    }
+    spans
         .iter()
         .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
         .sum()
@@ -998,10 +1011,12 @@ fn apply_eol_decorations(
     // Append the diagnostic if we have one and there's room for gap + ≥1 char.
     let remaining = final_width.saturating_sub(diag_start);
     if !decorations.is_empty() && remaining >= EOL_DIAG_GAP + 4 {
-        // First decoration wins (already priority-sorted).
+        // First decoration wins (already priority-sorted). The message may
+        // use everything up to the row edge: the space right of the code is
+        // otherwise unused, and diagnostics are exactly what the user wants
+        // to read there.
         let dec = &decorations[0];
-        let budget = (remaining - EOL_DIAG_GAP).min(eol_message_budget(final_width));
-        let msg = fit_with_ellipsis(&dec.text, budget);
+        let msg = fit_with_ellipsis(&dec.text, remaining - EOL_DIAG_GAP);
         let style = decoration_to_ratatui_style(&dec.style);
         row.spans.push(Span::raw(" ".repeat(EOL_DIAG_GAP)));
         row.spans.push(Span::styled(msg, style));
@@ -1039,7 +1054,7 @@ fn place_eol_on_line(
                 render_width,
             },
         );
-    } else if !eol_decs.is_empty() && line_display_width(line) >= text_width {
+    } else if !eol_decs.is_empty() && content_display_width(line) >= text_width {
         overlay_eol_decoration_at_edge(line, eol_decs, text_width);
     } else {
         apply_eol_decorations(line, eol_decs, EolPlacement::Append { text_width });
@@ -2711,51 +2726,71 @@ mod tests {
         assert_eq!(display_width, 30);
     }
 
+    /// Regression: under soft wrap (the default), `split_line_into_rows` pads
+    /// every row to `text_width`. Measuring that padding made
+    /// `place_eol_on_line` treat every short line as "full" and take the
+    /// overlay branch — the diagnostic landed right-aligned at the screen
+    /// edge, capped to a third of the width, far away from its code.
     #[test]
-    fn test_eol_decoration_capped_on_wide_viewport() {
+    fn test_padded_wrapped_row_gets_adjacent_eol_not_edge_overlay() {
         use ovim_core::editor::decoration::*;
 
-        // 200-col viewport, short line, very long message: the inline text
-        // must stop at the budget (200/3 = 66 cols) with an ellipsis instead
-        // of painting across the whole row.
-        let text_width = 200;
-        let long_msg = "x".repeat(150);
-        let mut line = Line::from("let x = 1;".to_string());
+        let text_width = 60;
+        let base = Line::from("let x = 1;".to_string());
+        let mut rows = split_line_into_rows(base, text_width);
+        assert_eq!(rows.len(), 1);
+        let mut row = rows.remove(0);
 
         let dec = Decoration {
             placement: DecorationPlacement::EndOfLine { char_offset: 0 },
             source: DecorationSource::Diagnostic,
-            text: long_msg,
-            display_width: 150,
+            text: "unused variable: `x`".to_string(),
+            display_width: 20,
             style: DecorationStyle::new(ovim_core::color::Color::Red).with_italic(),
             priority: 0,
             source_version: 0,
         };
 
-        apply_eol_decorations(&mut line, &[&dec], EolPlacement::Append { text_width });
+        place_eol_on_line(&mut row, &[&dec], text_width, text_width);
 
-        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        let budget = eol_message_budget(text_width);
-        let expected = format!("{}...", "x".repeat(budget - 3));
+        let rendered: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
-            rendered.contains(&expected),
-            "message should be truncated to the {budget}-col budget with an ellipsis"
-        );
-        assert!(
-            !rendered.contains(&"x".repeat(budget + 1)),
-            "message must not exceed the budget"
+            rendered.starts_with("let x = 1;  unused variable: `x`"),
+            "diagnostic must sit {EOL_DIAG_GAP} columns after the code, not at the far edge; got {rendered:?}"
         );
         let display_width: usize = rendered.chars().map(char_display_width).sum();
         assert_eq!(display_width, text_width, "row is re-padded to full width");
     }
 
+    /// A row whose real content fills the box still uses the overlay so the
+    /// diagnostic stays visible.
     #[test]
-    fn test_eol_budget_floor_on_narrow_viewport() {
-        // A third of a narrow viewport would be unreadably short; the floor
-        // keeps at least 40 columns available.
-        assert_eq!(eol_message_budget(60), 40);
-        assert_eq!(eol_message_budget(120), 40);
-        assert_eq!(eol_message_budget(150), 50);
+    fn test_full_content_row_still_overlays_at_edge() {
+        use ovim_core::editor::decoration::*;
+
+        let text_width = 40;
+        let full: String = "x".repeat(text_width);
+        let mut row = Line::from(full);
+
+        let dec = Decoration {
+            placement: DecorationPlacement::EndOfLine { char_offset: 0 },
+            source: DecorationSource::Diagnostic,
+            text: "too long".to_string(),
+            display_width: 8,
+            style: DecorationStyle::new(ovim_core::color::Color::Red).with_italic(),
+            priority: 0,
+            source_version: 0,
+        };
+
+        place_eol_on_line(&mut row, &[&dec], text_width, text_width);
+
+        let rendered: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.ends_with("too long"),
+            "overlay should place the message at the right edge; got {rendered:?}"
+        );
+        let display_width: usize = rendered.chars().map(char_display_width).sum();
+        assert_eq!(display_width, text_width);
     }
 
     #[test]
