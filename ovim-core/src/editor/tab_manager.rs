@@ -81,6 +81,7 @@ impl Editor {
                     .and_then(|n| n.to_str())
                     .map(|n| n.to_string())
             })
+            .or_else(|| buffer.and_then(|b| b.display_name()).map(str::to_string))
             .unwrap_or_else(|| "[No Name]".to_string())
     }
 

@@ -1101,6 +1101,12 @@ impl Editor {
         let mut buffer = crate::buffer::Buffer::new_from_str(&source);
         buffer.set_read_only(true);
         buffer.enable_syntax_highlighting_for_path(&absolute_path.to_string_lossy());
+        // Label the snapshot with the source file's name so the tab bar and
+        // status line don't show "[No Name]" — without giving it a file path,
+        // which would make it an LSP document and a save target.
+        if let Some(name) = absolute_path.file_name().and_then(|n| n.to_str()) {
+            buffer.set_display_name(name);
+        }
         let presentation_buffer_id = buffer.id();
         self.add_buffer(buffer);
         // The virtual snapshot is intentionally not an LSP document or a save target.
@@ -1701,6 +1707,43 @@ mod tests {
             original_target
         );
         assert!(editor.ai_state.active_selection.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn walkthrough_snapshot_tab_shows_source_file_name() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        let tool_call = call(json!([
+            {
+                "path": "first.rs",
+                "start_line": 2,
+                "comment": "The entry point validates the request."
+            },
+            {
+                "path": "second.rs",
+                "start_line": 7,
+                "comment": "The handoff occurs here."
+            }
+        ]));
+
+        if let Err((error, _)) = editor.begin_code_explanation(tool_call, batch_continuation()) {
+            panic!("could not start walkthrough: {error:?}");
+        }
+
+        // The snapshot buffer stays pathless (no LSP identity, no save
+        // target) but presents the source file's name instead of "[No Name]".
+        assert!(editor.buffer().file_path().is_none());
+        assert_eq!(editor.buffer().display_name(), Some("first.rs"));
+        assert_eq!(editor.get_tab_title(editor.current_tab_index()), "first.rs");
+
+        assert!(editor.move_code_explanation(true));
+        assert_eq!(editor.buffer().display_name(), Some("second.rs"));
+        assert_eq!(
+            editor.get_tab_title(editor.current_tab_index()),
+            "second.rs"
+        );
+
+        editor.finish_code_explanation(true);
+        assert_eq!(editor.get_tab_title(editor.current_tab_index()), "first.rs");
     }
 
     #[tokio::test(flavor = "multi_thread")]

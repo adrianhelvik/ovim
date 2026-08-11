@@ -111,6 +111,11 @@ pub struct Buffer {
     ai_lock_blocked: bool,
     /// Nesting depth for temporary lock bypass (internal use only).
     ai_lock_bypass_depth: usize,
+    /// Presentation-only label for pathless buffers (walkthrough snapshots,
+    /// scratch views), shown in the tab bar and status line instead of
+    /// "[No Name]". Unlike `file_path` it carries no save target or LSP
+    /// document identity.
+    display_name: Option<String>,
 }
 
 impl Buffer {
@@ -145,6 +150,7 @@ impl Buffer {
             ai_locks: Vec::new(),
             ai_lock_blocked: false,
             ai_lock_bypass_depth: 0,
+            display_name: None,
         }
     }
 
@@ -252,6 +258,7 @@ impl Buffer {
             ai_locks: Vec::new(),
             ai_lock_blocked: false,
             ai_lock_bypass_depth: 0,
+            display_name: None,
         }
     }
 
@@ -387,6 +394,18 @@ impl Buffer {
     /// Gets the file path if set
     pub fn file_path(&self) -> Option<&str> {
         self.file_path.as_deref()
+    }
+
+    /// Presentation-only label for pathless buffers (see the field docs).
+    pub fn display_name(&self) -> Option<&str> {
+        self.display_name.as_deref()
+    }
+
+    /// Sets the presentation-only label shown in the tab bar and status
+    /// line while the buffer has no file path. Does not affect saving,
+    /// LSP identity, or language detection.
+    pub fn set_display_name(&mut self, name: impl Into<String>) {
+        self.display_name = Some(name.into());
     }
 
     /// Sets the file path

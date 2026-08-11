@@ -231,7 +231,10 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
     };
     let position = format!(" {}:{} ", cursor.line() + 1, cursor.col().0 + 1);
     let modified = if editor.is_modified() { " [+] " } else { " " };
-    let file = buffer.file_path().unwrap_or("[No Name]");
+    let file = buffer
+        .file_path()
+        .or_else(|| buffer.display_name())
+        .unwrap_or("[No Name]");
     let branch_display = editor
         .git_branch()
         .map(|b| format!(" {}", b))
@@ -1532,7 +1535,7 @@ fn review_target_path_hint(editor: &Editor, max_chars: usize) -> String {
     let path = editor
         .ai_chat_state()
         .and_then(|c| editor.get_buffer_by_id(c.active_buffer_id))
-        .and_then(|b| b.file_path())
+        .and_then(|b| b.file_path().or_else(|| b.display_name()))
         .unwrap_or("[No Name]");
     compact_path_hint(path, max_chars)
 }
