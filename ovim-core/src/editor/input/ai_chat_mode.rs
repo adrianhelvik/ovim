@@ -956,6 +956,7 @@ mod tests {
     use super::*;
     use crate::ai::chat_types::ChatOpts;
     use crate::ai::chat_types::ToolCallInfo;
+    use crate::editor::render_cache::{ChatTextPoint, ChatTextSelection};
     use std::path::PathBuf;
 
     fn open_test_chat(editor: &mut Editor) {
@@ -1003,6 +1004,27 @@ mod tests {
 
         assert!(editor.ai_chat_review_mode());
         assert_eq!(editor.mode(), crate::mode::Mode::AiChat);
+    }
+
+    #[test]
+    fn command_c_copies_and_clears_chat_text_selection() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        editor.render_cache.ai_chat_rendered_text_rows = vec!["selected text".to_string()];
+        editor.render_cache.ai_chat_text_selection = Some(ChatTextSelection {
+            anchor: ChatTextPoint { row: 0, column: 0 },
+            head: ChatTextPoint { row: 0, column: 7 },
+            moved: true,
+        });
+
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('c'), Modifiers::SUPER),
+        )
+        .expect("copy selection");
+
+        assert!(!editor.ai_chat_has_text_selection());
+        assert!(editor.render_cache.ai_chat_text_selection.is_none());
     }
 
     #[test]

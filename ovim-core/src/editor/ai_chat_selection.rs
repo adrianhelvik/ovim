@@ -148,10 +148,13 @@ impl Editor {
         }
     }
 
-    /// Copy the active mouse selection. Returns false when no non-empty text
-    /// is selected, allowing callers to fall back to copying the conversation.
+    /// Copy and consume the active mouse selection. Returns false when no
+    /// non-empty text is selected, allowing callers to fall back to copying
+    /// the conversation without leaving a stale highlight behind.
     pub fn copy_ai_chat_text_selection(&mut self) -> bool {
-        let Some(selection) = self.render_cache.ai_chat_text_selection else {
+        self.render_cache.ai_chat_text_selecting = false;
+        self.render_cache.ai_chat_text_autoscroll = None;
+        let Some(selection) = self.render_cache.ai_chat_text_selection.take() else {
             return false;
         };
         if !selection.moved {

@@ -1131,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn dragging_chat_text_highlights_and_copies_the_selection() {
+    fn dragging_chat_text_copies_and_clears_the_selection() {
         let mut editor = editor_with_docked_chat();
         editor.render_cache.ai_chat_interactions.history = Some(crate::Rect {
             x: 40,
@@ -1174,8 +1174,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(editor.registers.get_clipboard(), "alpha\nbeta");
-        assert!(editor.ai_chat_has_text_selection());
+        assert_eq!(editor.status_message(), "Copied selected chat text");
+        assert!(!editor.ai_chat_has_text_selection());
+        assert!(editor.render_cache.ai_chat_text_selection.is_none());
     }
 
     #[test]

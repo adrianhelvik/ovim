@@ -21,10 +21,15 @@ fn apply_java_status(editor: &mut Editor, status: String) {
 /// Drives one round of background work: LSP, DAP, syntax highlighting,
 /// picker, and installs. Call on a periodic interval from any frontend.
 pub async fn process_editor_tick(editor: &mut Editor, channels: &mut FrontendChannels) {
+    // Do not let a slow LSP initialization trap a yank flash on screen. Keep
+    // deferring LSP while the flash is visible and for the tick that clears
+    // it, giving the frontend one complete tick to paint the clear frame.
+    let defer_lsp_for_yank_flash = process_yank_flash(editor);
+
     // Syntax must get a complete tick before LSP startup. Starting a language
     // server can take several seconds, and awaiting it first used to leave a
     // newly opened file unhighlighted for the entire startup window.
-    let defer_lsp_init = process_syntax_highlighting(editor, channels);
+    let defer_lsp_init = process_syntax_highlighting(editor, channels) || defer_lsp_for_yank_flash;
 
     // === LSP lifecycle ===
     process_java_status(editor, &mut channels.java_status_rx);
@@ -81,9 +86,18 @@ fn process_syntax_highlighting(editor: &mut Editor, channels: &mut FrontendChann
     defer_lsp_init
 }
 
+/// Expire the yank flash without allowing slow LSP startup to delay the frame
+/// that removes it. Returns true while LSP initialization should be deferred.
+fn process_yank_flash(editor: &mut Editor) -> bool {
+    let expired = editor.tick_yank_flash();
+    if expired {
+        editor.mark_dirty();
+    }
+    expired || editor.yank_flash().is_some()
+}
+
 fn tick_transient_ui(editor: &mut Editor) {
     if editor.tick_cat_animation()
-        | editor.tick_yank_flash()
         | editor.tick_toasts()
         | editor.tick_ai_chat_working_animation()
         | editor.tick_ai_chat_text_selection_autoscroll()
@@ -676,7 +690,9 @@ async fn spawn_gradle_and_wait(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_java_status, process_syntax_highlighting, tick_transient_ui};
+    use super::{
+        apply_java_status, process_syntax_highlighting, process_yank_flash, tick_transient_ui,
+    };
     use crate::editor::Editor;
     use crate::frontend::FrontendChannels;
     use ovim_core::ai::chat_types::ChatOpts;
@@ -693,6 +709,26 @@ mod tests {
         tick_transient_ui(&mut editor);
 
         assert!(editor.is_dirty());
+    }
+
+    #[test]
+    fn yank_flash_defers_slow_work_until_its_clear_frame_can_paint() {
+        let mut editor = Editor::with_content("copy me\n");
+        editor.set_yank_flash_lines(0, 0);
+
+        assert!(process_yank_flash(&mut editor));
+        assert!(editor.yank_flash().is_some());
+
+        std::thread::sleep(std::time::Duration::from_millis(175));
+        editor.mark_clean();
+
+        assert!(process_yank_flash(&mut editor));
+        assert!(editor.yank_flash().is_none());
+        assert!(editor.is_dirty());
+        assert!(
+            !process_yank_flash(&mut editor),
+            "slow work may start only after the clear frame has been deferred once"
+        );
     }
 
     #[test]
