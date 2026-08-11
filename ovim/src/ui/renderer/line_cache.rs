@@ -41,8 +41,11 @@ pub(crate) struct CachedChatBubble {
 /// Key identifying a cached rendered line.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct LineCacheKey {
-    /// Buffer identity (current buffer index)
-    buffer_id: usize,
+    /// Stable buffer identity (`Buffer::id`). Must NOT be the buffer index:
+    /// two different buffers can occupy the same index over time (e.g. a
+    /// walkthrough replacing its presentation buffer), and both start at
+    /// version 0, so index+version cannot tell them apart.
+    buffer_id: u64,
     /// Logical line index in the buffer
     line_idx: usize,
     /// Buffer version when this line was rendered
@@ -96,6 +99,9 @@ pub struct LineRenderCache {
     chat_bubbles: HashMap<ChatBubbleCacheKey, CachedChatBubble>,
     /// Buffer version from the last render pass
     last_buffer_version: usize,
+    /// Stable buffer identity from the last render pass. A buffer swap keeps
+    /// the version at 0 (fresh buffers), so identity must be checked too.
+    last_buffer_id: u64,
     /// Capacity limit to prevent unbounded growth
     max_entries: usize,
     /// Stats: cache hits this frame
@@ -118,6 +124,7 @@ impl LineRenderCache {
             entries: HashMap::with_capacity(256),
             chat_bubbles: HashMap::with_capacity(128),
             last_buffer_version: usize::MAX, // force miss on first frame
+            last_buffer_id: u64::MAX,
             max_entries: 1024,
             hits: 0,
             misses: 0,
@@ -166,7 +173,7 @@ impl LineRenderCache {
     /// - The cached entry had transient highlighting
     pub fn get(
         &mut self,
-        buffer_id: usize,
+        buffer_id: u64,
         line_idx: usize,
         buffer_version: usize,
         h_offset: usize,
@@ -176,10 +183,13 @@ impl LineRenderCache {
         markdown_conceal: bool,
         decoration_hash: u64,
     ) -> Option<&Line<'static>> {
-        // Fast path: if buffer version changed, invalidate everything
-        if buffer_version != self.last_buffer_version {
+        // Fast path: if the buffer identity or version changed, invalidate
+        // everything. Version alone is not enough: replacing a buffer with a
+        // freshly created one (both at version 0) must not reuse old lines.
+        if buffer_version != self.last_buffer_version || buffer_id != self.last_buffer_id {
             self.clear();
             self.last_buffer_version = buffer_version;
+            self.last_buffer_id = buffer_id;
             self.misses += 1;
             return None;
         }
@@ -212,7 +222,7 @@ impl LineRenderCache {
     /// (cursor line, visual selection, search highlights, yank flash).
     pub fn put(
         &mut self,
-        buffer_id: usize,
+        buffer_id: u64,
         line_idx: usize,
         buffer_version: usize,
         h_offset: usize,
@@ -264,6 +274,7 @@ mod tests {
     fn cache_hit() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1; // sync version
+        cache.last_buffer_id = 1;
         cache.put(1, 0, 1, 0, 80, false, 4, false, 0, make_line("hello"), true);
 
         let result = cache.get(1, 0, 1, 0, 80, false, 4, false, 0);
@@ -276,6 +287,7 @@ mod tests {
     fn cache_miss_version_change() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
+        cache.last_buffer_id = 1;
         cache.put(1, 0, 1, 0, 80, false, 4, false, 0, make_line("hello"), true);
 
         // Buffer version changed
@@ -285,9 +297,24 @@ mod tests {
     }
 
     #[test]
+    fn cache_miss_buffer_identity_change() {
+        // Two fresh buffers swapped at the same index share version 0; the
+        // stable buffer id must still invalidate the cache between them.
+        let mut cache = LineRenderCache::new();
+        cache.last_buffer_version = 0;
+        cache.last_buffer_id = 1;
+        cache.put(1, 0, 0, 0, 80, false, 4, false, 0, make_line("stale"), true);
+
+        let result = cache.get(2, 0, 0, 0, 80, false, 4, false, 0);
+        assert!(result.is_none());
+        assert!(cache.get(2, 0, 0, 0, 80, false, 4, false, 0).is_none());
+    }
+
+    #[test]
     fn cache_miss_viewport_change() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
+        cache.last_buffer_id = 1;
         cache.put(1, 0, 1, 0, 80, false, 4, false, 0, make_line("hello"), true);
 
         // h_offset changed
@@ -299,6 +326,7 @@ mod tests {
     fn unstable_lines_not_cached() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
+        cache.last_buffer_id = 1;
         // Store with is_stable=false (e.g., cursor line)
         cache.put(
             1,
@@ -323,6 +351,7 @@ mod tests {
         let mut cache = LineRenderCache::new();
         cache.max_entries = 10; // small cap for test
         cache.last_buffer_version = 1;
+        cache.last_buffer_id = 1;
 
         // Fill cache with lines 0..10
         for i in 0..10 {
@@ -349,6 +378,7 @@ mod tests {
         // addressed).
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
+        cache.last_buffer_id = 1;
         cache.put(1, 0, 1, 0, 80, false, 4, false, 100, make_line("a"), true);
         cache.put(1, 1, 1, 0, 80, false, 4, false, 200, make_line("b"), true);
 
@@ -362,6 +392,7 @@ mod tests {
     fn cache_miss_decoration_hash_change() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
+        cache.last_buffer_id = 1;
         cache.put(1, 0, 1, 0, 80, false, 4, false, 42, make_line("x"), true);
 
         // Same line, different decoration hash — should miss.

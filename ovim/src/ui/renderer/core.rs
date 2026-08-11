@@ -1199,6 +1199,59 @@ mod cursor_screen_position_tests {
         assert!(editor.render_cache.ai_chat_image_thumbnails.is_empty());
     }
 
+    #[test]
+    fn buffer_swap_at_same_index_does_not_reuse_stale_cached_lines() {
+        // Walkthrough steps replace the presentation buffer with a fresh one
+        // at the same buffer index; both start at version 0, so the line
+        // cache must key on buffer identity rather than index or the new
+        // buffer renders lines cached from the old one.
+        let mut editor = Editor::default();
+        let first = (1..=9)
+            .map(|i| format!("first {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\nexport default value";
+        editor.open_scratch_buffer("step-1", &first);
+        editor.set_mode(crate::mode::Mode::Normal);
+
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut line_cache = LineRenderCache::new();
+        terminal
+            .draw(|f| Renderer::render_to_frame(f, &mut editor, &mut line_cache))
+            .unwrap();
+
+        assert!(!editor.delete_current_buffer());
+        let second = (1..=14)
+            .map(|i| format!("second {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        editor.open_scratch_buffer("step-2", &second);
+        terminal
+            .draw(|f| Renderer::render_to_frame(f, &mut editor, &mut line_cache))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let mut rows = Vec::new();
+        for y in 0..buf.area.height {
+            let mut s = String::new();
+            for x in 0..buf.area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            rows.push(s);
+        }
+        assert!(
+            !rows.iter().any(|row| row.contains("export default value")),
+            "stale line from the replaced buffer leaked into the render:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("second 10")),
+            "replacement buffer content missing from the render:\n{}",
+            rows.join("\n")
+        );
+    }
+
     /// Renders `editor` to a test terminal and returns the hardware cursor.
     fn render_and_cursor_position(editor: &mut Editor, width: u16, height: u16) -> (u16, u16) {
         let backend = TestBackend::new(width, height);

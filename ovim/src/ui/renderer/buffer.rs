@@ -1432,7 +1432,7 @@ pub fn render_buffer(
     let emit_budget = visible_lines + top_skip;
     let mut visual_rows_used = 0;
     let buffer_version = buffer.version();
-    let buffer_id = editor.current_buffer_index();
+    let buffer_id = buffer.id();
 
     // Reset per-frame cache stats
     line_cache.reset_stats();
