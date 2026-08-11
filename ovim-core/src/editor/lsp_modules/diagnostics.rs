@@ -226,6 +226,12 @@ impl Editor {
             .map(|diagnostic| diagnostic.message.clone())
     }
 
+    /// The full diagnostic nearest the cursor on the cursor line, if any.
+    /// Used by the renderer to echo the message in the message line.
+    pub fn diagnostic_at_cursor(&self) -> Option<&lsp_types::Diagnostic> {
+        self.diagnostic_nearest_to_cursor()
+    }
+
     /// Get the total number of diagnostics
     pub fn diagnostic_count(&self) -> usize {
         if self.diagnostics_cache_stale() {

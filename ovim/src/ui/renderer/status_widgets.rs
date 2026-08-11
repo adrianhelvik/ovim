@@ -544,19 +544,61 @@ pub fn render_path_completion(frame: &mut Frame, editor: &Editor, status_area: R
 /// Shows editor status messages, command feedback, or blank.
 pub fn render_message_line(frame: &mut Frame, editor: &Editor, area: Rect) {
     let message = editor.status_message();
-    let text = if message.is_empty() {
-        String::new()
+    let line = if !message.is_empty() {
+        Line::from(vec![Span::styled(
+            message.to_string(),
+            Style::default().fg(Color::White).bg(Color::Black),
+        )])
     } else {
-        message.to_string()
+        diagnostic_echo_line(editor, area.width as usize).unwrap_or_default()
     };
-
-    let line = Line::from(vec![Span::styled(
-        text,
-        Style::default().fg(Color::White).bg(Color::Black),
-    )]);
 
     let paragraph = Paragraph::new(line).style(Style::default().bg(Color::Black));
     frame.render_widget(paragraph, area);
+}
+
+/// When the message line is idle, echo the diagnostic under the cursor —
+/// severity-tagged and colored, truncated to the row. Complements the
+/// width-capped inline virtual text: the echo has the whole row to spend,
+/// so the message is readable without opening the `<Space>e` float.
+fn diagnostic_echo_line(editor: &Editor, width: usize) -> Option<Line<'static>> {
+    let diagnostic = editor.diagnostic_at_cursor()?;
+    let (label, color) = match diagnostic.severity {
+        Some(lsp_types::DiagnosticSeverity::WARNING) => ("W", Color::Yellow),
+        Some(lsp_types::DiagnosticSeverity::INFORMATION) => ("I", Color::Cyan),
+        Some(lsp_types::DiagnosticSeverity::HINT) => ("H", Color::Gray),
+        // ERROR, missing severity, or any unknown value.
+        _ => ("E", Color::Red),
+    };
+
+    let mut text = diagnostic.message.lines().next().unwrap_or("").to_string();
+    if let Some(source) = diagnostic.source.as_deref() {
+        let code = match &diagnostic.code {
+            Some(lsp_types::NumberOrString::Number(n)) => format!(" {n}"),
+            Some(lsp_types::NumberOrString::String(s)) => format!(" {s}"),
+            None => String::new(),
+        };
+        text.push_str(&format!(" [{source}{code}]"));
+    }
+
+    let prefix = format!("{label}: ");
+    let body_width = width.saturating_sub(prefix.width());
+    if body_width == 0 {
+        return None;
+    }
+    Some(Line::from(vec![
+        Span::styled(
+            prefix,
+            Style::default()
+                .fg(color)
+                .bg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            truncate_with_ellipsis(&text, body_width),
+            Style::default().fg(Color::White).bg(Color::Black),
+        ),
+    ]))
 }
 
 /// Renders the search line
