@@ -102,7 +102,7 @@ policy = "auto_on_missing_or_known_failure"
 [[language]]
 id = "javascript"
 name = "JavaScript"
-extensions = ["js", "jsx", "mjs", "cjs"]
+extensions = ["js", "jsx", "mjs", "cjs", "es", "es6", "es7"]
 
 [language.syntax]
 grammar = "tree-sitter-javascript"
@@ -130,7 +130,7 @@ policy = "auto_on_missing_or_known_failure"
 id = "python"
 name = "Python"
 extensions = ["py", "pyw", "pyi"]
-filenames = ["pipfile"]
+filenames = ["pipfile", "snakefile", "sconstruct", "wscript"]
 
 [language.syntax]
 grammar = "tree-sitter-python"
@@ -331,7 +331,7 @@ method = { type = "npm", package = "yaml-language-server" }
 [[language]]
 id = "html"
 name = "HTML"
-extensions = ["html", "htm"]
+extensions = ["html", "htm", "xhtml"]
 
 [language.syntax]
 grammar = "tree-sitter-html"
@@ -462,8 +462,8 @@ install_hint = "Install with: brew install llvm (macOS) or apt install clangd (L
 [[language]]
 id = "ruby"
 name = "Ruby"
-extensions = ["rb", "rake", "gemspec"]
-filenames = ["rakefile", "gemfile"]
+extensions = ["rb", "rake", "rbw", "gemspec"]
+filenames = ["rakefile", "gemfile", "guardfile", "capfile", "vagrantfile"]
 
 [language.syntax]
 grammar = "tree-sitter-ruby"
@@ -485,8 +485,8 @@ method = { type = "shell", command = "gem install solargraph" }
 [[language]]
 id = "bash"
 name = "Bash"
-extensions = ["sh", "bash", "zsh"]
-filenames = [".bashrc", ".bash_profile", ".zshrc"]
+extensions = ["sh", "bash", "zsh", "ksh"]
+filenames = [".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout"]
 
 [language.syntax]
 grammar = "tree-sitter-bash"
@@ -527,7 +527,7 @@ method = { type = "cargo", package = "taplo-cli", bin = "taplo", features = ["ls
 [[language]]
 id = "zig"
 name = "Zig"
-extensions = ["zig"]
+extensions = ["zig", "zon"]
 
 [language.lsp]
 command = "zls"
@@ -588,10 +588,27 @@ root_markers = [".git"]
 install_hint = "Install from source: cargo install --git https://github.com/matthewmturner/ghostty-lsp"
 
 # ============================================================================
-# Companion LSP Servers
+# Dockerfile / Containerfile
 # ============================================================================
-# Companion servers provide additional LSP support alongside primary servers.
-# They activate only when activation_markers are present in the project tree.
+
+[[language]]
+id = "dockerfile"
+name = "Dockerfile"
+filenames = ["Dockerfile", "Containerfile", "Dockerfile.dev", "Dockerfile.prod", "Dockerfile.test"]
+
+# Syntax highlighting uses the built-in shell-compatible fallback. No language
+# server is configured by default.
+
+# ============================================================================
+# Tree-sitter queries
+# ============================================================================
+
+[[language]]
+id = "tree-sitter-query"
+name = "Tree-sitter Query"
+extensions = ["scm"]
+
+# Syntax highlighting is built in. No language server is configured by default.
 
 # ============================================================================
 # SQL

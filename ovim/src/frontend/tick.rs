@@ -21,19 +21,22 @@ fn apply_java_status(editor: &mut Editor, status: String) {
 /// Drives one round of background work: LSP, DAP, syntax highlighting,
 /// picker, and installs. Call on a periodic interval from any frontend.
 pub async fn process_editor_tick(editor: &mut Editor, channels: &mut FrontendChannels) {
+    // Syntax must get a complete tick before LSP startup. Starting a language
+    // server can take several seconds, and awaiting it first used to leave a
+    // newly opened file unhighlighted for the entire startup window.
+    let defer_lsp_init = process_syntax_highlighting(editor, channels);
+
     // === LSP lifecycle ===
     process_java_status(editor, &mut channels.java_status_rx);
     process_lsp_notifications(editor).await;
-    process_lsp_init(editor).await;
+    if !defer_lsp_init {
+        process_lsp_init(editor).await;
+    }
     process_lsp_sync_and_inlay_hints(editor).await;
 
     // === Debug adapter ===
     process_dap_events(editor);
     process_pending_debug_action(editor).await;
-
-    // === Syntax highlighting ===
-    spawn_syntax_highlighting(editor, &channels.syntax_tx);
-    drain_syntax_results(editor, &mut channels.syntax_rx);
 
     // === LSP responses & intents ===
     if editor.poll_pending_lsp_responses() {
@@ -65,6 +68,17 @@ pub async fn process_editor_tick(editor: &mut Editor, channels: &mut FrontendCha
     // File switches queue didClose outside the async input dispatcher. Drive
     // that lifecycle from the shared tick so headless and TUI sessions agree.
     editor.send_lsp_close_if_needed().await;
+}
+
+/// Start or finish initial syntax work and report whether LSP initialization
+/// should wait until a later tick. The extra tick lets the frontend paint the
+/// completed syntax cache before a slow language-server startup is awaited.
+fn process_syntax_highlighting(editor: &mut Editor, channels: &mut FrontendChannels) -> bool {
+    let defer_lsp_init =
+        editor.buffer().should_init_syntax() || editor.buffer().syntax_highlighting_is_loading();
+    spawn_syntax_highlighting(editor, &channels.syntax_tx);
+    drain_syntax_results(editor, &mut channels.syntax_rx);
+    defer_lsp_init
 }
 
 fn tick_transient_ui(editor: &mut Editor) {
@@ -662,9 +676,11 @@ async fn spawn_gradle_and_wait(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_java_status, tick_transient_ui};
+    use super::{apply_java_status, process_syntax_highlighting, tick_transient_ui};
     use crate::editor::Editor;
+    use crate::frontend::FrontendChannels;
     use ovim_core::ai::chat_types::ChatOpts;
+    use tokio::sync::mpsc;
 
     #[test]
     fn working_animation_tick_invalidates_the_render_without_input() {
@@ -707,5 +723,34 @@ mod tests {
 
         assert_eq!(editor.status_message(), "Java: Starting Hyperion LSP...");
         assert!(!editor.take_diagnostics_refresh_request());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn yaml_syntax_gets_a_paint_tick_before_lsp_initialization() {
+        let mut editor = Editor::with_content("name: ovim\nenabled: true\n");
+        editor.set_file_path("config.yaml".to_string());
+        let (_java_status_tx, java_status_rx) = mpsc::channel(1);
+        let mut channels = FrontendChannels::new(java_status_rx);
+
+        assert!(process_syntax_highlighting(&mut editor, &mut channels));
+
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            let defer_lsp = process_syntax_highlighting(&mut editor, &mut channels);
+            if editor.buffer().has_syntax_highlighting() {
+                assert!(
+                    defer_lsp,
+                    "the completion tick must still defer LSP so the frontend can paint"
+                );
+                assert!(!editor.buffer().highlights_for_line(0).is_empty());
+                assert!(
+                    !process_syntax_highlighting(&mut editor, &mut channels),
+                    "LSP may initialize on the tick after syntax is ready"
+                );
+                return;
+            }
+        }
+
+        panic!("YAML syntax highlighting did not finish");
     }
 }

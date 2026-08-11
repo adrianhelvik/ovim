@@ -390,7 +390,7 @@ impl LanguageRegistry {
                     .extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("");
-                if ext == "jsx" {
+                if ext.eq_ignore_ascii_case("jsx") {
                     Some("javascriptreact")
                 } else {
                     Some("javascript")

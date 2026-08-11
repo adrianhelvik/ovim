@@ -371,7 +371,7 @@ impl LanguageRegistry {
 
         // Try extension first
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if let Some(&idx) = self.by_extension.get(ext) {
+            if let Some(&idx) = self.by_extension.get(&ext.to_ascii_lowercase()) {
                 return Some(&self.languages[idx]);
             }
         }
@@ -506,7 +506,7 @@ impl LanguageRegistry {
         for (idx, lang) in languages.iter().enumerate() {
             // Index extensions
             for ext in &lang.extensions {
-                by_extension.insert(ext.clone(), idx);
+                by_extension.insert(ext.to_ascii_lowercase(), idx);
             }
 
             // Index filenames (store lowercase for case-insensitive matching)
@@ -977,6 +977,33 @@ mod tests {
             Some("tree-sitter-wgsl-bevy")
         );
         assert!(wgsl.lsp.is_none());
+    }
+
+    #[test]
+    fn embedded_config_detects_yaml_and_common_file_variants() {
+        let (languages, companions) =
+            LanguageRegistry::parse_configs(include_str!("../languages.toml"), None).unwrap();
+        let registry = LanguageRegistry::build_indices(languages, companions);
+
+        for (path, expected_id) in [
+            ("config.yaml", "yaml"),
+            ("config.yml", "yaml"),
+            ("config.YAML", "yaml"),
+            ("legacy.es", "javascript"),
+            ("types.pyi", "python"),
+            ("page.xhtml", "html"),
+            ("script.ksh", "bash"),
+            ("package.zon", "zig"),
+            ("Dockerfile", "dockerfile"),
+            ("Containerfile", "dockerfile"),
+            ("highlights.scm", "tree-sitter-query"),
+        ] {
+            assert_eq!(
+                registry.detect(path).map(|language| language.id.as_str()),
+                Some(expected_id),
+                "wrong language for {path}"
+            );
+        }
     }
 
     #[test]

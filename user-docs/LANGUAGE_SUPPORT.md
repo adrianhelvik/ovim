@@ -12,24 +12,24 @@ These languages have full LSP support and will auto-install the language server 
 |----------|------------|------------|----------------|
 | Rust | `.rs` | rust-analyzer | rustup |
 | TypeScript | `.ts`, `.tsx`, `.mts`, `.cts` | typescript-language-server | npm |
-| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | typescript-language-server | npm |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs`, `.es`, `.es6`, `.es7` | typescript-language-server | npm |
 | Python | `.py`, `.pyw`, `.pyi` | pyright-langserver | npm |
 | Go | `.go` | gopls | go install |
 | SQL | `.sql`, `.mysql`, `.pgsql`, `.sqlite` | sqls | go install |
 | C# | `.cs`, `.csx` | csharp-ls | dotnet tool |
-| Bash | `.sh`, `.bash` | bash-language-server | npm |
+| Bash | `.sh`, `.bash`, `.zsh`, `.ksh` | bash-language-server | npm |
 | JSON | `.json`, `.jsonc` | vscode-json-language-server | npm |
 | YAML | `.yaml`, `.yml` | yaml-language-server | npm |
-| HTML | `.html`, `.htm` | vscode-html-language-server | npm |
+| HTML | `.html`, `.htm`, `.xhtml` | vscode-html-language-server | npm |
 | Astro | `.astro` | astro-ls | npm |
 | CSS | `.css`, `.scss`, `.sass` | vscode-css-language-server | npm |
 | TOML | `.toml` | taplo | cargo |
-| Ruby | `.rb`, `.rake`, `.gemspec` | solargraph | gem |
+| Ruby | `.rb`, `.rake`, `.rbw`, `.gemspec` | solargraph | gem |
 | Java | `.java` | hyperion-lsp | auto-download |
 | Kotlin | `.kt`, `.kts` | hyperion-lsp | auto-download |
 | Scala | `.scala`, `.sc` | hyperion-lsp | auto-download |
 | Groovy | `.groovy`, `.gradle` | hyperion-lsp | auto-download |
-| Zig | `.zig` | zls | GitHub release |
+| Zig | `.zig`, `.zon` | zls | GitHub release |
 | Lua | `.lua` | lua-language-server | GitHub release |
 | Terraform | `.tf`, `.tfvars` | terraform-ls | GitHub release |
 | Elixir | `.ex`, `.exs` | elixir-ls | GitHub release |
@@ -44,6 +44,8 @@ These languages have full LSP support and will auto-install the language server 
 ### Syntax Highlighting Only
 
 - Markdown (`.md`, `.markdown`)
+- Dockerfile and Containerfile variants
+- Tree-sitter queries (`.scm`)
 - HCL (`.hcl`, `.nomad`, `.vault`)
 - WGSL (`.wgsl`), including Bevy shader preprocessor directives
 

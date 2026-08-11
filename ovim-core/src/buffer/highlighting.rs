@@ -239,7 +239,10 @@ impl Buffer {
         }
 
         if let Some(ref path) = self.file_path {
-            self.language_catalog.detect(path).is_some()
+            self.language_catalog
+                .detect(path)
+                .and_then(|language| language.syntax.clone())
+                .is_some()
                 || LanguageRegistry::detect_from_path(path).is_some()
         } else {
             false
@@ -255,6 +258,11 @@ impl Buffer {
     /// Clears the background syntax-loading flag without applying highlights.
     pub fn clear_syntax_loading(&mut self) {
         self.syntax_loading = false;
+    }
+
+    /// Returns whether the initial syntax cache is being built in the background.
+    pub fn syntax_highlighting_is_loading(&self) -> bool {
+        self.syntax_loading
     }
 
     /// Returns the current highlight version counter.
@@ -1063,6 +1071,29 @@ mod tests {
                 (10..16, HighlightGroup::String),
             ]
         );
+    }
+
+    #[test]
+    fn yaml_path_builds_a_nonempty_highlight_cache() {
+        let mut buffer = Buffer::new_from_str("name: ovim\nenabled: true\n");
+
+        buffer.enable_syntax_highlighting_for_path("config.yaml");
+
+        assert!(buffer.has_syntax_highlighting());
+        assert!(buffer.highlights_for_line(0).iter().any(|(_, group)| {
+            matches!(group, HighlightGroup::Property | HighlightGroup::String)
+        }));
+        assert!(buffer.highlights_for_line(1).iter().any(|(_, group)| {
+            matches!(group, HighlightGroup::Property | HighlightGroup::Constant)
+        }));
+    }
+
+    #[test]
+    fn lsp_only_language_does_not_wait_for_syntax_that_cannot_start() {
+        let mut buffer = Buffer::new_from_str("defmodule Example do\nend\n");
+        buffer.file_path = Some("lib/example.ex".to_string());
+
+        assert!(!buffer.should_init_syntax());
     }
 
     /// Regression test: the per-keystroke rehighlight paths used to call
