@@ -117,6 +117,19 @@ struct SupervisorInner {
     idle_sessions: Mutex<HashMap<AgentId, Box<dyn AgentProviderSession>>>,
     drain_lock: AsyncMutex<()>,
     changed: Notify,
+    /// Terminalizations that failed durably (e.g. ENOSPC appending the
+    /// terminal event). Retried from `settle_pending_terminalizations` so a
+    /// transient write failure cannot leave a dispatch non-terminal for the
+    /// process lifetime — permanently holding a concurrency slot and blocking
+    /// `wait_for_idle`. (OV-00318)
+    pending_terminalizations: Mutex<HashMap<AgentId, PendingTerminalization>>,
+}
+
+/// A child whose infrastructure failure could not be recorded durably yet.
+struct PendingTerminalization {
+    record: AgentDispatchRecord,
+    status: HandoffStatus,
+    detail: String,
 }
 
 impl AgentSupervisor {
@@ -190,6 +203,7 @@ impl AgentSupervisor {
                 idle_sessions: Mutex::new(HashMap::new()),
                 drain_lock: AsyncMutex::new(()),
                 changed: Notify::new(),
+                pending_terminalizations: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -221,6 +235,9 @@ impl AgentSupervisor {
     }
 
     fn allocate(&self, request: DispatchRequest) -> Result<DispatchHandle, AgentSupervisorError> {
+        // Settle first: a dispatch wedged non-terminal by a failed append
+        // would otherwise count against the per-run limit forever.
+        self.settle_pending_terminalizations();
         let mut scheduler = self.inner.scheduler.lock().map_err(|_| poisoned())?;
         let records = scheduler.dispatch_records();
         self.validate_dispatch_limits(&records, &request)?;
@@ -521,6 +538,7 @@ impl AgentSupervisor {
             tokio::pin!(notified);
             notified.as_mut().enable();
 
+            self.settle_pending_terminalizations();
             let all_terminal = self
                 .dispatches()?
                 .iter()
@@ -569,6 +587,7 @@ impl AgentSupervisor {
 
     async fn drain_ready(&self) -> Result<(), AgentSupervisorError> {
         let _guard = self.inner.drain_lock.lock().await;
+        self.settle_pending_terminalizations();
         loop {
             let permit = match self.inner.semaphore.clone().try_acquire_owned() {
                 Ok(permit) => permit,
@@ -648,25 +667,38 @@ impl AgentSupervisor {
             };
             // Route through terminalize_locked so an infrastructure failure also
             // rejects any unsettled steering (this path previously skipped it).
-            let terminal = self
-                .terminalize_locked(&record.handle.agent_id, |scheduler| {
-                    let non_terminal = scheduler
-                        .state(&record.handle.agent_id)
-                        .is_some_and(|state| !state.is_terminal());
-                    if !non_terminal {
-                        return Ok(None);
+            let detail = format!("child loop infrastructure failed: {error}");
+            match self.terminalize_failed_child(&record, status, &detail) {
+                Ok(Some(terminal)) => {
+                    if let Err(notify_error) = self.notify_terminal(&record, &terminal) {
+                        crate::log_warn!(
+                            "agent_runtime",
+                            "terminal handoff for {} could not be delivered to its parent: {notify_error}",
+                            record.handle.agent_id
+                        );
                     }
-                    Ok(Some(scheduler.terminate_conservatively(
-                        &record.handle,
-                        status,
-                        &format!("child loop infrastructure failed: {error}"),
-                    )?))
-                })
-                .map(|(terminal, _sweep)| terminal)
-                .ok()
-                .flatten();
-            if let Some(terminal) = terminal {
-                let _ = self.notify_terminal(&record, &terminal);
+                }
+                Ok(None) => {}
+                Err(terminalize_error) => {
+                    // Recording the failure durably failed too (e.g. a full
+                    // disk). Park it for retry instead of leaving the dispatch
+                    // non-terminal for the process lifetime. (OV-00318)
+                    crate::log_warn!(
+                        "agent_runtime",
+                        "could not terminalize failed child {}: {terminalize_error}; will retry",
+                        record.handle.agent_id
+                    );
+                    if let Ok(mut pending) = self.inner.pending_terminalizations.lock() {
+                        pending.insert(
+                            record.handle.agent_id.clone(),
+                            PendingTerminalization {
+                                record: record.clone(),
+                                status,
+                                detail,
+                            },
+                        );
+                    }
+                }
             }
         }
         self.inner.live.lock().await.remove(&record.handle.agent_id);
@@ -682,6 +714,74 @@ impl AgentSupervisor {
         drop(permit);
         self.inner.changed.notify_waiters();
         tokio::spawn(self.clone().drain_ready_task());
+    }
+
+    /// Terminalize a child whose loop failed: resume a durable-but-unfinished
+    /// handoff if one exists, otherwise record a conservative terminal
+    /// handoff. `Ok(None)` means the dispatch is already terminal.
+    fn terminalize_failed_child(
+        &self,
+        record: &AgentDispatchRecord,
+        status: HandoffStatus,
+        detail: &str,
+    ) -> Result<Option<super::DispatchTerminalRecord>, AgentSupervisorError> {
+        self.terminalize_locked(&record.handle.agent_id, |scheduler| {
+            let non_terminal = scheduler
+                .state(&record.handle.agent_id)
+                .is_some_and(|state| !state.is_terminal());
+            if !non_terminal {
+                return Ok(None);
+            }
+            Ok(Some(scheduler.terminate_conservatively(
+                &record.handle,
+                status,
+                detail,
+            )?))
+        })
+        .map(|(terminal, _sweep)| terminal)
+    }
+
+    /// Retry terminalizations whose durable append previously failed. Called
+    /// from the dispatch/drain/wait paths so the first operation after the
+    /// write failure clears (e.g. disk space freed) settles the wedged
+    /// dispatches, releases their slots, and notifies their parents.
+    fn settle_pending_terminalizations(&self) {
+        let drained: Vec<(AgentId, PendingTerminalization)> = {
+            let Ok(mut pending) = self.inner.pending_terminalizations.lock() else {
+                return;
+            };
+            pending.drain().collect()
+        };
+        if drained.is_empty() {
+            return;
+        }
+        let mut settled_any = false;
+        for (agent_id, item) in drained {
+            match self.terminalize_failed_child(&item.record, item.status, &item.detail) {
+                Ok(Some(terminal)) => {
+                    settled_any = true;
+                    if let Err(notify_error) = self.notify_terminal(&item.record, &terminal) {
+                        crate::log_warn!(
+                            "agent_runtime",
+                            "terminal handoff for {agent_id} could not be delivered to its parent: {notify_error}"
+                        );
+                    }
+                }
+                Ok(None) => settled_any = true,
+                Err(error) => {
+                    crate::log_warn!(
+                        "agent_runtime",
+                        "retried terminalization for {agent_id} still failing: {error}"
+                    );
+                    if let Ok(mut pending) = self.inner.pending_terminalizations.lock() {
+                        pending.insert(agent_id, item);
+                    }
+                }
+            }
+        }
+        if settled_any {
+            self.inner.changed.notify_waiters();
+        }
     }
 
     fn drain_ready_task(self) -> super::AgentFuture<'static, ()> {
@@ -1472,6 +1572,67 @@ mod tests {
             })
             .unwrap();
         (turn_id, event.event_id)
+    }
+
+    /// OV-00318: when the run log rejects appends (e.g. a full disk), a failed
+    /// child's terminalization used to be silently discarded, leaving the
+    /// dispatch non-terminal for the process lifetime. It must instead be
+    /// parked and retried, so the first wait after the sink heals settles the
+    /// dispatch and delivers the handoff to the parent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_terminalization_is_retried_after_sink_heals() {
+        use crate::agent_runtime::test_support::FlakySink;
+
+        let inner = Arc::new(InMemoryRunEventSink::new());
+        let flaky = Arc::new(FlakySink::new(inner));
+        let factory = Arc::new(FakeInputFactory::new(Duration::from_millis(150)));
+        let run_id = RunId::new();
+        let root = AgentId::new();
+        let supervisor = AgentSupervisor::new(
+            run_id,
+            root.clone(),
+            flaky.clone(),
+            catalog(),
+            factory,
+            AgentSupervisorConfig::default(),
+        )
+        .unwrap();
+
+        let child = supervisor
+            .dispatch_nonblocking(request("slow child"))
+            .unwrap();
+        while supervisor.state(&child.agent_id).unwrap() != Some(DispatchState::Running) {
+            tokio::task::yield_now().await;
+        }
+
+        // Every append now fails: the child loop errors, and recording the
+        // failure durably fails too — the terminalization must be parked.
+        flaky.fail_all();
+        assert!(
+            !supervisor
+                .wait_for_idle(Duration::from_millis(600))
+                .await
+                .unwrap(),
+            "run must not report idle while the failure is unrecorded"
+        );
+
+        // Space is freed: the next wait settles the parked terminalization,
+        // the dispatch reaches a terminal state, and the parent is notified.
+        flaky.heal();
+        assert!(supervisor
+            .wait_for_idle(Duration::from_secs(5))
+            .await
+            .unwrap());
+        let state = supervisor.state(&child.agent_id).unwrap().unwrap();
+        assert!(
+            state.is_terminal(),
+            "dispatch must be terminal after the retry; got {state:?}"
+        );
+        assert_eq!(
+            supervisor.mailbox(root).unwrap().pending().unwrap().len(),
+            1,
+            "the parent must receive the terminal handoff notification"
+        );
     }
 
     #[tokio::test]

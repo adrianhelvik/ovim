@@ -243,8 +243,20 @@ struct ScheduledAgent {
     state: DispatchState,
     queue_sequence: u64,
     last_event_id: EventId,
-    pending_handoff_status: Option<HandoffStatus>,
+    pending_handoff: Option<PendingHandoff>,
     runtime_operations: HashMap<OperationId, RuntimeOperationState>,
+}
+
+/// A validated handoff that is durable but whose terminal lifecycle event has
+/// not been appended yet — the window between the two appends in
+/// `finish_with_handoff_and_warnings`. The envelope is retained so the
+/// transition can be resumed in-process via `complete_pending_handoff`
+/// (with the parent still notified) instead of waiting for a restart
+/// rehydrate. (OV-00318)
+#[derive(Clone, Debug)]
+struct PendingHandoff {
+    status: HandoffStatus,
+    handoff_event: EventEnvelope,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -377,7 +389,7 @@ impl AgentDispatchScheduler {
                         agent_id
                     )));
                 }
-                if agent.pending_handoff_status.is_some() {
+                if agent.pending_handoff.is_some() {
                     return Err(DispatchError::InvalidHistory(format!(
                         "agent {} recorded more than one pending handoff",
                         agent_id
@@ -400,7 +412,10 @@ impl AgentDispatchScheduler {
                     )));
                 }
                 agent.last_event_id = event.event_id.clone();
-                agent.pending_handoff_status = Some(recorded.handoff.status());
+                agent.pending_handoff = Some(PendingHandoff {
+                    status: recorded.handoff.status(),
+                    handoff_event: event.clone(),
+                });
                 continue;
             }
 
@@ -491,7 +506,7 @@ impl AgentDispatchScheduler {
                         state: DispatchState::Created,
                         queue_sequence: event.sequence,
                         last_event_id: event.event_id.clone(),
-                        pending_handoff_status: None,
+                        pending_handoff: None,
                         runtime_operations: HashMap::new(),
                     },
                 );
@@ -534,7 +549,7 @@ impl AgentDispatchScheduler {
                 )));
             }
             let next = projected_state(&lifecycle.state);
-            match (agent.pending_handoff_status, &next) {
+            match (agent.pending_handoff.as_ref().map(|p| p.status), &next) {
                 (None, DispatchState::Completed) => {
                     return Err(DispatchError::InvalidHistory(format!(
                         "agent {} completed without a validated handoff",
@@ -569,7 +584,7 @@ impl AgentDispatchScheduler {
             }
             agent.last_event_id = event.event_id.clone();
             if next.is_terminal() {
-                agent.pending_handoff_status = None;
+                agent.pending_handoff = None;
             }
         }
 
@@ -582,8 +597,9 @@ impl AgentDispatchScheduler {
             .values()
             .filter_map(|agent| {
                 agent
-                    .pending_handoff_status
-                    .map(|status| (agent.handle.clone(), status))
+                    .pending_handoff
+                    .as_ref()
+                    .map(|pending| (agent.handle.clone(), pending.status))
             })
             .collect::<Vec<_>>();
         for (handle, status) in pending_handoffs {
@@ -805,7 +821,7 @@ impl AgentDispatchScheduler {
                 state: DispatchState::Queued,
                 queue_sequence: queued_event.sequence,
                 last_event_id: queued_event.event_id,
-                pending_handoff_status: None,
+                pending_handoff: None,
                 runtime_operations: HashMap::new(),
             },
         );
@@ -1041,7 +1057,7 @@ impl AgentDispatchScheduler {
                 to: terminal_state,
             });
         }
-        if agent.pending_handoff_status.is_some() {
+        if agent.pending_handoff.is_some() {
             return Err(DispatchError::PendingHandoff(handle.agent_id.clone()));
         }
         if agent
@@ -1076,7 +1092,10 @@ impl AgentDispatchScheduler {
             .get_mut(&handle.agent_id)
             .expect("checked above");
         agent.last_event_id = handoff_event.event_id.clone();
-        agent.pending_handoff_status = Some(handoff_status);
+        agent.pending_handoff = Some(PendingHandoff {
+            status: handoff_status,
+            handoff_event: handoff_event.clone(),
+        });
         let terminal_event = self
             .transition_internal(
                 handle,
@@ -1131,7 +1150,9 @@ impl AgentDispatchScheduler {
         }
         if from_validated_handoff {
             let status = agent
-                .pending_handoff_status
+                .pending_handoff
+                .as_ref()
+                .map(|pending| pending.status)
                 .ok_or_else(|| DispatchError::MissingPendingHandoff(handle.agent_id.clone()))?;
             if terminal_state_for_handoff(status) != next {
                 return Err(DispatchError::PendingHandoffTransitionMismatch {
@@ -1139,7 +1160,7 @@ impl AgentDispatchScheduler {
                     lifecycle: next,
                 });
             }
-        } else if agent.pending_handoff_status.is_some() {
+        } else if agent.pending_handoff.is_some() {
             return Err(DispatchError::PendingHandoff(handle.agent_id.clone()));
         }
         if from_followup && !authorized_followup {
@@ -1177,7 +1198,7 @@ impl AgentDispatchScheduler {
         agent.state = next.clone();
         agent.last_event_id = event.event_id.clone();
         if next.is_terminal() {
-            agent.pending_handoff_status = None;
+            agent.pending_handoff = None;
             if self.shared_writer.get(&handle.workspace.workspace_id) == Some(&handle.agent_id) {
                 self.shared_writer.remove(&handle.workspace.workspace_id);
             }
@@ -1431,12 +1452,46 @@ impl AgentDispatchScheduler {
         Ok(())
     }
 
+    /// Resume the terminal lifecycle transition for a dispatch whose validated
+    /// handoff is already durable but whose lifecycle append failed — the
+    /// in-process counterpart of the rehydrate repair. Returns `Ok(None)` when
+    /// no handoff is pending. (OV-00318)
+    pub(crate) fn complete_pending_handoff(
+        &mut self,
+        handle: &DispatchHandle,
+    ) -> Result<Option<DispatchTerminalRecord>, DispatchError> {
+        let Some(pending) = self
+            .agents
+            .get(&handle.agent_id)
+            .and_then(|agent| agent.pending_handoff.clone())
+        else {
+            return Ok(None);
+        };
+        let terminal_event = self.transition_internal(
+            handle,
+            terminal_state_for_handoff(pending.status),
+            Some("terminal state resumed from durable validated handoff".into()),
+            true,
+            false,
+        )?;
+        Ok(Some(DispatchTerminalRecord {
+            handoff_event: pending.handoff_event,
+            terminal_event,
+        }))
+    }
+
     pub(crate) fn terminate_conservatively(
         &mut self,
         handle: &DispatchHandle,
         status: HandoffStatus,
         detail: &str,
     ) -> Result<DispatchTerminalRecord, DispatchError> {
+        // A durable handoff may already exist from an earlier attempt that
+        // failed between its two appends; finishing that transition is the
+        // only valid way forward (a second handoff would be refused).
+        if let Some(terminal) = self.complete_pending_handoff(handle)? {
+            return Ok(terminal);
+        }
         let open = self
             .agents
             .get(&handle.agent_id)
@@ -2688,6 +2743,75 @@ mod tests {
         scheduler
             .transition(handle, DispatchState::Running, None)
             .unwrap();
+    }
+
+    /// OV-00318: an append failure between the durable handoff and its
+    /// terminal lifecycle event must be recoverable in-process. A retry must
+    /// resume the recorded handoff (here: Completed) rather than append a
+    /// second one or stay wedged behind `DispatchError::PendingHandoff`.
+    #[test]
+    fn interrupted_terminal_append_resumes_from_durable_handoff() {
+        use crate::agent_runtime::test_support::FlakySink;
+
+        let inner = Arc::new(crate::run_log::InMemoryRunEventSink::new());
+        let flaky = Arc::new(FlakySink::new(inner.clone()));
+        let run_id = RunId::parse("run_pending_handoff_test").unwrap();
+        let mut scheduler = AgentDispatchScheduler::new(run_id.clone(), flaky.clone(), catalog());
+        let child = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Explorer),
+                WorkspaceId::new(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        start_running(&mut scheduler, &child);
+
+        // Let the handoff append land, then fail the terminal lifecycle append.
+        flaky.fail_after(1);
+        let error = scheduler
+            .finish_with_handoff(&child, handoff(HandoffStatus::Completed))
+            .unwrap_err();
+        assert!(
+            matches!(error, DispatchError::TerminalAfterHandoffFailed { .. }),
+            "expected the terminal append to fail after the handoff landed; got {error:?}"
+        );
+        assert_eq!(
+            scheduler.state(&child.agent_id),
+            Some(&DispatchState::Running),
+            "dispatch must stay non-terminal until the lifecycle event lands"
+        );
+
+        // Appending a second handoff is still refused: the durable one is the gate.
+        let refused = scheduler
+            .finish_with_handoff(&child, handoff(HandoffStatus::Completed))
+            .unwrap_err();
+        assert!(matches!(refused, DispatchError::PendingHandoff(_)));
+
+        // Once appends work again, the conservative retry resumes the durable
+        // handoff: terminal state comes from the recorded Completed handoff,
+        // not from the retry's Failed status, and no second handoff appears.
+        flaky.heal();
+        let terminal = scheduler
+            .terminate_conservatively(&child, HandoffStatus::Failed, "retry after disk full")
+            .unwrap();
+        assert_eq!(
+            scheduler.state(&child.agent_id),
+            Some(&DispatchState::Completed)
+        );
+        assert!(matches!(
+            terminal.handoff_event.kind,
+            EventKind::AgentHandoff(_)
+        ));
+        let handoff_count = inner
+            .events(&run_id)
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::AgentHandoff(_)))
+            .count();
+        assert_eq!(
+            handoff_count, 1,
+            "the durable handoff must not be duplicated"
+        );
     }
 
     fn followup_budget() -> AgentLoopBudget {

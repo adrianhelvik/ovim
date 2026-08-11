@@ -454,15 +454,19 @@ impl AiSubagentService {
         if has_prior_child_history {
             run.restore_prepared_dispatches();
         }
-        runs.insert(run_id, run.clone());
-        if has_prior_child_history
+        // Every fallible step must precede this insert: `reconfigure_if_idle`
+        // refuses while `runs` is non-empty and nothing evicts entries, so
+        // registering a run whose construction then fails would poison the
+        // post-Lua config refresh for the rest of the session (OV-00319).
+        let has_recovered_queued_children = has_prior_child_history
             && run
                 .supervisor
                 .dispatches()
                 .map_err(|error| error.to_string())?
                 .iter()
-                .any(|record| record.state == crate::agent_runtime::DispatchState::Queued)
-        {
+                .any(|record| record.state == crate::agent_runtime::DispatchState::Queued);
+        runs.insert(run_id, run.clone());
+        if has_recovered_queued_children {
             let supervisor = run.supervisor.clone();
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 runtime.spawn(async move {
@@ -2188,27 +2192,59 @@ impl Editor {
             .or_else(|| events.last())
             .map(|event| event.event_id.clone())
             .ok_or_else(|| "durable root has no causal history for operator control".to_string())?;
-        let operator_event = services
-            .store
-            .append(NewRunEvent {
-                run_id: binding.run_id.clone(),
-                caused_by: Some(caused_by),
-                operation_id: None,
-                provider_call_id: None,
-                actor: EventActor::User,
-                agent_id: Some(binding.root_agent_id.clone()),
-                turn_id: Some(turn_id.clone()),
-                workspace_id: Some(binding.workspace_id.clone()),
-                branch_id: Some(binding.selected_branch_id),
-                kind: EventKind::Unknown {
-                    name: "agent_operator_control".into(),
-                    payload: json!({
-                        "action": action,
-                        "target_agent_id": target_agent_id,
-                    }),
-                },
-            })
-            .map_err(|error| error.to_string())?;
+        // Validate the target BEFORE recording the operator event, so a
+        // mistyped or stale agent id leaves no durable audit residue. The run
+        // may legitimately not be constructed yet (first control after a
+        // restart); the prepare path then validates it instead. (OV-00320)
+        if let (Some(target), Ok(run)) = (
+            target_agent_id,
+            self.ai_state.subagents.registered_run(&binding.run_id),
+        ) {
+            let agent_id = AgentId::parse(target).map_err(|error| error.to_string())?;
+            let known = run
+                .supervisor
+                .dispatches()
+                .map_err(|error| error.to_string())?
+                .iter()
+                .any(|record| record.handle.agent_id == agent_id);
+            if !known {
+                return Err(format!("unknown delegated agent {agent_id}"));
+            }
+        }
+        let operator_event_id = match services.store.append(NewRunEvent {
+            run_id: binding.run_id.clone(),
+            caused_by: Some(caused_by.clone()),
+            operation_id: None,
+            provider_call_id: None,
+            actor: EventActor::User,
+            agent_id: Some(binding.root_agent_id.clone()),
+            turn_id: Some(turn_id.clone()),
+            workspace_id: Some(binding.workspace_id.clone()),
+            branch_id: Some(binding.selected_branch_id),
+            kind: EventKind::Unknown {
+                name: "agent_operator_control".into(),
+                payload: json!({
+                    "action": action,
+                    "target_agent_id": target_agent_id,
+                }),
+            },
+        }) {
+            Ok(event) => event.event_id,
+            // The interrupt must stay available when the disk is full: the
+            // audit event is not causally required to cancel a live child
+            // (cancellation itself is write-free, and recording the terminal
+            // state is parked and retried once appends succeed again). Other
+            // controls chain their own durable events off the operator event,
+            // so for them a failed append stays fatal. (OV-00320)
+            Err(error) if action == INTERRUPT_AGENT_TOOL => {
+                crate::log_warn!(
+                    "agent_runtime",
+                    "operator interrupt could not be recorded durably ({error}); proceeding without an audit event"
+                );
+                caused_by
+            }
+            Err(error) => return Err(error.to_string()),
+        };
         let repository_root = self
             .ai_repo_root()
             .ok_or_else(|| "delegated agents require an active Git repository".to_string())?;
@@ -2218,7 +2254,7 @@ impl Editor {
             root_agent_id: binding.root_agent_id,
             repository_id: binding.key.repository_id,
             turn_id,
-            caused_by_event: operator_event.event_id,
+            caused_by_event: operator_event_id,
             repository_root,
         })
     }

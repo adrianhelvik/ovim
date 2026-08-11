@@ -1,5 +1,8 @@
 //! Transient orchestration state projected onto the append-only run log.
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 mod approval;
 mod dispatch;
 pub mod fake_provider;
