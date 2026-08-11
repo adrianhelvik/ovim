@@ -885,6 +885,14 @@ fn apply_inline_decorations(
 /// Width of the gap (in columns) between rendered code and an EOL diagnostic.
 const EOL_DIAG_GAP: usize = 2;
 
+/// Longest EOL diagnostic message rendered inline, as a function of the row's
+/// final width: a third of the row, with a floor so narrow terminals still get
+/// a readable snippet. The inline text is a cue, not the full report — the
+/// complete message lives in the `<Space>e` diagnostic float.
+fn eol_message_budget(final_width: usize) -> usize {
+    (final_width / 3).max(40)
+}
+
 /// Truncate `text` to at most `max_chars` characters, appending `...` when
 /// truncation happens. If `max_chars` is too small to fit even the ellipsis,
 /// returns whatever prefix fits with no marker.
@@ -992,7 +1000,8 @@ fn apply_eol_decorations(
     if !decorations.is_empty() && remaining >= EOL_DIAG_GAP + 4 {
         // First decoration wins (already priority-sorted).
         let dec = &decorations[0];
-        let msg = fit_with_ellipsis(&dec.text, remaining - EOL_DIAG_GAP);
+        let budget = (remaining - EOL_DIAG_GAP).min(eol_message_budget(final_width));
+        let msg = fit_with_ellipsis(&dec.text, budget);
         let style = decoration_to_ratatui_style(&dec.style);
         row.spans.push(Span::raw(" ".repeat(EOL_DIAG_GAP)));
         row.spans.push(Span::styled(msg, style));
@@ -2700,6 +2709,53 @@ mod tests {
 
         let display_width: usize = rendered.chars().map(char_display_width).sum();
         assert_eq!(display_width, 30);
+    }
+
+    #[test]
+    fn test_eol_decoration_capped_on_wide_viewport() {
+        use ovim_core::editor::decoration::*;
+
+        // 200-col viewport, short line, very long message: the inline text
+        // must stop at the budget (200/3 = 66 cols) with an ellipsis instead
+        // of painting across the whole row.
+        let text_width = 200;
+        let long_msg = "x".repeat(150);
+        let mut line = Line::from("let x = 1;".to_string());
+
+        let dec = Decoration {
+            placement: DecorationPlacement::EndOfLine { char_offset: 0 },
+            source: DecorationSource::Diagnostic,
+            text: long_msg,
+            display_width: 150,
+            style: DecorationStyle::new(ovim_core::color::Color::Red).with_italic(),
+            priority: 0,
+            source_version: 0,
+        };
+
+        apply_eol_decorations(&mut line, &[&dec], EolPlacement::Append { text_width });
+
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let budget = eol_message_budget(text_width);
+        let expected = format!("{}...", "x".repeat(budget - 3));
+        assert!(
+            rendered.contains(&expected),
+            "message should be truncated to the {budget}-col budget with an ellipsis"
+        );
+        assert!(
+            !rendered.contains(&"x".repeat(budget + 1)),
+            "message must not exceed the budget"
+        );
+        let display_width: usize = rendered.chars().map(char_display_width).sum();
+        assert_eq!(display_width, text_width, "row is re-padded to full width");
+    }
+
+    #[test]
+    fn test_eol_budget_floor_on_narrow_viewport() {
+        // A third of a narrow viewport would be unreadably short; the floor
+        // keeps at least 40 columns available.
+        assert_eq!(eol_message_budget(60), 40);
+        assert_eq!(eol_message_budget(120), 40);
+        assert_eq!(eol_message_budget(150), 50);
     }
 
     #[test]

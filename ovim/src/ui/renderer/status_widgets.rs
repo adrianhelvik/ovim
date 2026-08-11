@@ -793,6 +793,15 @@ fn layout_toast_card(
     })
 }
 
+/// `"1 error"` / `"3 errors"` — count with a correctly pluralized noun.
+fn count_label(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
 /// Renders a top-right toast stack over the buffer area.
 ///
 /// Persistent AI activity and diagnostics are followed by transient toasts from
@@ -817,13 +826,18 @@ pub fn render_top_right_toasts(
     if !editor.diagnostic_badge_dismissed() {
         let (errors, warnings, _, _) = editor.cached_diagnostic_count();
         if errors > 0 || warnings > 0 {
-            let message = if errors > 0 && warnings > 0 {
-                format!("{errors} errors · {warnings} warnings")
+            let counts = if errors > 0 && warnings > 0 {
+                format!(
+                    "{} · {}",
+                    count_label(errors, "error"),
+                    count_label(warnings, "warning")
+                )
             } else if errors > 0 {
-                format!("{errors} errors")
+                count_label(errors, "error")
             } else {
-                format!("{warnings} warnings")
+                count_label(warnings, "warning")
             };
+            let message = format!("{counts}\n<Space>e inspects at cursor");
             rows.push(ToastRow::status(
                 if errors > 0 {
                     ToastLevel::Error
