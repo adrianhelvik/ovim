@@ -1527,7 +1527,22 @@ impl Editor {
             self.lsp.state.pending_did_close_file = Some(old);
         }
         if let Some(newp) = &new_path {
-            self.lsp.state.document_sync.remove(newp);
+            // The target path may already be open on the server (e.g.
+            // `:w other.rs` onto a file that was previously edited): the
+            // manager's didOpen claim survives, so reconcile would seed the
+            // fresh sync entry with "server has the current buffer" while
+            // the server actually holds the target file's OLD text. Start
+            // the new entry in force_full_resend so the first sync pushes
+            // the full buffer instead of assuming it's in sync (OV-00334).
+            let state = self
+                .lsp
+                .state
+                .document_sync
+                .entry(newp.clone())
+                .or_default();
+            *state = Default::default();
+            state.buffer_modified = true;
+            state.force_full_resend = true;
         }
 
         self.lsp.state.needs_lsp_init = true;

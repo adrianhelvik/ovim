@@ -92,6 +92,45 @@ async fn key_dispatch_through_input_handler_updates_buffer_cursor_and_mode() {
 
 /// Contract step 1: `handle_viewport_resize` takes raw grid cells and
 /// subtracts chrome (tab bar, file tree, LSP progress line, status +
+/// OV-00337: vim's special-key notation is case-insensitive for multi-char
+/// key names and modifier prefixes (verified `nvim --clean`: `:map <esc>`,
+/// `:map <c-w>`, `:map <cr>` all register the same as their canonical
+/// spellings). `<esc>` used to be inserted as five literal characters,
+/// leaving headless sessions stuck in insert mode. Single-char base keys
+/// stay case-sensitive because `<C-a>` and `<C-A>` are distinct chords.
+#[test]
+fn special_key_notation_is_case_insensitive_for_names_and_modifiers() {
+    use ovim_core::key::{KeyCode, Modifiers};
+
+    for spelling in ["<Esc>", "<esc>", "<ESC>"] {
+        let events = parse_key_string(spelling).unwrap();
+        assert_eq!(events.len(), 1, "{spelling} must parse as one key");
+        assert_eq!(events[0].code, KeyCode::Esc, "{spelling}");
+    }
+
+    for spelling in ["<CR>", "<cr>", "<Enter>", "<enter>"] {
+        let events = parse_key_string(spelling).unwrap();
+        assert_eq!(events.len(), 1, "{spelling} must parse as one key");
+        assert_eq!(events[0].code, KeyCode::Enter, "{spelling}");
+    }
+
+    for spelling in ["<C-w>", "<c-w>", "<ctrl-w>"] {
+        let events = parse_key_string(spelling).unwrap();
+        assert_eq!(events.len(), 1, "{spelling} must parse as one key");
+        assert_eq!(events[0].code, KeyCode::Char('w'), "{spelling}");
+        assert!(
+            events[0].modifiers.contains(Modifiers::CONTROL),
+            "{spelling}"
+        );
+    }
+
+    // Single-char base keys remain case-sensitive: <C-a> != <C-A>.
+    let lower = parse_key_string("<c-a>").unwrap();
+    let upper = parse_key_string("<c-A>").unwrap();
+    assert_eq!(lower[0].code, KeyCode::Char('a'));
+    assert_eq!(upper[0].code, KeyCode::Char('A'));
+}
+
 /// command lines) to get the content viewport. A plain single-tab editor
 /// with no file tree and no LSP progress line only pays for the status and
 /// command lines, so a 24-row window yields a viewport height of 22 (the

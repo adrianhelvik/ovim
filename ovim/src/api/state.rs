@@ -673,11 +673,13 @@ fn parse_special_key(key_name: &str) -> Option<KeyEvent> {
     let mut modifiers = Modifiers::NONE;
     let mut base_name = key_name;
     while let Some((head, tail)) = base_name.split_once('-') {
-        let modifier = match head {
-            "C" | "Ctrl" => Modifiers::CONTROL,
-            "S" | "Shift" => Modifiers::SHIFT,
-            "A" | "M" | "Alt" => Modifiers::ALT,
-            "D" | "Cmd" | "Super" => Modifiers::SUPER,
+        // Vim's notation is case-insensitive for modifier prefixes
+        // (<c-w> == <C-w>), so match them case-insensitively (OV-00337).
+        let modifier = match head.to_ascii_lowercase().as_str() {
+            "c" | "ctrl" => Modifiers::CONTROL,
+            "s" | "shift" => Modifiers::SHIFT,
+            "a" | "m" | "alt" => Modifiers::ALT,
+            "d" | "cmd" | "super" => Modifiers::SUPER,
             // Not a modifier: the rest (including this '-') is the base key.
             _ => break,
         };
@@ -685,8 +687,16 @@ fn parse_special_key(key_name: &str) -> Option<KeyEvent> {
         base_name = tail;
     }
 
-    // Handle function keys: F1-F12
-    let code = if let Some(num) = base_name.strip_prefix('F') {
+    // Multi-char key names are matched case-insensitively like vim's
+    // notation (<esc> == <Esc> == <ESC>); single-char base keys stay
+    // case-sensitive because <C-a> and <C-A> are distinct (OV-00337).
+    let code = if base_name.chars().count() == 1 {
+        Some(KeyCode::Char(base_name.chars().next()?))
+    } else if let Some(num) = base_name
+        .strip_prefix('F')
+        .or_else(|| base_name.strip_prefix('f'))
+    {
+        // Function keys: F1-F12
         if let Ok(n) = num.parse::<u8>() {
             if (1..=12).contains(&n) {
                 Some(KeyCode::F(n))
@@ -696,30 +706,28 @@ fn parse_special_key(key_name: &str) -> Option<KeyEvent> {
         } else {
             None
         }
-    } else if base_name.chars().count() == 1 {
-        Some(KeyCode::Char(base_name.chars().next()?))
     } else {
-        match base_name {
-            "CR" | "Enter" => Some(KeyCode::Enter),
-            "Esc" => Some(KeyCode::Esc),
-            "Tab" if modifiers.contains(Modifiers::SHIFT) => {
+        match base_name.to_ascii_lowercase().as_str() {
+            "cr" | "enter" => Some(KeyCode::Enter),
+            "esc" => Some(KeyCode::Esc),
+            "tab" if modifiers.contains(Modifiers::SHIFT) => {
                 modifiers.remove(Modifiers::SHIFT);
                 Some(KeyCode::BackTab)
             }
-            "Tab" => Some(KeyCode::Tab),
-            "BackTab" => Some(KeyCode::BackTab),
-            "BS" | "Backspace" => Some(KeyCode::Backspace),
-            "Del" | "Delete" => Some(KeyCode::Delete),
-            "Up" => Some(KeyCode::Up),
-            "Down" => Some(KeyCode::Down),
-            "Left" => Some(KeyCode::Left),
-            "Right" => Some(KeyCode::Right),
-            "Space" => Some(KeyCode::Char(' ')),
-            "Home" => Some(KeyCode::Home),
-            "End" => Some(KeyCode::End),
-            "PageUp" => Some(KeyCode::PageUp),
-            "PageDown" => Some(KeyCode::PageDown),
-            "Null" => Some(KeyCode::Null),
+            "tab" => Some(KeyCode::Tab),
+            "backtab" => Some(KeyCode::BackTab),
+            "bs" | "backspace" => Some(KeyCode::Backspace),
+            "del" | "delete" => Some(KeyCode::Delete),
+            "up" => Some(KeyCode::Up),
+            "down" => Some(KeyCode::Down),
+            "left" => Some(KeyCode::Left),
+            "right" => Some(KeyCode::Right),
+            "space" => Some(KeyCode::Char(' ')),
+            "home" => Some(KeyCode::Home),
+            "end" => Some(KeyCode::End),
+            "pageup" => Some(KeyCode::PageUp),
+            "pagedown" => Some(KeyCode::PageDown),
+            "null" => Some(KeyCode::Null),
             _ => None,
         }
     }?;

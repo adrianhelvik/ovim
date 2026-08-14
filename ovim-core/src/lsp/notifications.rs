@@ -20,6 +20,38 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 
+/// Hard ceiling for lifecycle notifications (didOpen/didSave/didClose).
+/// A wedged-but-alive server (stdin backpressure with a full outgoing
+/// channel) must degrade LSP, not freeze the editor tick that awaits these
+/// broadcasts inline (OV-00333). didChange flushes already carry their own
+/// per-server timeout in `flush_pending_changes_broadcast`.
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Sends a notification with `NOTIFY_TIMEOUT` applied (OV-00333).
+async fn notify_with_timeout(
+    server: &super::LanguageServer,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<()> {
+    notify_with_deadline(server, method, params, NOTIFY_TIMEOUT).await
+}
+
+async fn notify_with_deadline(
+    server: &super::LanguageServer,
+    method: &str,
+    params: serde_json::Value,
+    deadline: Duration,
+) -> Result<()> {
+    match tokio::time::timeout(deadline, server.notify(method, params)).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!(
+            "{} notification timed out after {:?} (server not reading stdin?)",
+            method,
+            deadline
+        )),
+    }
+}
+
 fn workspace_configuration_values(
     language: &str,
     params: Option<&serde_json::Value>,
@@ -116,9 +148,12 @@ impl LspManager {
             },
         };
 
-        if let Err(e) = server
-            .notify("textDocument/didOpen", serde_json::to_value(params)?)
-            .await
+        if let Err(e) = notify_with_timeout(
+            &server,
+            "textDocument/didOpen",
+            serde_json::to_value(params)?,
+        )
+        .await
         {
             // Roll back so the next attempt isn't silently masked by the claim.
             self.document_versions.lock().await.remove(&uri);
@@ -333,9 +368,12 @@ impl LspManager {
             text,
         };
 
-        server
-            .notify("textDocument/didSave", serde_json::to_value(params)?)
-            .await?;
+        notify_with_timeout(
+            &server,
+            "textDocument/didSave",
+            serde_json::to_value(params)?,
+        )
+        .await?;
 
         Ok(())
     }
@@ -354,9 +392,12 @@ impl LspManager {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
         };
 
-        server
-            .notify("textDocument/didClose", serde_json::to_value(params)?)
-            .await?;
+        notify_with_timeout(
+            &server,
+            "textDocument/didClose",
+            serde_json::to_value(params)?,
+        )
+        .await?;
 
         // Clean up internal state
         let mut versions = self.document_versions.lock().await;
@@ -436,9 +477,12 @@ impl LspManager {
                         text: text.clone(),
                     },
                 };
-                if let Err(e) = server
-                    .notify("textDocument/didOpen", serde_json::to_value(params)?)
-                    .await
+                if let Err(e) = notify_with_timeout(
+                    &server,
+                    "textDocument/didOpen",
+                    serde_json::to_value(params)?,
+                )
+                .await
                 {
                     lsp_warn!("LSP-BROADCAST", "didOpen failed for server {}: {}", sid, e);
                 } else {
@@ -607,9 +651,12 @@ impl LspManager {
                     text_document: TextDocumentIdentifier { uri: uri.clone() },
                     text: text.clone(),
                 };
-                if let Err(e) = server
-                    .notify("textDocument/didSave", serde_json::to_value(params)?)
-                    .await
+                if let Err(e) = notify_with_timeout(
+                    &server,
+                    "textDocument/didSave",
+                    serde_json::to_value(params)?,
+                )
+                .await
                 {
                     lsp_warn!("LSP-BROADCAST", "didSave failed for server {}: {}", sid, e);
                 }
@@ -630,9 +677,12 @@ impl LspManager {
                 let params = DidCloseTextDocumentParams {
                     text_document: TextDocumentIdentifier { uri: uri.clone() },
                 };
-                if let Err(e) = server
-                    .notify("textDocument/didClose", serde_json::to_value(params)?)
-                    .await
+                if let Err(e) = notify_with_timeout(
+                    &server,
+                    "textDocument/didClose",
+                    serde_json::to_value(params)?,
+                )
+                .await
                 {
                     lsp_warn!("LSP-BROADCAST", "didClose failed for server {}: {}", sid, e);
                 }
@@ -1732,6 +1782,107 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// OV-00333: a wedged-but-alive server (not reading stdin, outgoing
+    /// channel full) must make lifecycle notifications error out instead of
+    /// blocking the caller forever — before the fix, `:w`/open/close on a
+    /// stopped server froze the editor tick indefinitely.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn notify_times_out_when_server_stops_reading() {
+        // A server process that never reads stdin.
+        let server = super::super::server::LanguageServer::spawn(
+            "rust",
+            "sh",
+            vec!["-c".to_string(), "exec sleep 300".to_string()],
+        )
+        .await
+        .expect("spawn wedged server");
+
+        // Fill the OS pipe buffer and the bounded outgoing channel so the
+        // next notify would block forever without a deadline. A ~1MB params
+        // payload saturates the pipe on the first write; the rest queue up.
+        let big = serde_json::json!({ "pad": "x".repeat(1024 * 1024) });
+        for _ in 0..110 {
+            let send = server.notify("test/pad", big.clone());
+            if tokio::time::timeout(Duration::from_millis(200), send)
+                .await
+                .is_err()
+            {
+                // Channel is full — notify itself now blocks. That's the
+                // wedged state the deadline must break out of.
+                break;
+            }
+        }
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            notify_with_deadline(
+                &server,
+                "textDocument/didSave",
+                serde_json::json!({}),
+                Duration::from_millis(100),
+            ),
+        )
+        .await
+        .expect("notify_with_deadline must return promptly, not hang");
+        assert!(
+            result.is_err(),
+            "wedged server must produce an error, not a silent success"
+        );
+    }
+
+    /// OV-00336 (scope narrowed per external review): with unsent local
+    /// edits, a stale NON-EMPTY unversioned publication is dropped (it must
+    /// not later masquerade as describing the newer document), while an
+    /// EMPTY publication — possibly the server's only retraction — is
+    /// deferred for post-flush re-evaluation instead of being lost.
+    #[tokio::test(flavor = "current_thread")]
+    async fn unsent_edits_drop_stale_sets_but_defer_clears() {
+        let manager = Arc::new(LspManager::new());
+        let uri = Uri::from_str("file:///tmp/ovim-clear-defer.rs").expect("uri");
+
+        // Unsent edits: version bumped, nothing flushed.
+        manager
+            .did_change(uri.clone(), "rust", Arc::from("v1\n"), None)
+            .await
+            .unwrap();
+
+        let stale_diag = lsp_types::Diagnostic {
+            range: lsp_types::Range::new(
+                lsp_types::Position::new(0, 0),
+                lsp_types::Position::new(0, 1),
+            ),
+            message: "stale".to_string(),
+            ..Default::default()
+        };
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![stale_diag], None)
+            .await;
+        assert!(
+            manager.get_diagnostics(&uri).await.is_empty(),
+            "stale non-empty publication must not be stored"
+        );
+        assert!(
+            !manager
+                .deferred_diagnostics
+                .lock()
+                .await
+                .contains_key(&(uri.clone(), "rust".to_string())),
+            "stale non-empty publication must not be deferred either"
+        );
+
+        manager
+            .set_diagnostics(uri.clone(), "rust", Vec::new(), None)
+            .await;
+        assert!(
+            manager
+                .deferred_diagnostics
+                .lock()
+                .await
+                .contains_key(&(uri.clone(), "rust".to_string())),
+            "an empty publication (clear) must be deferred, not dropped"
+        );
     }
 
     /// Splits raw captured bytes into parsed JSON-RPC message bodies.

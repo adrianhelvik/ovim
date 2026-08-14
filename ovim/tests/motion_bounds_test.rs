@@ -778,3 +778,37 @@ fn test_yw_at_eof() {
     // Cursor after paste is at end of pasted text
     test.assert_cursor(0, 4);
 }
+
+// ============================================================================
+// '|' command - Go to column {count} (OV-00338)
+// ============================================================================
+
+// Semantics verified in `nvim --clean` on the line
+// "abcdefghijklmnopqrstuvwxyz" (26 chars): `19|` -> col('.') == 19,
+// `99|` -> col('.') == 26 (clamped to last char), bare `|` -> col 1.
+
+#[test]
+fn test_bar_moves_to_count_column() {
+    let mut test = EditorTest::new("abcdefghijklmnopqrstuvwxyz");
+
+    test.keys("19|");
+    // col('.') 19 is 0-based column 18
+    test.assert_cursor(0, 18);
+}
+
+#[test]
+fn test_bar_without_count_moves_to_column_one() {
+    let mut test = EditorTest::new("abcdefghijklmnopqrstuvwxyz");
+
+    test.keys("10l").keys("|");
+    test.assert_cursor(0, 0);
+}
+
+#[test]
+fn test_bar_count_past_line_end_clamps_to_last_char() {
+    let mut test = EditorTest::new("abcdefghijklmnopqrstuvwxyz");
+
+    test.keys("99|");
+    // nvim --clean: 99| on a 26-char line lands on col('.') == 26 (0-based 25)
+    test.assert_cursor(0, 25);
+}

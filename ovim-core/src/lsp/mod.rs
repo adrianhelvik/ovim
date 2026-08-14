@@ -816,10 +816,50 @@ impl LspManager {
                     // No version from server — check if we have unsent edits
                     let sent = self.last_sent_versions.lock().await;
                     let last_sent = sent.get(&uri).copied().unwrap_or(0);
+                    drop(sent);
                     if last_sent < current_version {
+                        // The server can only have seen up to last_sent, so
+                        // this publication reflects older content. A stale
+                        // NON-EMPTY set must not be applied later as if it
+                        // described the newer document — drop it; the server
+                        // republishes once the flush lands. But an EMPTY
+                        // publication (a clear) may be the server's ONLY
+                        // retraction (save-only publishers): defer it like
+                        // the settle window below so already-retracted
+                        // errors don't keep rendering until the next save.
+                        // apply_deferred_diagnostics discards it if the
+                        // document version moves on (OV-00336; scope
+                        // narrowed to clears per external review).
+                        if !diagnostics.is_empty() {
+                            crate::lsp_debug!(
+                                "DIAGNOSTICS",
+                                "Dropping unversioned diagnostics (unsent edits): server={} last_sent={} current={}",
+                                server_id,
+                                last_sent,
+                                current_version
+                            );
+                            return;
+                        }
+                        let edit_time = self
+                            .last_local_edit
+                            .lock()
+                            .await
+                            .get(&uri)
+                            .copied()
+                            .unwrap_or_else(Instant::now);
+                        self.deferred_diagnostics.lock().await.insert(
+                            (uri.clone(), server_id.to_string()),
+                            DeferredDiagnostics {
+                                diagnostics,
+                                document_version: current_version,
+                                last_edit: edit_time,
+                                apply_after: Instant::now()
+                                    + Duration::from_millis(UNVERSIONED_DIAGNOSTICS_SETTLE_MS),
+                            },
+                        );
                         crate::lsp_debug!(
                             "DIAGNOSTICS",
-                            "Dropping unversioned diagnostics (unsent edits): server={} last_sent={} current={}",
+                            "Deferring unversioned clearing publication (unsent edits): server={} last_sent={} current={}",
                             server_id,
                             last_sent,
                             current_version

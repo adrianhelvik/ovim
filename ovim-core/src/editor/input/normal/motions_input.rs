@@ -84,6 +84,23 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
             Ok(true)
         }
+        KeyCode::Char('|') => {
+            // {count}| — go to column {count} (default 1), clamped to the
+            // last character. Verified `nvim --clean` on a 26-char line:
+            // `19|` → col('.') == 19, `99|` → col('.') == 26 (OV-00338).
+            let count = editor.effective_count();
+            let line_idx = editor.buffer().cursor().line();
+            if let Some(line) = editor.buffer().line_text(line_idx) {
+                let line_len = line.chars().count();
+                let max_col = line_len.saturating_sub(1);
+                let col = count.saturating_sub(1).min(max_col);
+                let cursor = editor.buffer_mut().cursor_mut();
+                cursor.set_col(GraphemeCol(col));
+                cursor.update_desired_col(GraphemeCol(col));
+            }
+            editor.clear_count();
+            Ok(true)
+        }
         KeyCode::Char('^') => {
             Motions::first_non_blank(editor.buffer_mut());
             editor.clear_count();
