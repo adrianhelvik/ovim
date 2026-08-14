@@ -108,6 +108,26 @@ fn save_buffer(editor: &mut Editor, opts: SaveOpts<'_>) -> CommandResult {
     }
 }
 
+/// Write all modified buffers (:wa / :wall).
+///
+/// Vim semantics verified in `nvim --clean` (2026-08-14): every modified
+/// named buffer is written; a modified unnamed buffer reports
+/// "E141: No file name for buffer N" without stopping the other writes.
+fn write_all_buffers(editor: &mut Editor, force: bool) -> CommandResult {
+    let (written, errors) = editor.write_all_modified_buffers(force);
+    if !errors.is_empty() {
+        return err(errors.join("; "));
+    }
+    if written == 0 {
+        return ok_silent();
+    }
+    ok(format!(
+        "{} buffer{} written",
+        written,
+        if written == 1 { "" } else { "s" }
+    ))
+}
+
 /// Reload the current buffer from disk (:e / :e!).
 fn reload_buffer(editor: &mut Editor, force: bool) -> CommandResult {
     if !force && editor.is_modified() {
@@ -224,7 +244,11 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                     "Tab closed. Now on tab {}",
                     editor.current_tab_index() + 1
                 ))
-            } else if editor.is_modified() {
+            } else if editor.any_buffer_modified() {
+                // Quitting the last window discards ALL buffers, so hidden
+                // modified buffers must block it too (OV-00331). Verified in
+                // `nvim --clean` (2026-08-14): :q on the last window with a
+                // hidden modified buffer fails with E37.
                 err("No write since last change (add ! to override)")
             } else {
                 editor.quit();
@@ -259,7 +283,12 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             }
         }
         "qa" | "qall" => {
-            if editor.is_modified() {
+            // ANY modified buffer blocks :qa — checking only the current one
+            // silently discarded hidden buffers, e.g. files a multi-file
+            // rename loaded and edited (OV-00331). Verified in `nvim --clean`
+            // (2026-08-14): :qa with a modified non-current buffer fails
+            // with E37.
+            if editor.any_buffer_modified() {
                 err("No write since last change (add ! to override)")
             } else {
                 editor.quit();
@@ -270,6 +299,8 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             editor.quit();
             ok("Quitting all (forced)")
         }
+        "wa" | "wall" | "writeall" => write_all_buffers(editor, false),
+        "wa!" | "wall!" | "writeall!" => write_all_buffers(editor, true),
         "w" | "write" => save_buffer(
             editor,
             SaveOpts {
@@ -2092,6 +2123,190 @@ mod tests {
         let result = execute_command(&mut editor, "w!");
         assert!(matches!(result, CommandResult::Success(_)));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "local original\n");
+    }
+
+    /// OV-00331: `:qa` used to check only the CURRENT buffer, silently
+    /// discarding hidden modified buffers (e.g. files edited by a multi-file
+    /// rename). Vim semantics verified in `nvim --clean` (2026-08-14): with
+    /// buffer 1 modified and an unmodified buffer 2 current, `:qa` fails
+    /// with "E37: No write since last change"; `:qa!` quits.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn qa_refuses_when_a_non_current_buffer_is_modified() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first.txt");
+        let second = temp.path().join("second.txt");
+        std::fs::write(&first, "aaa\n").unwrap();
+        std::fs::write(&second, "bbb\n").unwrap();
+
+        let mut editor = Editor::new();
+        editor.load_file_async(&first).await.unwrap();
+        editor
+            .buffer_mut()
+            .insert_text_at(0, CharCol::ZERO, "changed ");
+        editor.load_file_async(&second).await.unwrap();
+        assert!(
+            !editor.is_modified(),
+            "current buffer must be clean so only the hidden buffer blocks"
+        );
+
+        let result = execute_command(&mut editor, "qa");
+        assert!(
+            matches!(result, CommandResult::Error(ref e) if e.error.contains("No write since last change")),
+            "unexpected result: {result:?}"
+        );
+        assert!(!editor.should_quit());
+
+        let result = execute_command(&mut editor, "qa!");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(editor.should_quit());
+    }
+
+    /// OV-00331: `:q` on the last window exits the editor, so hidden
+    /// modified buffers must block it exactly like `:qa`. Verified in
+    /// `nvim --clean` (2026-08-14): fails with "E37: No write since last
+    /// change".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn q_on_last_window_refuses_when_a_hidden_buffer_is_modified() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first.txt");
+        let second = temp.path().join("second.txt");
+        std::fs::write(&first, "aaa\n").unwrap();
+        std::fs::write(&second, "bbb\n").unwrap();
+
+        let mut editor = Editor::new();
+        editor.load_file_async(&first).await.unwrap();
+        editor
+            .buffer_mut()
+            .insert_text_at(0, CharCol::ZERO, "changed ");
+        editor.load_file_async(&second).await.unwrap();
+
+        let result = execute_command(&mut editor, "q");
+        assert!(
+            matches!(result, CommandResult::Error(ref e) if e.error.contains("No write since last change")),
+            "unexpected result: {result:?}"
+        );
+        assert!(!editor.should_quit());
+    }
+
+    /// OV-00331: `:wa` had no handler at all (it only appeared as a
+    /// completion candidate). Vim semantics verified in `nvim --clean`
+    /// (2026-08-14): `:wa` writes every modified named buffer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wa_writes_all_named_modified_buffers() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first.txt");
+        let second = temp.path().join("second.txt");
+        std::fs::write(&first, "aaa\n").unwrap();
+        std::fs::write(&second, "bbb\n").unwrap();
+
+        let mut editor = Editor::new();
+        editor.load_file_async(&first).await.unwrap();
+        editor.buffer_mut().insert_text_at(0, CharCol::ZERO, "one ");
+        editor.load_file_async(&second).await.unwrap();
+        editor.buffer_mut().insert_text_at(0, CharCol::ZERO, "two ");
+
+        let result = execute_command(&mut editor, "wa");
+        assert!(
+            matches!(result, CommandResult::Success(_)),
+            "unexpected result: {result:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "one aaa\n");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "two bbb\n");
+        assert!(!editor.any_buffer_modified());
+
+        // With everything written, :qa proceeds.
+        let result = execute_command(&mut editor, "qa");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(editor.should_quit());
+    }
+
+    /// External review on OV-00331: a REAL on-disk file whose basename looks
+    /// like a scratch buffer (`[draft]`) must still be written by `:wa` and
+    /// must still block `:qa` — the bracket-name heuristic alone excluded it
+    /// from both, silently losing the changes on quit. Scratch buffers never
+    /// exist on disk, which is the disambiguator.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn real_file_with_bracket_name_is_written_and_blocks_quit() {
+        let temp = tempfile::tempdir().unwrap();
+        let bracketed = temp.path().join("[draft]");
+        std::fs::write(&bracketed, "aaa\n").unwrap();
+
+        let mut editor = Editor::new();
+        editor.load_file_async(&bracketed).await.unwrap();
+        editor.buffer_mut().insert_text_at(0, CharCol::ZERO, "one ");
+
+        assert!(
+            editor.any_buffer_modified(),
+            "a modified real [draft] file must count as modified"
+        );
+        let result = execute_command(&mut editor, "qa");
+        assert!(
+            matches!(result, CommandResult::Error(_)),
+            ":qa must refuse while the real [draft] file is modified: {result:?}"
+        );
+
+        let result = execute_command(&mut editor, "wa");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert_eq!(std::fs::read_to_string(&bracketed).unwrap(), "one aaa\n");
+        assert!(!editor.any_buffer_modified());
+    }
+
+    /// External review round 2: a real bracket-named file must KEEP its quit
+    /// protection when an external process deletes it after load — the
+    /// buffer was loaded from disk (file_mtime recorded), so a vanished path
+    /// must not reclassify it as a scratch buffer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn externally_deleted_bracket_file_still_blocks_quit() {
+        let temp = tempfile::tempdir().unwrap();
+        let bracketed = temp.path().join("[draft]");
+        std::fs::write(&bracketed, "aaa\n").unwrap();
+
+        let mut editor = Editor::new();
+        editor.load_file_async(&bracketed).await.unwrap();
+        editor.buffer_mut().insert_text_at(0, CharCol::ZERO, "one ");
+
+        std::fs::remove_file(&bracketed).unwrap();
+
+        assert!(
+            editor.any_buffer_modified(),
+            "externally deleted [draft] must still count as modified"
+        );
+        let result = execute_command(&mut editor, "qa");
+        assert!(
+            matches!(result, CommandResult::Error(_)),
+            ":qa must refuse — the only copy of the edits is this buffer: {result:?}"
+        );
+    }
+
+    /// Vim semantics verified in `nvim --clean` (2026-08-14): `:wa` with a
+    /// modified unnamed buffer reports "E141: No file name for buffer N"
+    /// and STILL writes the named buffers.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wa_reports_e141_for_unnamed_buffer_but_still_writes_named() {
+        let temp = tempfile::tempdir().unwrap();
+        let named = temp.path().join("named.txt");
+        std::fs::write(&named, "aaa\n").unwrap();
+
+        let mut editor = Editor::new();
+        // Buffer 1 is the initial unnamed buffer — modify it.
+        editor
+            .buffer_mut()
+            .insert_text_at(0, CharCol::ZERO, "draft");
+        editor.load_file_async(&named).await.unwrap();
+        editor
+            .buffer_mut()
+            .insert_text_at(0, CharCol::ZERO, "changed ");
+
+        let result = execute_command(&mut editor, "wa");
+        assert!(
+            matches!(result, CommandResult::Error(ref e) if e.error.contains("E141: No file name for buffer 1")),
+            "unexpected result: {result:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&named).unwrap(),
+            "changed aaa\n",
+            "named buffer must be written despite the unnamed-buffer error"
+        );
     }
 
     #[test]

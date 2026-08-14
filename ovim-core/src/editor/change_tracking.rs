@@ -311,6 +311,19 @@ impl Editor {
         self.buffer().is_modified() || !self.buffer().change_manager().is_at_save_point()
     }
 
+    /// True when ANY buffer has unsaved changes — not just the current one.
+    ///
+    /// Guards `:qa` and last-window `:q` against silently discarding hidden
+    /// modified buffers (e.g. files touched by a multi-file rename that the
+    /// user chose not to write, OV-00331). Scratch buffers (`[Title]` paths)
+    /// are UI artifacts and never block quitting.
+    pub fn any_buffer_modified(&self) -> bool {
+        (0..self.buffers.len()).any(|index| {
+            !super::buffer_manager::is_scratch_buffer(&self.buffers[index])
+                && self.buffer_index_is_modified(index)
+        })
+    }
+
     /// Marks current state as saved
     pub fn mark_saved(&mut self) {
         self.buffer_mut().change_manager_mut().mark_saved();

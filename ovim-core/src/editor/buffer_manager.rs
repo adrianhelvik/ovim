@@ -8,12 +8,31 @@ use anyhow::Result;
 /// Returns true if the path looks like a scratch buffer (e.g., `[LspInfo]`).
 /// Scratch buffer paths use the `[Title]` convention and should not pollute
 /// the `%` (current file) or `#` (alternate file) registers.
-fn is_scratch_path(path: &str) -> bool {
+pub(crate) fn is_scratch_path(path: &str) -> bool {
     std::path::Path::new(path)
         .file_name()
         .and_then(|f| f.to_str())
         .map(|f| f.starts_with('[') && f.ends_with(']'))
         .unwrap_or(false)
+}
+
+/// Scratch identity for DATA-SAFETY decisions (quit protection, `:wa`).
+///
+/// The bracket-name heuristic alone would misclassify a REAL file whose
+/// basename happens to look like `[draft]`, silently excluding it from
+/// quit protection and `:wa` — data loss. Two signals mark a bracket-named
+/// buffer as a real document: the path exists on disk, or the buffer was
+/// ever loaded from / saved to disk (`file_mtime` recorded) — the latter
+/// keeps protection when an external process deletes or renames the file
+/// after load. Scratch buffers have neither. Residual edge (accepted): a
+/// brand-new never-written file literally named `[draft]`; the full fix is
+/// explicit scratch metadata on `Buffer` (OV-00343).
+pub(crate) fn is_scratch_buffer(buffer: &crate::buffer::Buffer) -> bool {
+    buffer.file_path().is_some_and(|path| {
+        is_scratch_path(path)
+            && !std::path::Path::new(path).exists()
+            && buffer.file_mtime().is_none()
+    })
 }
 
 impl Editor {
@@ -338,8 +357,106 @@ impl Editor {
         Some(self.buffers.len() - 1)
     }
 
-    /// Applies LSP text edits to a specific buffer by index
-    /// Returns true if successful, false if index is invalid
+    /// Applies a batch of LSP `TextEdit`s to a buffer per the spec's ordering
+    /// rules for `TextEdit[]` (OV-00332).
+    ///
+    /// Per the LSP spec: all ranges refer to the document BEFORE any edit is
+    /// applied, ranges never overlap, and "if multiple inserts have the same
+    /// position, the order in the array defines the order in the resulting
+    /// text". To honor that with in-place application we:
+    ///
+    /// 1. resolve every edit's UTF-16 range to char coordinates against the
+    ///    pre-edit snapshot (converting per-edit against the already-mutated
+    ///    rope is what previously let a sibling replace eat a just-inserted
+    ///    string),
+    /// 2. apply bottom-to-top so earlier positions stay valid, and
+    /// 3. at identical start positions apply replaces first (they consume
+    ///    original text) and inserts in REVERSE array order, so each insert
+    ///    pushes the previously applied text right and the finished text
+    ///    reads in array order.
+    ///
+    /// Returns `false` if any edit was dropped because its start lies outside
+    /// the document — the buffer text ops silently no-op on out-of-bounds
+    /// input, which previously let partial application masquerade as success.
+    pub(crate) fn apply_text_edits_to_buffer(
+        buf: &mut Buffer,
+        edits: &[lsp_types::TextEdit],
+    ) -> bool {
+        struct ResolvedTextEdit {
+            start_line: usize,
+            start_col: crate::unicode::CharCol,
+            end_line: usize,
+            end_col: crate::unicode::CharCol,
+            /// Zero-width range in the original document (pure insert).
+            is_insert: bool,
+            new_text: String,
+        }
+
+        let mut all_resolved = true;
+        let mut resolved: Vec<(usize, ResolvedTextEdit)> = Vec::with_capacity(edits.len());
+
+        for (index, edit) in edits.iter().enumerate() {
+            let start_line = edit.range.start.line as usize;
+            let end_line = edit.range.end.line as usize;
+            let is_insert = edit.range.start == edit.range.end;
+            // Inserts may target the phantom line after a trailing newline
+            // (append at EOF); deletes must start inside the document. End
+            // positions past EOF are fine — the LSP spec clamps positions
+            // past the end of the document, and delete_range does the same.
+            let line_limit = if is_insert {
+                buf.raw_line_count()
+            } else {
+                buf.line_count()
+            };
+            if start_line >= line_limit {
+                all_resolved = false;
+                continue;
+            }
+            let start_col =
+                Self::utf16_to_col_for_buffer(buf, start_line, edit.range.start.character);
+            let end_col = Self::utf16_to_col_for_buffer(buf, end_line, edit.range.end.character);
+            // LSP servers running on Windows (or returning text from CRLF
+            // source files) ship `\r\n` in TextEdit.newText. The rope is
+            // LF-only by convention — normalize at the seam (OV-00251).
+            let new_text = crate::buffer::normalize_for_buffer(&edit.new_text).into_owned();
+            resolved.push((
+                index,
+                ResolvedTextEdit {
+                    start_line,
+                    start_col,
+                    end_line,
+                    end_col,
+                    is_insert,
+                    new_text,
+                },
+            ));
+        }
+
+        // Application order: bottom-to-top; at equal start positions replaces
+        // before inserts, inserts in reverse array order (see doc comment).
+        resolved.sort_by(|(index_a, a), (index_b, b)| {
+            (b.start_line, b.start_col.0)
+                .cmp(&(a.start_line, a.start_col.0))
+                .then_with(|| a.is_insert.cmp(&b.is_insert))
+                .then_with(|| index_b.cmp(index_a))
+        });
+
+        for (_, edit) in resolved {
+            if !edit.is_insert {
+                buf.delete_range(edit.start_line, edit.start_col, edit.end_line, edit.end_col);
+            }
+            if !edit.new_text.is_empty() {
+                buf.insert_text_at(edit.start_line, edit.start_col, &edit.new_text);
+            }
+        }
+
+        all_resolved
+    }
+
+    /// Applies LSP text edits to a specific buffer by index.
+    /// Returns true only if the index is valid AND every edit was applied —
+    /// dropped (out-of-bounds) edits report failure instead of silently
+    /// no-opping while claiming success (OV-00332).
     pub(crate) fn apply_lsp_edits_to_buffer_index(
         &mut self,
         buffer_index: usize,
@@ -349,53 +466,28 @@ impl Editor {
             return false;
         }
 
-        // Sort edits in reverse order (bottom to top) to avoid position invalidation
-        let mut sorted_edits = edits;
-        sorted_edits.sort_by(|a, b| {
-            b.range
-                .start
-                .line
-                .cmp(&a.range.start.line)
-                .then(b.range.start.character.cmp(&a.range.start.character))
-        });
-
-        let (cursor_before, cursor_after, recorded_edits, file_path) = {
+        let (all_applied, recorded_edits, cursor_before, cursor_after, file_path) = {
             let buffer = &mut self.buffers[buffer_index];
             let cursor_before =
                 crate::change::CursorPos::new(buffer.cursor().line(), buffer.cursor().col());
 
-            let ((), recorded_edits) = buffer.record(|buf| {
-                for edit in sorted_edits {
-                    let start_line = edit.range.start.line as usize;
-                    // Convert UTF-16 positions to character positions
-                    let start_col =
-                        Self::utf16_to_col_for_buffer(buf, start_line, edit.range.start.character);
-                    let end_line = edit.range.end.line as usize;
-                    let end_col =
-                        Self::utf16_to_col_for_buffer(buf, end_line, edit.range.end.character);
-
-                    // Delete the range
-                    if start_line != end_line || start_col != end_col {
-                        buf.delete_range(start_line, start_col, end_line, end_col);
-                    }
-
-                    // Insert new text. Normalize CR variants so LSP-supplied
-                    // CRLF/CR doesn't survive in the rope (OV-00251).
-                    if !edit.new_text.is_empty() {
-                        let new_text = crate::buffer::normalize_for_buffer(&edit.new_text);
-                        buf.insert_text_at(start_line, start_col, new_text.as_ref());
-                    }
-                }
-            });
+            let (all_applied, recorded_edits) =
+                buffer.record(|buf| Self::apply_text_edits_to_buffer(buf, &edits));
 
             let cursor_after =
                 crate::change::CursorPos::new(buffer.cursor().line(), buffer.cursor().col());
             let file_path = buffer.file_path().map(|s| s.to_string());
-            (cursor_before, cursor_after, recorded_edits, file_path)
+            (
+                all_applied,
+                recorded_edits,
+                cursor_before,
+                cursor_after,
+                file_path,
+            )
         };
 
         if recorded_edits.is_empty() {
-            return true;
+            return all_applied;
         }
 
         // LSP-applied edits should be undoable but should not become dot-repeat
@@ -425,7 +517,197 @@ impl Editor {
             self.request_diagnostics_refresh();
         }
 
+        all_applied
+    }
+
+    /// Per-buffer variant of [`Editor::is_modified`]: unsaved-changes check
+    /// for any buffer, not just the current one.
+    pub(crate) fn buffer_index_is_modified(&self, index: usize) -> bool {
+        self.buffers.get(index).is_some_and(|buffer| {
+            buffer.is_modified() || !buffer.change_manager().is_at_save_point()
+        })
+    }
+
+    /// True when the buffer at `index` is visible somewhere in the UI: it is
+    /// the current buffer, a tab page points at it, or a window in any window
+    /// manager shows it. Buffers loaded purely to receive a workspace edit
+    /// (multi-file rename touching unopened files) are NOT open in the UI.
+    pub(crate) fn buffer_is_open_in_ui(&self, index: usize) -> bool {
+        if index == self.current_buffer_index {
+            return true;
+        }
+        let Some(buffer) = self.buffers.get(index) else {
+            return false;
+        };
+        let stable_id = buffer.id();
+        if self
+            .tab_page_manager
+            .tabs()
+            .iter()
+            .any(|tab| tab.buffer_id() == Some(stable_id))
+        {
+            return true;
+        }
+        // Windows reference buffers by index, not stable id.
+        let shows_buffer = |wm: &super::WindowManager| {
+            (0..wm.window_count()).any(|window| {
+                wm.get_window(window)
+                    .is_some_and(|w| w.buffer_id() == index)
+            })
+        };
+        if self.window_manager.as_ref().is_some_and(shows_buffer) {
+            return true;
+        }
+        self.tab_page_manager
+            .tabs()
+            .iter()
+            .filter_map(|tab| tab.window_manager())
+            .any(shows_buffer)
+    }
+
+    /// OV-00331: persists a workspace-edit-touched buffer that isn't visible
+    /// anywhere in the UI. "Modified 5 files" must mean the files are really
+    /// modified — the LSP server already believes the edit landed, and an
+    /// in-memory-only hidden buffer was silently discarded on quit. Returns
+    /// false when the write fails.
+    pub(crate) fn write_through_workspace_edit_buffer(&mut self, index: usize) -> bool {
+        use std::io::Write as _;
+
+        let Some(buffer) = self.buffers.get_mut(index) else {
+            return false;
+        };
+        let Some(path) = buffer.file_path().map(|p| p.to_string()) else {
+            return false;
+        };
+
+        // Same guards the interactive :w/:wa path applies: never clobber a
+        // file that changed on disk after this buffer was loaded, and never
+        // write a readonly buffer. On refusal the edit stays in-memory
+        // modified, where the :qa guard protects it (OV-00331 follow-up
+        // from external review).
+        if buffer.is_read_only() {
+            return false;
+        }
+        if buffer.file_mtime().is_some()
+            && !matches!(buffer.check_external_modification(), Ok(false))
+        {
+            return false;
+        }
+
+        // Synchronous IO on purpose: `Buffer::save()` rides block_in_place +
+        // Handle::current(), which panics outside a multi-thread tokio
+        // runtime, and workspace edits can be applied from sync contexts.
+        // Mirrors `save_as_async` for the same-path case: LF back to the
+        // file's native line endings, original encoding, overwrite in place
+        // to preserve inode metadata.
+        let content = buffer.rope().to_string();
+        let content = match buffer.line_ending() {
+            crate::buffer::LineEnding::Lf | crate::buffer::LineEnding::Mixed => content,
+            crate::buffer::LineEnding::Crlf => content.replace('\n', "\r\n"),
+            crate::buffer::LineEnding::Cr => content.replace('\n', "\r"),
+        };
+        let Ok(bytes) = buffer.encoding().encode(&content) else {
+            return false;
+        };
+
+        let write_result = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .and_then(|mut file| {
+                file.write_all(&bytes)?;
+                file.sync_all()
+            });
+        if write_result.is_err() {
+            return false;
+        }
+
+        // Keep external-modification detection accurate for our own write.
+        buffer.set_file_mtime(
+            std::fs::metadata(&path)
+                .ok()
+                .and_then(|meta| meta.modified().ok()),
+        );
+        buffer.mark_clean();
+        buffer.change_manager_mut().mark_saved();
+
+        // Queue didSave so the server hears about the disk write.
+        self.lsp
+            .state
+            .document_sync
+            .entry(path)
+            .or_default()
+            .mark_saved();
         true
+    }
+
+    /// Writes every modified, named, non-scratch buffer to disk (`:wa`).
+    ///
+    /// Returns `(written_count, errors)`. Vim semantics verified in
+    /// `nvim --clean` (2026-08-14): every modified named buffer is written;
+    /// a modified unnamed buffer raises "E141: No file name for buffer N"
+    /// WITHOUT stopping the other writes; readonly buffers raise E45 unless
+    /// forced (`:wa!`).
+    pub fn write_all_modified_buffers(&mut self, force: bool) -> (usize, Vec<String>) {
+        let mut written = 0usize;
+        let mut errors = Vec::new();
+
+        for index in 0..self.buffers.len() {
+            let buffer = &self.buffers[index];
+            // Scratch buffers ([Title] paths) are UI artifacts, not documents.
+            if is_scratch_buffer(buffer) {
+                continue;
+            }
+            if !self.buffer_index_is_modified(index) {
+                continue;
+            }
+            let buffer = &self.buffers[index];
+            let Some(path) = buffer.file_path().map(|p| p.to_string()) else {
+                errors.push(format!("E141: No file name for buffer {}", index + 1));
+                continue;
+            };
+            if buffer.is_read_only() && !force {
+                errors.push(format!(
+                    "E45: 'readonly' option is set (add ! to override): {}",
+                    path
+                ));
+                continue;
+            }
+            // Mirror the :w guard against clobbering external changes.
+            if !force && buffer.file_mtime().is_some() {
+                match buffer.check_external_modification() {
+                    Ok(true) => {
+                        errors.push(format!(
+                            "E211: File changed since editing started (add ! to override): {}",
+                            path
+                        ));
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        errors.push(format!("Failed to check {} before saving: {}", path, error));
+                        continue;
+                    }
+                }
+            }
+            match self.buffers[index].save() {
+                Ok(()) => {
+                    self.buffers[index].change_manager_mut().mark_saved();
+                    self.lsp
+                        .state
+                        .document_sync
+                        .entry(path.clone())
+                        .or_default()
+                        .mark_saved();
+                    self.spawn_git_refresh(&path, self.options.blame);
+                    written += 1;
+                }
+                Err(error) => errors.push(format!("Failed to save {}: {}", path, error)),
+            }
+        }
+
+        (written, errors)
     }
 
     /// Helper to convert UTF-16 offset to char column for a specific buffer
@@ -674,6 +956,75 @@ mod tests {
             state.is_modified(),
             "the edit must still be queued for sync"
         );
+    }
+
+    fn text_edit(
+        start_line: u32,
+        start_char: u32,
+        end_line: u32,
+        end_char: u32,
+        new_text: &str,
+    ) -> lsp_types::TextEdit {
+        lsp_types::TextEdit {
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: start_line,
+                    character: start_char,
+                },
+                end: lsp_types::Position {
+                    line: end_line,
+                    character: end_char,
+                },
+            },
+            new_text: new_text.to_string(),
+        }
+    }
+
+    /// OV-00332: LSP 3.17, `TextEdit[]`: "If multiple inserts have the same
+    /// position, the order in the array defines the order in the resulting
+    /// text." The old descending stable sort applied array order top-first,
+    /// reversing same-position inserts (typescript/gopls import machinery
+    /// emits multiple inserts at (0,0)).
+    #[test]
+    fn same_position_inserts_apply_in_array_order() {
+        let mut buf = Buffer::new_from_str("line1\n");
+        let all_applied = Editor::apply_text_edits_to_buffer(
+            &mut buf,
+            &[text_edit(0, 0, 0, 0, "A"), text_edit(0, 0, 0, 0, "B")],
+        );
+        assert!(all_applied);
+        assert_eq!(buf.rope().to_string(), "ABline1\n");
+    }
+
+    /// OV-00332: an insert at a sibling replace's start position must not be
+    /// consumed by the replace. Positions used to be converted per-edit
+    /// against the already-mutated rope, so applying the insert first let
+    /// the replace delete the just-inserted text.
+    #[test]
+    fn insert_at_sibling_replace_start_is_not_consumed() {
+        let mut buf = Buffer::new_from_str("foo bar\n");
+        let all_applied = Editor::apply_text_edits_to_buffer(
+            &mut buf,
+            &[text_edit(0, 0, 0, 0, "I"), text_edit(0, 0, 0, 3, "X")],
+        );
+        assert!(all_applied);
+        assert_eq!(buf.rope().to_string(), "IX bar\n");
+    }
+
+    /// OV-00332: an out-of-bounds edit silently no-ops inside the buffer
+    /// text ops; the apply must report failure instead of claiming success
+    /// (e.g. "Renamed to 'x'" while edits were dropped).
+    #[test]
+    fn out_of_bounds_edit_reports_failure() {
+        let mut editor = Editor::new();
+        let applied =
+            editor.apply_lsp_edits_to_buffer_index(0, vec![text_edit(999, 0, 999, 5, "x")]);
+        assert!(!applied, "dropped out-of-bounds edit must report failure");
+
+        // Sanity: a valid edit still reports success.
+        let applied = editor.apply_lsp_edits_to_buffer_index(0, vec![text_edit(0, 0, 0, 0, "ok")]);
+        assert!(applied);
+        assert_eq!(editor.buffer().rope().to_string(), "ok");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

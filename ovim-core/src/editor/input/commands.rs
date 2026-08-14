@@ -213,6 +213,7 @@ const COMMAND_NAMES: &[&str] = &[
     "vsplit",
     "w",
     "wa",
+    "wall",
     "wq",
     "wqa",
     "write",
