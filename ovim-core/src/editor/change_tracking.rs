@@ -104,6 +104,7 @@ impl Editor {
         self.surface_undo_outcome(&outcome, "Undo");
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
+        self.sync_modified_flag_with_save_point();
         self.mark_dirty();
     }
 
@@ -113,7 +114,22 @@ impl Editor {
         self.surface_undo_outcome(&outcome, "Redo");
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
+        self.sync_modified_flag_with_save_point();
         self.mark_dirty();
+    }
+
+    /// After undo/redo, reconcile the buffer's sticky `modified` bool with
+    /// the undo save point: landing exactly on the save point means the
+    /// content equals what was last written, so the buffer is unmodified
+    /// again (vim: edit + `u` → &modified == 0, redo back to the save
+    /// point → 0; verified `nvim --clean`, OV-00340). The sticky bool is
+    /// otherwise left alone — it covers mutations that bypass the change
+    /// manager, and those clear the save point entirely so this can never
+    /// mask them (OV-00341).
+    fn sync_modified_flag_with_save_point(&mut self) {
+        if self.buffer().change_manager().is_at_save_point() {
+            self.buffer_mut().mark_clean();
+        }
     }
 
     /// Pushes an error toast for `UndoOutcome::Failed`. No-op for `Done` /
@@ -236,12 +252,11 @@ impl Editor {
             Change::recorded(edits, cursor_before, cursor_after)
         };
         let cm = self.buffer_mut().change_manager_mut();
-        let index = cm.undo_stack.len();
-        cm.push_undo_change_preserving_repeat(change);
+        let token = cm.push_undo_change_preserving_repeat(change);
         // Ensure LSP is notified of buffer changes — callers that use record()
         // directly instead of record_operation() were previously missing this.
         self.mark_buffer_modified();
-        ChangeToken::from_index(index)
+        token
     }
 
     /// Pops a change only if the token matches the current stack top.
@@ -314,6 +329,11 @@ impl Editor {
     /// decoration positions stay aligned with buffer content.
     pub fn fixup_after_bypass_mutation(&mut self) {
         self.buffer_mut().edit_log_mut().clear();
+        // An untracked mutation means no undo-stack state can be identified
+        // with the on-disk content anymore — without this, undoing back to
+        // the old save point would falsely report the buffer unmodified
+        // (OV-00341).
+        self.buffer_mut().change_manager_mut().clear_save_point();
         self.mark_buffer_modified();
     }
 }

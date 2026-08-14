@@ -601,29 +601,40 @@ impl UndoOutcome {
 }
 
 /// Token returned by `push_change_returning_token` / `push_recorded_undo`.
-/// Stores the undo stack index at push time so `pop_by_token` can verify
-/// that the expected change is still at the top of the stack.
+/// Stores the pushed entry's sequence number so `pop_by_token` can verify
+/// that the exact expected change is still at the top of the stack. A raw
+/// stack index is NOT sufficient identity: after an undo plus a new edit,
+/// a different change can occupy the same index (ABA), and an index-based
+/// token would pop the wrong change (OV-00341).
 #[derive(Debug, Clone, Copy)]
-pub struct ChangeToken(usize);
+pub struct ChangeToken(u64);
 
-impl ChangeToken {
-    /// Constructs a token from a raw undo-stack index. Exposed for the
-    /// editor-level `push_recorded_undo` helper; most callers should get
-    /// their token from `push_recorded_undo` / `push_change_returning_token`.
-    pub fn from_index(index: usize) -> Self {
-        Self(index)
-    }
+/// One undo/redo stack entry. The sequence number uniquely identifies the
+/// document state reached after applying this change, and travels with the
+/// entry as it rotates between the undo and redo stacks — this is what
+/// makes save-point detection survive undo/redo cycles and divergent edits
+/// at the same stack depth (OV-00341).
+#[derive(Debug)]
+pub struct UndoEntry {
+    pub change: Change,
+    pub seq: u64,
 }
 
 /// Manages undo/redo history and change tracking
 #[derive(Debug)]
 pub struct ChangeManager {
-    pub undo_stack: Vec<Change>,
-    pub redo_stack: Vec<Change>,
+    pub undo_stack: Vec<UndoEntry>,
+    pub redo_stack: Vec<UndoEntry>,
     pub current_builder: Option<ChangeBuilder>,
     pub last_change: Option<Change>,
-    /// Tracks the undo stack size at last save (None if never saved)
-    pub save_point: Option<usize>,
+    /// Sequence number of the undo-stack top when the buffer was last
+    /// saved (0 = the empty stack). None if the saved state is not
+    /// identifiable with any stack state (never saved, or an untracked
+    /// bypass mutation occurred).
+    pub save_point: Option<u64>,
+    /// Next sequence number to assign to a pushed entry (starts at 1; 0 is
+    /// reserved for the empty stack).
+    next_seq: u64,
     /// Last position where an edit occurred (for g; navigation)
     pub last_edit_position: Option<CursorPos>,
     /// Changelist positions (older/newer navigation via g; / g,)
@@ -647,7 +658,8 @@ impl ChangeManager {
             redo_stack: Vec::new(),
             current_builder: None,
             last_change: None,
-            save_point: Some(0), // Start at save point (empty buffer is saved)
+            save_point: Some(0), // Start at save point (empty stack, seq 0)
+            next_seq: 1,
             last_edit_position: None,
             change_list: Vec::new(),
             change_list_index: None,
@@ -683,19 +695,28 @@ impl ChangeManager {
 
     /// Pushes a change to the undo stack
     pub fn push_change(&mut self, change: Change) {
-        self.push_undo_change_preserving_repeat(change.clone());
-        self.last_change = Some(change);
-        self.last_repeat_action = None; // Mutual exclusion: Change-based repeat wins
+        self.push_change_with_token(change);
     }
 
     /// Pushes an undo entry while preserving current dot-repeat templates.
     ///
     /// This is for non-repeat operations (LSP edits, replayed recorded undo, resource ops)
     /// that must be undoable without becoming the new `.` target.
-    pub fn push_undo_change_preserving_repeat(&mut self, change: Change) {
+    ///
+    /// Returns a token identifying the pushed entry (see `pop_by_token`).
+    pub fn push_undo_change_preserving_repeat(&mut self, change: Change) -> ChangeToken {
         self.note_edit_position(change.edit_position());
-        self.undo_stack.push(change);
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.undo_stack.push(UndoEntry { change, seq });
         self.redo_stack.clear();
+        ChangeToken(seq)
+    }
+
+    /// Sequence number of the current undo-stack top (0 = empty stack).
+    /// Uniquely identifies the current tracked document state.
+    fn top_seq(&self) -> u64 {
+        self.undo_stack.last().map(|entry| entry.seq).unwrap_or(0)
     }
 
     /// Records an edit position in the changelist and moves current index to newest.
@@ -748,23 +769,28 @@ impl ChangeManager {
     /// successfully *do* get rotated to redo — partial failure mid-group is
     /// represented honestly rather than papered over.
     pub fn undo(&mut self, buffer: &mut Buffer) -> UndoOutcome {
-        let Some(change) = self.undo_stack.pop() else {
+        let Some(entry) = self.undo_stack.pop() else {
             return UndoOutcome::Nothing;
         };
 
-        if let Err(err) = change.undo(buffer) {
+        if let Err(err) = entry.change.undo(buffer) {
             // Put it back so the next `u` can retry.
-            self.undo_stack.push(change);
+            self.undo_stack.push(entry);
             return UndoOutcome::Failed(err);
         }
-        let group_id = change.undo_group_id();
-        self.redo_stack.push(change);
+        let group_id = entry.change.undo_group_id();
+        self.redo_stack.push(entry);
 
         // If this change was part of a group, undo all remaining changes in the group.
         if let Some(gid) = group_id {
-            while self.undo_stack.last().and_then(|c| c.undo_group_id()) == Some(gid) {
+            while self
+                .undo_stack
+                .last()
+                .and_then(|e| e.change.undo_group_id())
+                == Some(gid)
+            {
                 let grouped = self.undo_stack.pop().unwrap();
-                if let Err(err) = grouped.undo(buffer) {
+                if let Err(err) = grouped.change.undo(buffer) {
                     self.undo_stack.push(grouped);
                     return UndoOutcome::Failed(err);
                 }
@@ -782,22 +808,27 @@ impl ChangeManager {
     /// to the top of the redo stack (so a retry is possible) and the
     /// outcome is `Failed`. See `undo` for the symmetric rationale.
     pub fn redo(&mut self, buffer: &mut Buffer) -> UndoOutcome {
-        let Some(change) = self.redo_stack.pop() else {
+        let Some(entry) = self.redo_stack.pop() else {
             return UndoOutcome::Nothing;
         };
 
-        if let Err(err) = change.apply(buffer) {
-            self.redo_stack.push(change);
+        if let Err(err) = entry.change.apply(buffer) {
+            self.redo_stack.push(entry);
             return UndoOutcome::Failed(err);
         }
-        let group_id = change.undo_group_id();
-        self.undo_stack.push(change);
+        let group_id = entry.change.undo_group_id();
+        self.undo_stack.push(entry);
 
         // If this change was part of a group, redo the rest of the group.
         if let Some(gid) = group_id {
-            while self.redo_stack.last().and_then(|c| c.undo_group_id()) == Some(gid) {
+            while self
+                .redo_stack
+                .last()
+                .and_then(|e| e.change.undo_group_id())
+                == Some(gid)
+            {
                 let grouped = self.redo_stack.pop().unwrap();
-                if let Err(err) = grouped.apply(buffer) {
+                if let Err(err) = grouped.change.apply(buffer) {
                     self.redo_stack.push(grouped);
                     return UndoOutcome::Failed(err);
                 }
@@ -815,12 +846,17 @@ impl ChangeManager {
 
     /// Marks the current position as saved (after :w)
     pub fn mark_saved(&mut self) {
-        self.save_point = Some(self.undo_stack.len());
+        self.save_point = Some(self.top_seq());
     }
 
-    /// Checks if we're at the save point (buffer is unmodified)
+    /// Checks if we're at the save point (buffer is unmodified).
+    ///
+    /// Compares the SEQUENCE NUMBER of the stack top, not the stack depth:
+    /// "save, undo, make a different edit" reaches the same depth with
+    /// different content, and a depth comparison would call it saved
+    /// (verified `nvim --clean`: that state is modified) (OV-00341).
     pub fn is_at_save_point(&self) -> bool {
-        self.save_point == Some(self.undo_stack.len())
+        self.save_point == Some(self.top_seq())
     }
 
     /// Clears the save point (when loading a new file)
@@ -836,23 +872,128 @@ impl ChangeManager {
     /// Pops the last change from the undo stack (without applying undo)
     /// Used when replacing a change with a composite version
     pub fn pop_last_change(&mut self) -> Option<Change> {
-        self.undo_stack.pop()
+        self.undo_stack.pop().map(|entry| entry.change)
     }
 
     /// Pushes a change and returns a token that can be used with `pop_by_token`.
     pub fn push_change_returning_token(&mut self, change: Change) -> ChangeToken {
-        let index = self.undo_stack.len();
-        self.push_change(change);
-        ChangeToken(index)
+        self.push_change_with_token(change)
     }
 
-    /// Pops a change only if the token matches the current stack top.
-    /// Returns None if the token is stale (the expected change wasn't there).
+    fn push_change_with_token(&mut self, change: Change) -> ChangeToken {
+        let token = self.push_undo_change_preserving_repeat(change.clone());
+        self.last_change = Some(change);
+        self.last_repeat_action = None; // Mutual exclusion: Change-based repeat wins
+        token
+    }
+
+    /// Pops a change only if the token identifies the current stack top.
+    /// Returns None if the token is stale (the expected change wasn't
+    /// there). Matches on the entry's sequence number, not its index —
+    /// after an undo plus a new edit a different change occupies the same
+    /// index and must NOT be popped (OV-00341).
     pub fn pop_by_token(&mut self, token: ChangeToken) -> Option<Change> {
-        if !self.undo_stack.is_empty() && token.0 == self.undo_stack.len() - 1 {
-            self.undo_stack.pop()
+        if self.top_seq() == token.0 && token.0 != 0 {
+            self.undo_stack.pop().map(|entry| entry.change)
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod save_point_tests {
+    use super::*;
+    use crate::buffer::Buffer;
+    use crate::edit::Edit;
+    use crate::unicode::GraphemeCol;
+
+    fn insert_change(offset: usize, text: &str) -> Change {
+        Change::recorded(
+            vec![Edit::Insert {
+                offset,
+                text: text.to_string(),
+            }],
+            CursorPos::new(0, GraphemeCol(0)),
+            CursorPos::new(0, GraphemeCol(text.len())),
+        )
+    }
+
+    /// OV-00341: the save point identifies a document STATE, not a stack
+    /// depth. "save, undo, make a different edit" reaches the same depth
+    /// with different content and must NOT count as saved (verified
+    /// `nvim --clean`: that state has &modified == 1).
+    #[test]
+    fn divergent_edit_at_same_depth_is_not_at_save_point() {
+        let mut buf = Buffer::new_from_str("");
+        let cm = buf.change_manager_mut();
+        cm.push_change(insert_change(0, "a"));
+        cm.mark_saved();
+        assert!(cm.is_at_save_point());
+
+        let mut cm_owner = buf;
+        let cm = cm_owner.change_manager_mut();
+        // Detach the change manager borrow dance: undo needs the buffer.
+        let mut cm_taken = std::mem::take(cm);
+        assert!(cm_taken.undo(&mut cm_owner).is_done());
+        // Different edit at the same stack depth (len 1 again).
+        cm_taken.push_change(insert_change(0, "b"));
+        assert_eq!(cm_taken.undo_stack.len(), 1);
+        assert!(
+            !cm_taken.is_at_save_point(),
+            "same depth but different change must not be the save point (OV-00341)"
+        );
+    }
+
+    /// Undo back to the save point and redo away/back must track state
+    /// identity through both stacks.
+    #[test]
+    fn save_point_survives_undo_redo_rotation() {
+        let mut buf = Buffer::new_from_str("");
+        let mut cm = std::mem::take(buf.change_manager_mut());
+
+        cm.push_change(insert_change(0, "a"));
+        cm.mark_saved(); // saved at state A
+        cm.push_change(insert_change(1, "b")); // state B
+        assert!(!cm.is_at_save_point());
+
+        assert!(cm.undo(&mut buf).is_done()); // back to A
+        assert!(cm.is_at_save_point(), "undo to the saved state");
+
+        assert!(cm.undo(&mut buf).is_done()); // below A (empty)
+        assert!(!cm.is_at_save_point(), "below the save point is modified");
+
+        assert!(cm.redo(&mut buf).is_done()); // back to A
+        assert!(cm.is_at_save_point(), "redo back to the saved state");
+
+        assert!(cm.redo(&mut buf).is_done()); // forward to B
+        assert!(!cm.is_at_save_point());
+    }
+
+    /// OV-00341: `pop_by_token` must match the exact pushed change, not
+    /// whatever occupies the same stack index later (ABA).
+    #[test]
+    fn pop_by_token_rejects_different_change_at_same_index() {
+        let mut buf = Buffer::new_from_str("");
+        let mut cm = std::mem::take(buf.change_manager_mut());
+
+        let token = cm.push_change_returning_token(insert_change(0, "a"));
+        assert!(cm.undo(&mut buf).is_done()); // token's change rotated to redo
+        cm.push_change(insert_change(0, "b")); // same index, different change
+
+        assert!(
+            cm.pop_by_token(token).is_none(),
+            "stale token must not pop a different change at the same index (OV-00341)"
+        );
+        assert_eq!(cm.undo_stack.len(), 1, "the new change must survive");
+    }
+
+    /// The happy path still works: an untouched token pops its own change.
+    #[test]
+    fn pop_by_token_pops_matching_top() {
+        let mut cm = ChangeManager::new();
+        let token = cm.push_change_returning_token(insert_change(0, "a"));
+        assert!(cm.pop_by_token(token).is_some());
+        assert!(cm.undo_stack.is_empty());
     }
 }

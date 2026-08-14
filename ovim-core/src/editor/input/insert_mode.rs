@@ -557,6 +557,9 @@ mod tests {
         let undo_stack = &editor.buffer().change_manager().undo_stack;
         assert_eq!(undo_stack.len(), undo_len_before);
         // After step 4.3 the direct-path push is a `Recorded`, not `InsertText`.
-        assert!(matches!(undo_stack.last(), Some(Change::Recorded { .. })));
+        assert!(matches!(
+            undo_stack.last().map(|entry| &entry.change),
+            Some(Change::Recorded { .. })
+        ));
     }
 }
