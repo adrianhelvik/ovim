@@ -127,7 +127,7 @@ pub use input_context::InputContext;
 pub use input_state::{CharMotion, InputState, TextObjectPrefix};
 pub use keymap::{KeyMapManager, KeyMapping, MapMode};
 pub use lsp_manager_panel::LspManagerPanel;
-pub use lsp_state::{HoverContentType, LspIntents, LspResultType, LspState};
+pub use lsp_state::{HoverContentType, LspIntents, LspResultType, LspState, ProjectedDiagnostics};
 pub use lsp_ui::LspUi;
 pub use macros::MacroManager;
 pub use marks::{GlobalMark, JumpList, Mark, MarkManager, TagEntry, TagStack};
@@ -2393,6 +2393,13 @@ impl Editor {
     pub fn set_test_diagnostics(&mut self, diagnostics: Vec<lsp_types::Diagnostic>) {
         self.lsp.state.set_current_file_diagnostics(diagnostics);
         self.lsp.state.diagnostics_file_path = self.buffer().file_path().map(|p| p.to_string());
+        // Anchor against the current rope so tests exercise the same
+        // edit-log projection path as the real refresh. (OV-00328)
+        let rope = self.buffer().rope().clone();
+        let version = self.buffer().version() as u64;
+        self.lsp
+            .state
+            .anchor_current_file_diagnostics(&rope, version);
     }
 }
 

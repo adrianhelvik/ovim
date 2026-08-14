@@ -569,7 +569,7 @@ fn build_gutter_line(
     ctx: &GutterContext,
     line_idx: usize,
     is_continuation: bool,
-    line_diagnostics: &[&lsp_types::Diagnostic],
+    line_diagnostics: &[lsp_types::Diagnostic],
     blame_info: Option<&(BlameBracket, String, String, Color)>,
 ) -> Line<'static> {
     let editor = ctx.editor;
@@ -690,7 +690,27 @@ fn build_gutter_line(
 // Unified decoration rendering
 // ---------------------------------------------------------------------------
 
-use ovim_core::editor::decoration::{Decoration, DecorationPlacement, DecorationStyle as DecStyle};
+use ovim_core::editor::decoration::{
+    Decoration, DecorationPlacement, DecorationStyle as DecStyle, ProjectedDecorations,
+};
+use ovim_core::editor::ProjectedDiagnostics;
+
+/// Per-line render cache fingerprint: the projected EOL/inline decorations
+/// plus the line's full diagnostic set (ranges + severities). The underline
+/// squiggle is baked into cached rows and the diagnostic set can change
+/// without a buffer edit (save → republish), so the decoration hash alone —
+/// which only sees the line's single best-severity EOL message — is not
+/// enough to invalidate. (OV-00329)
+fn line_decoration_cache_hash(
+    decorations: &ProjectedDecorations,
+    diagnostics: &ProjectedDiagnostics,
+    line_idx: usize,
+) -> u64 {
+    decorations
+        .line_hash(line_idx)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ diagnostics.line_hash(line_idx)
+}
 
 /// Convert a `DecorationStyle` (framework-independent) to a ratatui `Style`.
 fn decoration_to_ratatui_style(ds: &DecStyle) -> Style {
@@ -1510,6 +1530,14 @@ pub fn render_buffer(
     } else {
         editor.decorations.project_all(rope, buffer.edit_log())
     };
+    // Raw diagnostics projected through the same edit log, once per frame:
+    // the squiggle, gutter sign, and echo must land on the same line as the
+    // projected EOL virtual text above. (OV-00328)
+    let projected_diagnostics = if editor.ai_code_explanation_is_presenting_snapshot() {
+        ovim_core::editor::ProjectedDiagnostics::default()
+    } else {
+        editor.project_diagnostics()
+    };
 
     let mut line_idx = start_line;
     while line_idx < line_count && visual_rows_used < emit_budget {
@@ -1525,7 +1553,7 @@ pub fn render_buffer(
             let has_yank_flash = editor
                 .yank_flash()
                 .is_some_and(|f| f.contains_line(line_idx));
-            let line_diagnostics_early = editor.diagnostics_for_line(line_idx);
+            let line_diagnostics_early = projected_diagnostics.for_line(line_idx);
             let has_bracket = bracket_positions
                 .is_some_and(|((l1, _), (l2, _))| line_idx == l1 || line_idx == l2);
             let has_search = current_search.is_some();
@@ -1566,7 +1594,11 @@ pub fn render_buffer(
             // line cache invalidate only the lines whose decorations actually
             // changed (vs. the previous global generation counter that wiped
             // every cached line on any LSP push).
-            let dec_hash = projected_decorations.line_hash(line_idx);
+            let dec_hash = line_decoration_cache_hash(
+                &projected_decorations,
+                &projected_diagnostics,
+                line_idx,
+            );
 
             if is_stable {
                 if let Some(cached_line) = line_cache.get(
@@ -1604,7 +1636,7 @@ pub fn render_buffer(
                                     &gutter_ctx,
                                     line_idx,
                                     row_idx > 0,
-                                    &line_diagnostics_early,
+                                    line_diagnostics_early,
                                     blame_brackets
                                         .as_ref()
                                         .and_then(|b| b.get(line_idx - start_line)),
@@ -1621,7 +1653,7 @@ pub fn render_buffer(
                                 &gutter_ctx,
                                 line_idx,
                                 false,
-                                &line_diagnostics_early,
+                                line_diagnostics_early,
                                 blame_brackets
                                     .as_ref()
                                     .and_then(|b| b.get(line_idx - start_line)),
@@ -2134,7 +2166,7 @@ pub fn render_buffer(
                                 &gutter_ctx,
                                 line_idx,
                                 row_idx > 0,
-                                &line_diagnostics,
+                                line_diagnostics,
                                 blame_brackets
                                     .as_ref()
                                     .and_then(|b| b.get(line_idx - start_line)),
@@ -2157,7 +2189,7 @@ pub fn render_buffer(
                             &gutter_ctx,
                             line_idx,
                             false,
-                            &line_diagnostics,
+                            line_diagnostics,
                             blame_brackets
                                 .as_ref()
                                 .and_then(|b| b.get(line_idx - start_line)),
@@ -2791,6 +2823,83 @@ mod tests {
         );
         let display_width: usize = rendered.chars().map(char_display_width).sum();
         assert_eq!(display_width, text_width);
+    }
+
+    /// OV-00329 regression: a diagnostic republish WITHOUT a buffer edit
+    /// (save → cargo-check adds a second diagnostic at a new span while the
+    /// top message stays the same) must change the line's render cache key.
+    /// The decoration fingerprint alone — the only diagnostic-derived key
+    /// component before the fix — collides in this scenario, so the cached
+    /// row (with the old squiggle baked in) would be served until an
+    /// edit/scroll/resize.
+    #[test]
+    fn test_diagnostic_republish_without_edit_changes_line_cache_key() {
+        use crate::ui::renderer::line_cache::LineRenderCache;
+        use ovim_core::editor::decoration::{decorations_from_diagnostics, DecorationSource};
+
+        let mut editor = Editor::with_content("let x = 1;\n");
+
+        let top = lsp_types::Diagnostic {
+            range: lsp_types::Range::new(
+                lsp_types::Position::new(0, 4),
+                lsp_types::Position::new(0, 5),
+            ),
+            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            message: "top message".to_string(),
+            ..lsp_types::Diagnostic::default()
+        };
+        let extra = lsp_types::Diagnostic {
+            range: lsp_types::Range::new(
+                lsp_types::Position::new(0, 8),
+                lsp_types::Position::new(0, 9),
+            ),
+            severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+            message: "second span".to_string(),
+            ..lsp_types::Diagnostic::default()
+        };
+
+        let rope = editor.buffer().rope().clone();
+        let version = editor.buffer().version() as u64;
+
+        editor.set_test_diagnostics(vec![top.clone()]);
+        editor.decorations.replace_source(
+            DecorationSource::Diagnostic,
+            decorations_from_diagnostics(std::slice::from_ref(&top), &rope, version),
+            &rope,
+        );
+        let decs1 = editor
+            .decorations
+            .project_all(&rope, editor.buffer().edit_log());
+        let h1 = line_decoration_cache_hash(&decs1, &editor.project_diagnostics(), 0);
+
+        // Republish: second diagnostic at a new span, top message unchanged,
+        // no buffer edit.
+        editor.set_test_diagnostics(vec![top.clone(), extra.clone()]);
+        editor.decorations.replace_source(
+            DecorationSource::Diagnostic,
+            decorations_from_diagnostics(&[top, extra], &rope, version),
+            &rope,
+        );
+        let decs2 = editor
+            .decorations
+            .project_all(&rope, editor.buffer().edit_log());
+
+        // The pre-fix key component cannot see the change (same best-severity
+        // EOL decoration) — this is exactly the collision the fix closes.
+        assert_eq!(decs1.line_hash(0), decs2.line_hash(0));
+
+        let h2 = line_decoration_cache_hash(&decs2, &editor.project_diagnostics(), 0);
+        assert_ne!(
+            h2, h1,
+            "cache key must change when the diagnostic set changes"
+        );
+
+        // And a row cached under the old key re-renders under the new one.
+        let mut cache = LineRenderCache::new();
+        let _ = cache.get(1, 0, 1, 0, 80, false, 4, false, h1); // sync version bookkeeping
+        cache.put(1, 0, 1, 0, 80, false, 4, false, h1, Line::from("row"), true);
+        assert!(cache.get(1, 0, 1, 0, 80, false, 4, false, h1).is_some());
+        assert!(cache.get(1, 0, 1, 0, 80, false, 4, false, h2).is_none());
     }
 
     #[test]

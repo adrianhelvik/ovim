@@ -1,4 +1,5 @@
 use crate::lsp::LspManager;
+use ropey::Rope;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -148,6 +149,93 @@ impl HoverCache {
     }
 }
 
+/// Rope-anchored char offsets for one cached diagnostic, computed against the
+/// buffer at placement time. `line_start` is the exact anchor
+/// `decorations_from_diagnostics` gives the diagnostic's EOL decoration, so
+/// projecting both through the edit log keeps every consumer (squiggle,
+/// gutter sign, echo, float) on the same line as the virtual text. (OV-00328)
+#[derive(Debug, Clone)]
+pub struct DiagnosticAnchor {
+    pub line_start: usize,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Anchors for `current_file_diagnostics`, parallel by index.
+#[derive(Debug, Clone)]
+pub struct DiagnosticAnchors {
+    pub anchors: Vec<DiagnosticAnchor>,
+    /// Buffer version the anchors were computed against.
+    pub source_version: u64,
+}
+
+/// Diagnostics projected through the edit log, grouped by their projected
+/// line. Mirrors `ProjectedDecorations`: built once per render pass so the
+/// per-visible-line lookups don't re-project every diagnostic. (OV-00328)
+#[derive(Debug, Default, Clone)]
+pub struct ProjectedDiagnostics {
+    by_line: BTreeMap<usize, Vec<lsp_types::Diagnostic>>,
+}
+
+impl ProjectedDiagnostics {
+    pub(crate) fn new(by_line: BTreeMap<usize, Vec<lsp_types::Diagnostic>>) -> Self {
+        Self { by_line }
+    }
+
+    /// Diagnostics whose projected start line equals `line`.
+    pub fn for_line(&self, line: usize) -> &[lsp_types::Diagnostic] {
+        self.by_line.get(&line).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Consume the snapshot, returning the given line's diagnostics.
+    pub fn take_line(mut self, line: usize) -> Vec<lsp_types::Diagnostic> {
+        self.by_line.remove(&line).unwrap_or_default()
+    }
+
+    /// 64-bit fingerprint of the line's full diagnostic set (projected
+    /// ranges and severities), for render cache invalidation: the underline
+    /// squiggle is baked into cached rows and the set can change without a
+    /// buffer edit (save → republish). Lines with no diagnostics always hash
+    /// to the same value. (OV-00329)
+    pub fn line_hash(&self, line: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for diag in self.for_line(line) {
+            diag.range.start.line.hash(&mut hasher);
+            diag.range.start.character.hash(&mut hasher);
+            diag.range.end.line.hash(&mut hasher);
+            diag.range.end.character.hash(&mut hasher);
+            severity_rank(diag.severity).hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+}
+
+/// Distinct value per severity for hashing. Missing severity is its own
+/// bucket: it renders as ERROR today, but folding it into ERROR here would
+/// mask a republish that only flips between the two.
+fn severity_rank(severity: Option<lsp_types::DiagnosticSeverity>) -> u8 {
+    match severity {
+        Some(lsp_types::DiagnosticSeverity::ERROR) => 1,
+        Some(lsp_types::DiagnosticSeverity::WARNING) => 2,
+        Some(lsp_types::DiagnosticSeverity::INFORMATION) => 3,
+        Some(lsp_types::DiagnosticSeverity::HINT) => 4,
+        None => 0,
+        _ => 5,
+    }
+}
+
+/// Convert an LSP position to an absolute char offset in the rope.
+fn position_to_char_offset(rope: &Rope, pos: lsp_types::Position) -> usize {
+    let line = pos.line as usize;
+    if line >= rope.len_lines() {
+        return rope.len_chars();
+    }
+    let line_text = crate::display::line_content(rope, line);
+    let char_idx = crate::lsp::utf16_to_char_col(&line_text, pos.character);
+    (rope.line_to_char(line) + char_idx).min(rope.len_chars())
+}
+
 #[derive(Debug, Clone)]
 pub struct AvailableCodeAction {
     /// LSP server ID that produced this action (language ID for primary server).
@@ -251,6 +339,11 @@ pub struct LspState {
     /// into the flat Vec, so per-line lookup is O(log L) without cloning.
     /// Kept in sync via `set_current_file_diagnostics` / `clear_current_file_diagnostics`.
     pub diagnostics_by_line: BTreeMap<usize, Vec<usize>>,
+    /// Rope-anchored offsets for `current_file_diagnostics`, set by
+    /// `anchor_current_file_diagnostics` when diagnostics are placed against a
+    /// known rope/version. `None` (e.g. diagnostics stored without a rope)
+    /// disables projection — lookups fall back to the raw LSP ranges.
+    pub diagnostic_anchors: Option<DiagnosticAnchors>,
     /// File path when diagnostics were last cached.
     /// Prevents showing diagnostics from a previous file after save-as/path swaps.
     pub diagnostics_file_path: Option<String>,
@@ -292,6 +385,7 @@ impl LspState {
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
             diagnostics_by_line: BTreeMap::new(),
+            diagnostic_anchors: None,
             diagnostics_file_path: None,
             current_file_lsp_version: 0,
             current_file_lsp_sent_version: 0,
@@ -308,6 +402,7 @@ impl LspState {
     /// Replace the cached diagnostics and rebuild the line index.
     pub fn set_current_file_diagnostics(&mut self, diagnostics: Vec<lsp_types::Diagnostic>) {
         self.diagnostics_by_line.clear();
+        self.diagnostic_anchors = None;
         for (idx, diag) in diagnostics.iter().enumerate() {
             self.diagnostics_by_line
                 .entry(diag.range.start.line as usize)
@@ -317,10 +412,42 @@ impl LspState {
         self.current_file_diagnostics = diagnostics;
     }
 
+    /// Anchor the cached diagnostics to rope char offsets so lookups can be
+    /// projected through the edit log. Must be called with the same
+    /// rope/version pair the diagnostics' EOL decorations are placed against
+    /// (see `poll_pending_diagnostic_refresh_response`). (OV-00328)
+    pub fn anchor_current_file_diagnostics(&mut self, rope: &Rope, source_version: u64) {
+        let anchors = self
+            .current_file_diagnostics
+            .iter()
+            .map(|diag| {
+                let line = diag.range.start.line as usize;
+                // Same line-start anchor decorations_from_diagnostics uses.
+                let line_start = if line < rope.len_lines() {
+                    rope.line_to_char(line)
+                } else {
+                    rope.len_chars()
+                };
+                let start = position_to_char_offset(rope, diag.range.start);
+                let end = position_to_char_offset(rope, diag.range.end).max(start);
+                DiagnosticAnchor {
+                    line_start,
+                    start,
+                    end,
+                }
+            })
+            .collect();
+        self.diagnostic_anchors = Some(DiagnosticAnchors {
+            anchors,
+            source_version,
+        });
+    }
+
     /// Clear cached diagnostics and the line index together.
     pub fn clear_current_file_diagnostics(&mut self) {
         self.current_file_diagnostics.clear();
         self.diagnostics_by_line.clear();
+        self.diagnostic_anchors = None;
     }
 }
 

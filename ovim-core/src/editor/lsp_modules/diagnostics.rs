@@ -4,7 +4,11 @@
 //! It provides diagnostic querying, caching, and display functionality.
 
 use super::super::Editor;
+use crate::edit::Edit;
+use crate::editor::lsp_state::{DiagnosticAnchor, DiagnosticAnchors, ProjectedDiagnostics};
 use crate::lsp::uri_from_file_path;
+use ropey::Rope;
+use std::collections::BTreeMap;
 
 fn diagnostic_counts(diagnostics: &[lsp_types::Diagnostic]) -> (usize, usize, usize, usize) {
     let mut errors = 0;
@@ -26,6 +30,103 @@ fn diagnostic_counts(diagnostics: &[lsp_types::Diagnostic]) -> (usize, usize, us
         }
     }
     (errors, warnings, info, hints)
+}
+
+/// Like `decoration::project_offset`, but an offset engulfed by a delete
+/// clamps to the deletion point instead of dropping. Used for diagnostic
+/// range endpoints: a delete that eats the exact diagnosed span must not
+/// hide the gutter sign while the EOL message (anchored at line start) is
+/// still rendered.
+fn project_offset_clamped(source_offset: usize, edits: &[&Edit]) -> usize {
+    let mut pos = source_offset;
+    for edit in edits {
+        match edit {
+            Edit::Insert { offset, text } => {
+                if pos >= *offset {
+                    pos += text.chars().count();
+                }
+            }
+            Edit::Delete { offset, text } => {
+                let len = text.chars().count();
+                let end = *offset + len;
+                if pos >= end {
+                    pos -= len;
+                } else if pos > *offset {
+                    pos = *offset;
+                }
+            }
+        }
+    }
+    pos
+}
+
+/// Project one diagnostic's anchored offsets through `edits`, rebuilding an
+/// LSP range against the current rope.
+///
+/// The target line is derived from the projected *line-start* anchor — the
+/// exact projection the diagnostic's EOL decoration performs — so both
+/// pipelines always agree on the line. Returns `None` when a delete engulfed
+/// the line anchor (the decoration is dropped in that case too).
+fn project_diagnostic(
+    diag: &lsp_types::Diagnostic,
+    anchor: &DiagnosticAnchor,
+    edits: &[&Edit],
+    rope: &Rope,
+) -> Option<lsp_types::Diagnostic> {
+    let line_anchor = crate::editor::decoration::project_offset(anchor.line_start, edits)?;
+    let line = rope.char_to_line(line_anchor.min(rope.len_chars()));
+
+    let start_off = project_offset_clamped(anchor.start, edits).min(rope.len_chars());
+    let end_off = project_offset_clamped(anchor.end, edits)
+        .min(rope.len_chars())
+        .max(start_off);
+
+    let line_start_char = rope.line_to_char(line);
+    let line_text = crate::display::line_content(rope, line);
+    let line_len = line_text.chars().count();
+
+    // Clamp into the anchor line: if an edit split the diagnosed line, the
+    // range stays on the line the EOL message renders on rather than
+    // disagreeing with it. Column drift here self-heals on the next publish.
+    let start_idx = start_off.saturating_sub(line_start_char).min(line_len);
+    let start = lsp_types::Position {
+        line: line as u32,
+        character: crate::lsp::char_col_to_utf16(&line_text, start_idx),
+    };
+
+    let end_line = rope.char_to_line(end_off);
+    let end = if end_line <= line {
+        let end_idx = start_idx.max(end_off.saturating_sub(line_start_char).min(line_len));
+        lsp_types::Position {
+            line: line as u32,
+            character: crate::lsp::char_col_to_utf16(&line_text, end_idx),
+        }
+    } else {
+        // Multi-line diagnostic: keep the projected end on its own line; the
+        // renderer clamps the first-line squiggle to the line length.
+        let end_line_text = crate::display::line_content(rope, end_line);
+        let end_idx = (end_off - rope.line_to_char(end_line)).min(end_line_text.chars().count());
+        lsp_types::Position {
+            line: end_line as u32,
+            character: crate::lsp::char_col_to_utf16(&end_line_text, end_idx),
+        }
+    };
+
+    let mut projected = diag.clone();
+    projected.range = lsp_types::Range { start, end };
+    Some(projected)
+}
+
+/// How cached diagnostics map onto the current buffer (OV-00328).
+enum DiagnosticProjection<'a> {
+    /// Anchors match the current buffer (or there are no usable anchors):
+    /// the raw line-indexed view is already correct.
+    RawLines,
+    /// Replay these edits over the anchors.
+    Replay(&'a DiagnosticAnchors, Vec<&'a Edit>),
+    /// Edit-log history evicted: derive lines from the stored anchor
+    /// offsets against the current rope — the decorations' fallback.
+    AnchorOffsets(&'a DiagnosticAnchors),
 }
 
 impl Editor {
@@ -126,9 +227,6 @@ impl Editor {
 
         match result {
             Ok(result) => {
-                self.lsp.state.current_file_lsp_version = result.lsp_version;
-                self.lsp.state.current_file_lsp_sent_version = result.lsp_sent_version;
-
                 if result.deferred {
                     self.lsp.slots.diagnostics.invalidate();
                     return false;
@@ -138,6 +236,18 @@ impl Editor {
                 if self.buffer().file_path() != Some(result.file_path.as_str()) {
                     self.lsp.slots.diagnostics.invalidate();
                     return false;
+                }
+
+                // Stamp version fields only after both guards: a refresh
+                // spawned for file A that completes after switching to file B
+                // must not poison B's version state (OV-00335). And only when
+                // the buffer hasn't advanced since the refresh was spawned —
+                // stamping an old lsp_version would move the tracked version
+                // BACKWARD, letting a stale versioned workspace edit pass the
+                // OV-00330 guard (external review finding).
+                if self.buffer().version() == result.buffer_version {
+                    self.lsp.state.current_file_lsp_version = result.lsp_version;
+                    self.lsp.state.current_file_lsp_sent_version = result.lsp_sent_version;
                 }
 
                 // Always store and display the latest diagnostics — they're the
@@ -161,6 +271,12 @@ impl Editor {
                 // forward at render time.
                 let rope = self.buffer().rope().clone();
                 let diag_source_version = self.buffer().version() as u64;
+                // Anchor the raw diagnostics against the same rope/version so
+                // squiggle/gutter/echo lookups replay the same edit-log
+                // projection as the decorations below. (OV-00328)
+                self.lsp
+                    .state
+                    .anchor_current_file_diagnostics(&rope, diag_source_version);
                 let diag_decs = crate::editor::decoration::decorations_from_diagnostics(
                     &self.lsp.state.current_file_diagnostics,
                     &rope,
@@ -199,23 +315,115 @@ impl Editor {
         self.lsp.state.diagnostics_file_path.as_deref() != self.buffer().file_path()
     }
 
-    /// Get diagnostics for a specific line from cached diagnostics
-    pub fn diagnostics_for_line(&self, line: usize) -> Vec<&lsp_types::Diagnostic> {
+    /// How cached diagnostics map onto the current buffer.
+    fn diagnostic_projection(&self) -> DiagnosticProjection<'_> {
+        let Some(anchors) = self.lsp.state.diagnostic_anchors.as_ref() else {
+            return DiagnosticProjection::RawLines;
+        };
+        if anchors.anchors.len() != self.lsp.state.current_file_diagnostics.len() {
+            return DiagnosticProjection::RawLines;
+        }
+        match self.buffer().edit_log().edits_since(anchors.source_version) {
+            Some(edits) if edits.is_empty() => DiagnosticProjection::RawLines,
+            Some(edits) => DiagnosticProjection::Replay(anchors, edits),
+            // History evicted: derive lines from the stored anchor offsets
+            // against the CURRENT rope — the same fallback the eol
+            // decorations use (`project_decoration` returns the stored
+            // offset, `project_all` maps it with char_to_line). Falling
+            // back to the raw LSP line here instead would put the squiggle
+            // and the message on different lines exactly when history is
+            // gone (external review finding on OV-00328).
+            None => DiagnosticProjection::AnchorOffsets(anchors),
+        }
+    }
+
+    /// True when per-line lookups must go through `project_diagnostics()`
+    /// instead of the raw `diagnostics_by_line` index.
+    fn diagnostics_need_projection(&self) -> bool {
+        !matches!(self.diagnostic_projection(), DiagnosticProjection::RawLines)
+    }
+
+    /// Snapshot of the cached diagnostics with their ranges projected through
+    /// the edit log onto the current buffer, grouped by projected line.
+    ///
+    /// This is the raw-diagnostic analogue of `DecorationMap::project_all`:
+    /// the renderer builds it once per frame so the squiggle, gutter sign,
+    /// and echo land on the same line as the projected EOL virtual text.
+    /// (OV-00328)
+    pub fn project_diagnostics(&self) -> ProjectedDiagnostics {
+        if self.diagnostics_cache_stale() {
+            return ProjectedDiagnostics::default();
+        }
+        let diagnostics = &self.lsp.state.current_file_diagnostics;
+        let mut by_line: BTreeMap<usize, Vec<lsp_types::Diagnostic>> = BTreeMap::new();
+        match self.diagnostic_projection() {
+            DiagnosticProjection::Replay(anchors, edits) => {
+                let rope = self.buffer().rope();
+                for (diag, anchor) in diagnostics.iter().zip(&anchors.anchors) {
+                    if let Some(projected) = project_diagnostic(diag, anchor, &edits, rope) {
+                        by_line
+                            .entry(projected.range.start.line as usize)
+                            .or_default()
+                            .push(projected);
+                    }
+                }
+            }
+            DiagnosticProjection::AnchorOffsets(anchors) => {
+                // Eviction fallback: line = current rope's line at the
+                // stored anchor offset, mirroring the decorations. Range
+                // lines shift by the same delta so the squiggle stays on
+                // the derived line (columns may drift until a fresh
+                // publication lands — same policy as clamped replay).
+                let rope = self.buffer().rope();
+                for (diag, anchor) in diagnostics.iter().zip(&anchors.anchors) {
+                    let offset = anchor.line_start.min(rope.len_chars());
+                    let derived_line = rope.char_to_line(offset);
+                    let original_line = diag.range.start.line as usize;
+                    let mut projected = diag.clone();
+                    let delta = derived_line as i64 - original_line as i64;
+                    let shift = |line: u32| -> u32 { (line as i64 + delta).max(0) as u32 };
+                    projected.range.start.line = shift(projected.range.start.line);
+                    projected.range.end.line = shift(projected.range.end.line);
+                    by_line.entry(derived_line).or_default().push(projected);
+                }
+            }
+            DiagnosticProjection::RawLines => {
+                for diag in diagnostics {
+                    by_line
+                        .entry(diag.range.start.line as usize)
+                        .or_default()
+                        .push(diag.clone());
+                }
+            }
+        }
+        ProjectedDiagnostics::new(by_line)
+    }
+
+    /// Get diagnostics for a specific line from cached diagnostics, with
+    /// ranges projected through the edit log. (OV-00328)
+    pub fn diagnostics_for_line(&self, line: usize) -> Vec<lsp_types::Diagnostic> {
         if self.diagnostics_cache_stale() {
             return Vec::new();
+        }
+        if self.diagnostics_need_projection() {
+            return self.project_diagnostics().take_line(line);
         }
         let Some(indices) = self.lsp.state.diagnostics_by_line.get(&line) else {
             return Vec::new();
         };
         let diagnostics = &self.lsp.state.current_file_diagnostics;
-        indices.iter().map(|&i| &diagnostics[i]).collect()
+        indices.iter().map(|&i| diagnostics[i].clone()).collect()
     }
 
-    /// Returns true if any diagnostics are cached for the given line. Cheaper
-    /// than building a Vec when the caller only needs presence.
+    /// Returns true if any diagnostics are cached for the given line (in the
+    /// projected view). Cheaper than building a Vec when there are no edits
+    /// to replay.
     pub fn has_diagnostics_on_line(&self, line: usize) -> bool {
         if self.diagnostics_cache_stale() {
             return false;
+        }
+        if self.diagnostics_need_projection() {
+            return !self.project_diagnostics().for_line(line).is_empty();
         }
         self.lsp.state.diagnostics_by_line.contains_key(&line)
     }
@@ -223,12 +431,12 @@ impl Editor {
     /// Get the current diagnostic at the cursor position
     pub fn current_diagnostic(&self) -> Option<String> {
         self.diagnostic_nearest_to_cursor()
-            .map(|diagnostic| diagnostic.message.clone())
+            .map(|diagnostic| diagnostic.message)
     }
 
     /// The full diagnostic nearest the cursor on the cursor line, if any.
     /// Used by the renderer to echo the message in the message line.
-    pub fn diagnostic_at_cursor(&self) -> Option<&lsp_types::Diagnostic> {
+    pub fn diagnostic_at_cursor(&self) -> Option<lsp_types::Diagnostic> {
         self.diagnostic_nearest_to_cursor()
     }
 
@@ -297,7 +505,7 @@ impl Editor {
     /// same line. LSP columns are UTF-16 offsets while the editor cursor is
     /// grapheme-indexed, so both are normalized to scalar-value columns before
     /// comparing them.
-    fn diagnostic_nearest_to_cursor(&self) -> Option<&lsp_types::Diagnostic> {
+    fn diagnostic_nearest_to_cursor(&self) -> Option<lsp_types::Diagnostic> {
         let line = self.buffer().cursor().line();
         let diagnostics = self.diagnostics_for_line(line);
         if diagnostics.is_empty() {
@@ -597,7 +805,240 @@ mod tests {
         assert!(!editor.poll_pending_diagnostic_refresh_response());
         assert!(editor.lsp.slots.diagnostics.is_stale());
         assert!(editor.lsp.state.current_file_diagnostics.is_empty());
-        assert_eq!(editor.lsp.state.current_file_lsp_version, 5);
-        assert_eq!(editor.lsp.state.current_file_lsp_sent_version, 4);
+        // OV-00335: version fields are only stamped for results that pass
+        // both the deferred and wrong-file guards.
+        assert_eq!(editor.lsp.state.current_file_lsp_version, 0);
+        assert_eq!(editor.lsp.state.current_file_lsp_sent_version, 0);
+    }
+
+    /// OV-00335: a refresh spawned for file A that completes after switching
+    /// to file B must not stamp B's version fields with A's versions.
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_wrong_file_result_does_not_stamp_version_fields() {
+        let mut editor = Editor::with_content("class B {}\n");
+        editor.set_file_path("/tmp/B.java".to_string());
+        editor.lsp.state.current_file_lsp_version = 7;
+        editor.lsp.state.current_file_lsp_sent_version = 7;
+
+        let bv = editor.buffer().version();
+        fire_diagnostic_result(
+            &mut editor,
+            DiagnosticResult {
+                file_path: "/tmp/A.java".to_string(),
+                buffer_version: bv,
+                lsp_version: 3,
+                lsp_sent_version: 2,
+                diagnostics: Vec::new(),
+                count: (0, 0, 0, 0),
+                deferred: false,
+            },
+        );
+
+        assert!(!editor.poll_pending_diagnostic_refresh_response());
+        assert_eq!(editor.lsp.state.current_file_lsp_version, 7);
+        assert_eq!(editor.lsp.state.current_file_lsp_sent_version, 7);
+    }
+
+    /// OV-00328 regression: after a line-inserting edit recorded in the edit
+    /// log, every raw-diagnostic consumer (squiggle/gutter/echo via
+    /// `diagnostics_for_line` / `has_diagnostics_on_line`) must resolve to the
+    /// SHIFTED line — the same line the projected EOL decoration moved to —
+    /// not the diagnostic's original `range.start.line`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn diagnostics_for_line_projects_through_line_shifting_edits() {
+        let mut editor = Editor::with_content("fn a() {}\nfn b() {}\nlet bad = 1;\n");
+        let file_path = "/tmp/test.rs".to_string();
+        editor.set_file_path(file_path.clone());
+
+        let diagnostic = Diagnostic {
+            range: Range::new(Position::new(2, 4), Position::new(2, 7)),
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: "bad name".to_string(),
+            ..Diagnostic::default()
+        };
+        let bv = editor.buffer().version();
+        fire_diagnostic_result(
+            &mut editor,
+            DiagnosticResult {
+                file_path,
+                buffer_version: bv,
+                lsp_version: 1,
+                lsp_sent_version: 1,
+                diagnostics: vec![diagnostic],
+                count: (1, 0, 0, 0),
+                deferred: false,
+            },
+        );
+        assert!(editor.poll_pending_diagnostic_refresh_response());
+        assert!(editor.has_diagnostics_on_line(2));
+
+        // Open a line above: everything below shifts down one line and the
+        // edit log records the insert.
+        editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol::ZERO, "// note\n");
+
+        assert!(
+            !editor.has_diagnostics_on_line(2),
+            "original line must not keep a stale sign/squiggle"
+        );
+        assert!(
+            editor.has_diagnostics_on_line(3),
+            "diagnostic must follow its code to the shifted line"
+        );
+        let projected = editor.diagnostics_for_line(3);
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].range.start.line, 3);
+        assert_eq!(projected[0].range.start.character, 4);
+        assert_eq!(projected[0].range.end.character, 7);
+        assert!(editor.diagnostics_for_line(2).is_empty());
+
+        // The cursor-line echo/float path agrees.
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(3, crate::unicode::GraphemeCol(4));
+        assert_eq!(editor.current_diagnostic().as_deref(), Some("bad name"));
+
+        // And the raw-diagnostic view lands on the same line as the projected
+        // EOL decoration (the other rendering pipeline).
+        let rope = editor.buffer().rope().clone();
+        let eol = editor
+            .decorations
+            .eol_for_line_projected(3, &rope, editor.buffer().edit_log());
+        assert_eq!(
+            eol.len(),
+            1,
+            "eol decoration and diagnostics must agree on the shifted line"
+        );
+    }
+
+    /// External review on OV-00328: when the edit-log ring has evicted the
+    /// anchoring history, the raw-diagnostic fallback must derive its line
+    /// from the stored anchor offset against the CURRENT rope — exactly the
+    /// decorations' fallback — not the raw LSP line. Falling back to the raw
+    /// line put the squiggle/gutter and the EOL message on different lines
+    /// precisely when history was gone.
+    #[tokio::test(flavor = "current_thread")]
+    async fn eviction_fallback_agrees_with_decoration_line() {
+        let mut editor = Editor::with_content("fn a() {}\nfn b() {}\nlet bad = 1;\n");
+        let file_path = "/tmp/evict.rs".to_string();
+        editor.set_file_path(file_path.clone());
+
+        let diagnostic = Diagnostic {
+            range: Range::new(Position::new(2, 4), Position::new(2, 7)),
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: "bad name".to_string(),
+            ..Diagnostic::default()
+        };
+        let bv = editor.buffer().version();
+        fire_diagnostic_result(
+            &mut editor,
+            DiagnosticResult {
+                file_path,
+                buffer_version: bv,
+                lsp_version: 1,
+                lsp_sent_version: 1,
+                diagnostics: vec![diagnostic],
+                count: (1, 0, 0, 0),
+                deferred: false,
+            },
+        );
+        assert!(editor.poll_pending_diagnostic_refresh_response());
+
+        // A long single-line insert above the diagnostic makes the stored
+        // char-offset resolve to a DIFFERENT line than the raw LSP line,
+        // then enough further edits evict the anchor version from the ring.
+        editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol::ZERO, &"x".repeat(40));
+        for _ in 0..70 {
+            editor
+                .buffer_mut()
+                .insert_text_at(0, crate::unicode::CharCol::ZERO, "y");
+        }
+
+        // Whatever lines the two pipelines land on, they must AGREE.
+        let rope = editor.buffer().rope().clone();
+        let projected = editor.project_diagnostics();
+        let diag_lines: Vec<usize> = (0..editor.buffer().line_count())
+            .filter(|&line| !projected.for_line(line).is_empty())
+            .collect();
+        let eol_lines: Vec<usize> = (0..editor.buffer().line_count())
+            .filter(|&line| {
+                !editor
+                    .decorations
+                    .eol_for_line_projected(line, &rope, editor.buffer().edit_log())
+                    .is_empty()
+            })
+            .collect();
+        assert_eq!(
+            diag_lines, eol_lines,
+            "squiggle/gutter lines and eol-message lines must agree after ring eviction"
+        );
+        assert_eq!(diag_lines.len(), 1, "single diagnostic renders on one line");
+    }
+
+    /// OV-00328: same-line edits before the diagnostic shift its columns so
+    /// the squiggle stays under the diagnosed code.
+    #[tokio::test(flavor = "current_thread")]
+    async fn diagnostics_for_line_projects_columns_within_line() {
+        let mut editor = Editor::with_content("let bad = 1;\n");
+        let file_path = "/tmp/test.rs".to_string();
+        editor.set_file_path(file_path.clone());
+
+        let diagnostic = Diagnostic {
+            range: Range::new(Position::new(0, 4), Position::new(0, 7)),
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: "bad name".to_string(),
+            ..Diagnostic::default()
+        };
+        let bv = editor.buffer().version();
+        fire_diagnostic_result(
+            &mut editor,
+            DiagnosticResult {
+                file_path,
+                buffer_version: bv,
+                lsp_version: 1,
+                lsp_sent_version: 1,
+                diagnostics: vec![diagnostic],
+                count: (1, 0, 0, 0),
+                deferred: false,
+            },
+        );
+        assert!(editor.poll_pending_diagnostic_refresh_response());
+
+        editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol::ZERO, "// ");
+
+        let projected = editor.diagnostics_for_line(0);
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].range.start.character, 7);
+        assert_eq!(projected[0].range.end.character, 10);
+    }
+
+    /// OV-00329: the per-line diagnostic fingerprint must change when the
+    /// line's diagnostic set changes without a buffer edit (save →
+    /// cargo-check republish adding a second span while the top message —
+    /// the only thing the decoration hash sees — stays the same).
+    #[test]
+    fn projected_line_hash_changes_when_set_changes_without_edit() {
+        let mut editor = Editor::with_content("let x = 1;\n");
+        editor.set_test_diagnostics(vec![ranged_diag(4, 5, "top message")]);
+        let h1 = editor.project_diagnostics().line_hash(0);
+
+        editor.set_test_diagnostics(vec![
+            ranged_diag(4, 5, "top message"),
+            ranged_diag(8, 9, "top message"),
+        ]);
+        let h2 = editor.project_diagnostics().line_hash(0);
+
+        assert_ne!(h1, h2, "new span on the line must change the fingerprint");
+        // Untouched lines keep a stable fingerprint.
+        assert_eq!(
+            editor.project_diagnostics().line_hash(5),
+            editor.project_diagnostics().line_hash(6)
+        );
     }
 }
