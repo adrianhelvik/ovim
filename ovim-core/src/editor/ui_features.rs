@@ -64,6 +64,19 @@ impl Editor {
     fn accept_completion_item(&mut self, item: &lsp_types::CompletionItem) {
         use crate::unicode::CharCol;
 
+        // The item's textEdit range indexes the buffer snapshot the server
+        // responded to. If the buffer has been edited since (user kept
+        // typing while the menu was open — the menu only re-filters locally
+        // during the LSP round trip), applying that range verbatim splices
+        // at shifted offsets: deleted text survives, or the edit eats
+        // neighboring characters. Fall back to trigger_col..cursor
+        // replacement in that case; trigger_col tracks the live buffer
+        // (OV-00327).
+        let ranges_are_current = self
+            .completion_menu
+            .items_buffer_version()
+            .is_some_and(|v| v == self.buffer().version());
+
         // Extract the main edit: prefer textEdit (with proper range) over
         // insertText/label (which only knows about the trigger column).
         let (
@@ -72,7 +85,9 @@ impl Editor {
             replace_end_line,
             replace_end_col,
             text_to_insert,
-        ): (usize, CharCol, usize, CharCol, String) = if let Some(ref text_edit) = item.text_edit {
+        ): (usize, CharCol, usize, CharCol, String) = if let Some(text_edit) =
+            item.text_edit.as_ref().filter(|_| ranges_are_current)
+        {
             let (range, new_text) = match text_edit {
                 lsp_types::CompletionTextEdit::Edit(edit) => (edit.range, edit.new_text.clone()),
                 lsp_types::CompletionTextEdit::InsertAndReplace(ir) => {
@@ -108,9 +123,14 @@ impl Editor {
             text_to_insert
         };
 
-        // Collect additional text edits (e.g., auto-imports) before mutating
-        let additional_edits: Vec<lsp_types::TextEdit> =
-            item.additional_text_edits.clone().unwrap_or_default();
+        // Collect additional text edits (e.g., auto-imports) before mutating.
+        // Skipped when stale: their ranges target the same outdated snapshot
+        // as the main textEdit (OV-00327).
+        let additional_edits: Vec<lsp_types::TextEdit> = if ranges_are_current {
+            item.additional_text_edits.clone().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         let cursor_line = self.buffer().cursor().line();
         let cursor_col = self.buffer().cursor().col().0;

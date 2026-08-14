@@ -106,6 +106,7 @@ impl LspManager {
             }
         };
 
+        let opened_text: Arc<str> = Arc::from(text.as_str());
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
                 uri: uri.clone(),
@@ -126,26 +127,31 @@ impl LspManager {
 
         lsp_debug!("LSP-NOTIFY", "textDocument/didOpen sent successfully");
 
+        // Record the exact text the server now holds — the baseline for all
+        // future incremental diffs to this server (OV-00326).
+        self.server_texts
+            .insert((language_id.to_string(), uri.clone()), opened_text);
+
         let mut sent = self.last_sent_versions.lock().await;
         sent.insert(uri, version);
 
         Ok(())
     }
 
-    /// Sends textDocument/didChange notification to a specific server with an
-    /// explicit version (pre-assigned by `did_change()`).
-    /// Supports both full and incremental sync.
+    /// Sends textDocument/didChange to one server, diffing against the
+    /// authoritative per-server baseline in `server_texts` (the exact text
+    /// that server last received). Editor-side snapshots are never used as
+    /// a diff baseline — they can lag or be poisoned by flush races, and an
+    /// incremental edit computed against anything other than the server's
+    /// real content corrupts the server's copy of the document (OV-00326).
     ///
-    /// Returns `Ok(true)` if the notification was actually sent, or `Ok(false)`
-    /// if the old and new text were identical (no diff to send). Callers should
-    /// still update `last_sent_versions` on `Ok(false)` because the server's
-    /// content already matches — only the version number was bumped locally.
-    async fn send_did_change_with_version(
+    /// Returns `Ok(true)` if the notification was actually sent, or
+    /// `Ok(false)` if the baseline already matched (nothing to send).
+    async fn send_did_change_to_server(
         &self,
-        uri: Uri,
+        uri: &Uri,
         server_id: &str,
-        text: String,
-        old_text: Option<String>,
+        text: &Arc<str>,
         version: i32,
     ) -> Result<bool> {
         // Get server reference
@@ -154,51 +160,47 @@ impl LspManager {
             .get(server_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", server_id))?;
 
-        // Check if server supports incremental sync and we have old content
         let supports_incremental = server.supports_incremental_sync().await;
+        let baseline = self
+            .server_texts
+            .get(&(server_id.to_string(), uri.clone()))
+            .map(|entry| entry.value().clone());
 
         let full_doc_size = text.len();
-        let content_changes = if supports_incremental && old_text.is_some() {
-            if let Some(old) = old_text {
-                if let Some((range, new_text)) = compute_simple_diff(&old, &text) {
+        let content_changes = match (supports_incremental, &baseline) {
+            (true, Some(old)) => {
+                if let Some((range, new_text)) = compute_simple_diff(old, text) {
                     vec![TextDocumentContentChangeEvent {
                         range: Some(range),
                         range_length: None,
                         text: new_text,
                     }]
                 } else {
-                    // No changes detected — content is identical to what server has.
-                    // Return Ok(false) so callers sync last_sent_versions without
-                    // sending a redundant notification.
+                    // Content identical to what this server already has.
                     return Ok(false);
                 }
-            } else {
+            }
+            _ => {
+                if std::env::var("OVIM_LSP_DEBUG").is_ok() {
+                    let reason = if !supports_incremental {
+                        "server doesn't support incremental"
+                    } else {
+                        "no recorded server baseline"
+                    };
+                    crate::lsp_debug!(
+                        "LSP-SYNC",
+                        "Full sync ({}): {} bytes | File: {}",
+                        reason,
+                        full_doc_size,
+                        uri.path()
+                    );
+                }
                 vec![TextDocumentContentChangeEvent {
                     range: None,
                     range_length: None,
-                    text,
+                    text: text.to_string(),
                 }]
             }
-        } else {
-            if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                let reason = if !supports_incremental {
-                    "server doesn't support incremental"
-                } else {
-                    "no old_text provided"
-                };
-                crate::lsp_debug!(
-                    "LSP-SYNC",
-                    "Full sync ({}): {} bytes | File: {}",
-                    reason,
-                    full_doc_size,
-                    uri.path()
-                );
-            }
-            vec![TextDocumentContentChangeEvent {
-                range: None,
-                range_length: None,
-                text,
-            }]
         };
 
         let params = DidChangeTextDocumentParams {
@@ -214,77 +216,46 @@ impl LspManager {
             .notify("textDocument/didChange", serde_json::to_value(params)?)
             .await?;
 
+        // The notification is in the server's ordered outgoing queue: record
+        // `text` as this server's content so the next diff builds on it.
+        self.server_texts
+            .insert((server_id.to_string(), uri.clone()), text.clone());
+
         Ok(true)
     }
 
     /// Flushes pending changes for a document (sends immediately).
-    /// Uses the pre-assigned version from `did_change()`.
+    /// Delegates to the broadcast flush — all servers in the document's
+    /// group must receive the update or per-server baselines drift.
     pub async fn flush_pending_changes(&self, uri: &Uri) -> Result<()> {
-        // Remove debouncer and get pending change
-        if let Some((_, debouncer_arc)) = self.change_debouncers.remove(uri) {
-            let mut debouncer = debouncer_arc.lock().await;
-            debouncer.cancel_timer(); // Cancel timer
-
-            // Send the pending change using the pre-assigned version
-            let language_id = debouncer.language_id.clone();
-            let text = debouncer.pending_text.clone();
-            let old_text = debouncer.old_text.clone();
-            let uri = debouncer.uri.clone();
-            let version = debouncer.pending_version;
-            drop(debouncer); // Release lock before async call
-
-            match tokio::time::timeout(
-                Duration::from_secs(5),
-                self.send_did_change_with_version(
-                    uri.clone(),
-                    &language_id,
-                    text.to_string(),
-                    old_text.map(|s| s.to_string()),
-                    version,
-                ),
-            )
+        let language_id = {
+            let Some(debouncer_arc) = self
+                .change_debouncers
+                .get(uri)
+                .map(|entry| entry.value().clone())
+            else {
+                return Ok(());
+            };
+            let debouncer = debouncer_arc.lock().await;
+            debouncer.language_id.clone()
+        };
+        self.flush_pending_changes_broadcast(uri, &language_id)
             .await
-            {
-                Ok(Ok(actually_sent)) => {
-                    // Sync last_sent_versions whether or not the notification
-                    // was actually sent — if no-diff, the server's content
-                    // already matches so the version should be considered
-                    // synced (OV-00211).
-                    let mut sent = self.last_sent_versions.lock().await;
-                    sent.insert(uri.clone(), version);
-                    drop(sent);
+            .map(|_| ())
+    }
 
-                    if actually_sent {
-                        // Re-stamp last_local_edit to the flush instant so that
-                        // the unversioned-diagnostics settle timer measures time
-                        // since the server *received* new content, not since the
-                        // edit was queued locally.  Without this, the settle
-                        // (150ms) expires at the same time the debounce (150ms)
-                        // fires, allowing stale diagnostics through.
-                        self.last_local_edit
-                            .lock()
-                            .await
-                            .insert(uri.clone(), std::time::Instant::now());
-                    }
-                }
-                Ok(Err(e)) => {
-                    lsp_error!(
-                        "Manager",
-                        "Failed to flush changes for {}: {}",
-                        uri.as_str(),
-                        e
-                    );
-                }
-                Err(_) => {
-                    lsp_error!(
-                        "Manager",
-                        "Timeout flushing changes for {} (5s)",
-                        uri.as_str()
-                    );
-                }
+    /// (Re)starts the debounce timer on a locked debouncer.
+    fn restart_debounce_timer(&self, debouncer: &mut ChangeDebouncer, uri: Uri) {
+        debouncer.cancel_timer();
+        let flush_tx = self.flush_tx.clone();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(CHANGE_DEBOUNCE_MS)).await;
+            // Timer expired - request flush via channel
+            if let Err(e) = flush_tx.send(uri).await {
+                lsp_error!("Debounce", "Error sending flush request: {}", e);
             }
-        }
-        Ok(())
+        });
+        debouncer.timer_handle = Some(handle);
     }
 
     /// Sends textDocument/didChange notification with debouncing.
@@ -294,6 +265,14 @@ impl LspManager {
     /// `publishDiagnostics` arriving during the debounce window are correctly
     /// rejected by `set_diagnostics()`.  The assigned version is stored in the
     /// debouncer and used when the flush finally sends the content (OV-00163).
+    ///
+    /// `old_text` semantics: `None` declares that the server-side content is
+    /// not trustworthy (e.g. reload after an external write) and drops the
+    /// recorded per-server baselines, forcing the next flush to send a full
+    /// document update. `Some(_)` is accepted for API compatibility but the
+    /// value itself is ignored — incremental diffs are always computed at
+    /// flush time against `server_texts`, the text each server actually
+    /// received (OV-00326).
     pub async fn did_change(
         &self,
         uri: Uri,
@@ -314,54 +293,27 @@ impl LspManager {
             local_edits.insert(uri.clone(), std::time::Instant::now());
         }
 
-        // Get or create debouncer for this document atomically.
+        if old_text.is_none() {
+            // No trustworthy baseline: force a full-document update on the
+            // next flush for every server in this document's group.
+            self.server_texts.retain(|(_, u), _| u != &uri);
+        }
+
+        // Get or create the document's debouncer. The entry persists until
+        // didClose — flushing takes the payload but never removes the entry,
+        // so a concurrently queued edit can never be orphaned.
         let debouncer_arc = self
             .change_debouncers
             .entry(uri.clone())
-            .or_insert_with(|| {
-                Arc::new(Mutex::new(ChangeDebouncer::new(
-                    uri.clone(),
-                    language_id.to_string(),
-                    assigned_version,
-                )))
-            })
+            .or_insert_with(|| Arc::new(Mutex::new(ChangeDebouncer::new(language_id.to_string()))))
             .clone();
 
-        // Update pending change and restart timer
         let mut debouncer = debouncer_arc.lock().await;
-
-        // Cancel existing timer if any
-        debouncer.cancel_timer();
-
-        // Update pending text, version, and old text
-        debouncer.pending_text = text;
-        debouncer.pending_version = assigned_version;
-        // Always update old_text when the caller provides a baseline.
-        // The caller passes last_flushed_content — what the server actually has.
-        // Between flushes this value is stable (rapid typing passes the same
-        // baseline repeatedly). After undo, it's still the correct baseline
-        // because the server hasn't changed. The previous guard
-        // (`if debouncer.old_text.is_none()`) kept a stale baseline from
-        // pre-undo edits, causing wrong incremental diffs.
-        if let Some(new_old) = old_text {
-            debouncer.old_text = Some(new_old);
-        }
-
-        // Clone flush channel for timer closure
-        let flush_tx = self.flush_tx.clone();
-        let uri_clone = uri.clone();
-
-        // Start new timer
-        let handle = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(CHANGE_DEBOUNCE_MS)).await;
-
-            // Timer expired - request flush via channel
-            if let Err(e) = flush_tx.send(uri_clone).await {
-                lsp_error!("Debounce", "Error sending flush request: {}", e);
-            }
+        debouncer.pending = Some(super::PendingChange {
+            text,
+            version: assigned_version,
         });
-
-        debouncer.timer_handle = Some(handle);
+        self.restart_debounce_timer(&mut debouncer, uri);
 
         Ok(())
     }
@@ -414,6 +366,8 @@ impl LspManager {
 
         // Remove debouncer for this document
         self.change_debouncers.remove(&uri);
+        self.flush_gates.remove(&uri);
+        self.server_texts.retain(|(_, u), _| u != &uri);
         self.last_local_edit.lock().await.remove(&uri);
 
         // Note: We keep diagnostics - they should remain visible even after file is closed
@@ -471,6 +425,7 @@ impl LspManager {
             ));
         }
 
+        let opened_text: Arc<str> = Arc::from(text.as_str());
         for sid in &server_ids {
             if let Some(server) = self.servers.get(sid.as_str()) {
                 let params = DidOpenTextDocumentParams {
@@ -486,6 +441,11 @@ impl LspManager {
                     .await
                 {
                     lsp_warn!("LSP-BROADCAST", "didOpen failed for server {}: {}", sid, e);
+                } else {
+                    // Record the exact text this server now holds — the
+                    // baseline for future incremental diffs (OV-00326).
+                    self.server_texts
+                        .insert((sid.clone(), uri.clone()), opened_text.clone());
                 }
             }
         }
@@ -517,88 +477,115 @@ impl LspManager {
     /// Uses the version that was pre-assigned in `did_change()` rather than
     /// re-incrementing.  This ensures the version in the didChange notification
     /// matches what `set_diagnostics()` already uses for staleness checks.
-    /// Flushes pending changes and broadcasts to all servers for the language.
+    ///
+    /// Flushes are serialized per URI (`flush_gates`) so two flushes can
+    /// never interleave their sends and deliver versions out of order. The
+    /// debouncer entry itself is never removed here — `did_change()` may
+    /// already hold a clone of its Arc, and removing the entry orphaned any
+    /// edit queued concurrently with the flush (OV-00326).
     ///
     /// Returns the `(content, version)` that was actually sent to the LSP
     /// server, or `None` if there was nothing to flush.  Callers that record
     /// `synced_content` (e.g. inlay-hint / completion tasks) **must** use the
     /// returned content — the debouncer may have been updated by another thread
-    /// since the caller captured its snapshot.
+    /// since the caller captured its snapshot. On partial or total send
+    /// failure the pending change is re-armed for a timer-driven retry
+    /// (unless a newer edit superseded it) and an error is returned; the
+    /// change is never silently discarded.
     pub async fn flush_pending_changes_broadcast(
         &self,
         uri: &Uri,
         language_id: &str,
     ) -> Result<Option<(String, i32)>> {
-        // First, remove the debouncer to get pending text
-        if let Some((_, debouncer_arc)) = self.change_debouncers.remove(uri) {
+        let Some(debouncer_arc) = self
+            .change_debouncers
+            .get(uri)
+            .map(|entry| entry.value().clone())
+        else {
+            return Ok(None);
+        };
+
+        let gate = self
+            .flush_gates
+            .entry(uri.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _flush_permit = gate.lock().await;
+
+        // Take the pending payload; the map entry stays so concurrent
+        // did_change() calls keep landing in the same debouncer.
+        let (text, version) = {
             let mut debouncer = debouncer_arc.lock().await;
             debouncer.cancel_timer();
-
-            let text = debouncer.pending_text.clone();
-            let old_text = debouncer.old_text.clone();
-            let uri = debouncer.uri.clone();
-            // Use the version assigned in did_change() — already bumped in
-            // document_versions, no need to re-increment.
-            let version = debouncer.pending_version;
-            drop(debouncer);
-
-            // Convert Arc<str> → String once for the LSP protocol layer.
-            let text_string = text.to_string();
-            let old_text_string = old_text.map(|s| s.to_string());
-
-            // Send to the server group responsible for this document with the same version
-            let server_ids = self.servers_for_document_uri(language_id, &uri);
-            let mut any_sent = false;
-            let mut any_synced = false;
-            for sid in &server_ids {
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    self.send_did_change_with_version(
-                        uri.clone(),
-                        sid,
-                        text_string.clone(),
-                        old_text_string.clone(),
-                        version,
-                    ),
-                )
-                .await
-                {
-                    Ok(Ok(actually_sent)) => {
-                        any_sent = any_sent || actually_sent;
-                        // Even no-diff (Ok(false)) means content is in sync —
-                        // version should be considered synced (OV-00211).
-                        any_synced = true;
-                    }
-                    Ok(Err(e)) => {
-                        lsp_warn!("LSP-BROADCAST", "Flush failed for server {}: {}", sid, e);
-                    }
-                    Err(_) => {
-                        lsp_warn!(
-                            "LSP-BROADCAST",
-                            "Timeout flushing changes for server {} (5s)",
-                            sid
-                        );
-                    }
-                }
+            match debouncer.pending.take() {
+                Some(pending) => (pending.text, pending.version),
+                None => return Ok(None),
             }
-            if any_synced {
-                let mut sent = self.last_sent_versions.lock().await;
-                sent.insert(uri.clone(), version);
-                drop(sent);
+        };
 
-                if any_sent {
-                    // Re-stamp last_local_edit so unversioned-diagnostics settle
-                    // timer measures from flush, not from queue time.
-                    self.last_local_edit
-                        .lock()
-                        .await
-                        .insert(uri.clone(), std::time::Instant::now());
+        let text_string = text.to_string();
+        let server_ids = self.servers_for_document_uri(language_id, uri);
+        let mut any_sent = false;
+        let mut all_synced = !server_ids.is_empty();
+        for sid in &server_ids {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.send_did_change_to_server(uri, sid, &text, version),
+            )
+            .await
+            {
+                Ok(Ok(actually_sent)) => {
+                    any_sent = any_sent || actually_sent;
+                    // Even no-diff (Ok(false)) means this server is in sync
+                    // (OV-00211).
                 }
-
-                return Ok(Some((text_string, version)));
+                Ok(Err(e)) => {
+                    all_synced = false;
+                    lsp_warn!("LSP-BROADCAST", "Flush failed for server {}: {}", sid, e);
+                }
+                Err(_) => {
+                    all_synced = false;
+                    lsp_warn!(
+                        "LSP-BROADCAST",
+                        "Timeout flushing changes for server {} (5s)",
+                        sid
+                    );
+                }
             }
         }
-        Ok(None)
+        if all_synced {
+            let mut sent = self.last_sent_versions.lock().await;
+            sent.insert(uri.clone(), version);
+            drop(sent);
+
+            if any_sent {
+                // Re-stamp last_local_edit so unversioned-diagnostics settle
+                // timer measures from flush, not from queue time.
+                self.last_local_edit
+                    .lock()
+                    .await
+                    .insert(uri.clone(), std::time::Instant::now());
+            }
+
+            return Ok(Some((text_string, version)));
+        }
+
+        // At least one server did not receive the update (or no server is
+        // registered yet). Re-arm the pending change for a timer-driven
+        // retry unless a newer edit superseded it while we were sending —
+        // the newer edit re-diffs against each server's recorded baseline,
+        // so dropping this payload in that case loses nothing.
+        {
+            let mut debouncer = debouncer_arc.lock().await;
+            if debouncer.pending.is_none() {
+                debouncer.pending = Some(super::PendingChange { text, version });
+                self.restart_debounce_timer(&mut debouncer, uri.clone());
+            }
+        }
+        Err(anyhow!(
+            "didChange flush incomplete for {} (queued for retry)",
+            uri.as_str()
+        ))
     }
 
     /// Sends didSave to the server group responsible for this document.
@@ -658,6 +645,8 @@ impl LspManager {
         drop(versions);
         self.last_sent_versions.lock().await.remove(&uri);
         self.change_debouncers.remove(&uri);
+        self.flush_gates.remove(&uri);
+        self.server_texts.retain(|(_, u), _| u != &uri);
         self.last_local_edit.lock().await.remove(&uri);
         self.deferred_diagnostics
             .lock()
@@ -1440,11 +1429,7 @@ mod tests {
     async fn process_flush_requests_does_not_wait_for_debouncer_lock() {
         let manager = Arc::new(LspManager::new());
         let uri = Uri::from_str("file:///tmp/ovim-flush.rs").expect("uri");
-        let debouncer = Arc::new(Mutex::new(ChangeDebouncer::new(
-            uri.clone(),
-            "rust".to_string(),
-            1,
-        )));
+        let debouncer = Arc::new(Mutex::new(ChangeDebouncer::new("rust".to_string())));
         manager
             .change_debouncers
             .insert(uri.clone(), debouncer.clone());
@@ -1469,96 +1454,309 @@ mod tests {
     /// Verifies that the debouncer updates old_text when the caller provides
     /// a fresh baseline (e.g., after undo). Previously, old_text was only
     /// set when None, causing stale baselines after undo.
+    /// OV-00326: coalescing keeps the latest text/version, and a flush must
+    /// never remove the debouncer map entry — `did_change()` may already
+    /// hold a clone of the Arc, and removing the entry orphaned edits
+    /// queued concurrently with the flush (their timer then flushed
+    /// nothing and the change was silently lost).
     #[tokio::test(flavor = "current_thread")]
-    async fn debouncer_updates_old_text_on_undo() {
+    async fn flush_keeps_debouncer_entry_and_pending_coalesces() {
         let manager = Arc::new(LspManager::new());
-        let uri = Uri::from_str("file:///tmp/ovim-undo-test.rs").expect("uri");
+        let uri = Uri::from_str("file:///tmp/ovim-orphan-test.rs").expect("uri");
 
-        // Simulate: initial content is "hello\n", flushed to server.
-        // Edit 1: type "x" -> "hellox\n"
         manager
-            .did_change(
-                uri.clone(),
-                "rust",
-                Arc::from("hellox\n"),
-                Some(Arc::from("hello\n")), // baseline: what the server has
-            )
+            .did_change(uri.clone(), "rust", Arc::from("v1\n"), None)
             .await
             .unwrap();
-
-        // Verify debouncer state after first edit
-        {
-            let entry = manager.change_debouncers.get(&uri).unwrap();
-            let debouncer = entry.lock().await;
-            assert_eq!(&*debouncer.pending_text, "hellox\n");
-            assert_eq!(debouncer.old_text.as_deref(), Some("hello\n"));
-        }
-
-        // Edit 2: type "y" -> "helloxy\n" (same baseline — server still has "hello\n")
         manager
-            .did_change(
-                uri.clone(),
-                "rust",
-                Arc::from("helloxy\n"),
-                Some(Arc::from("hello\n")),
-            )
+            .did_change(uri.clone(), "rust", Arc::from("v2\n"), None)
             .await
             .unwrap();
 
         {
             let entry = manager.change_debouncers.get(&uri).unwrap();
             let debouncer = entry.lock().await;
-            assert_eq!(&*debouncer.pending_text, "helloxy\n");
-            // Baseline should still be "hello\n" (server hasn't changed)
-            assert_eq!(debouncer.old_text.as_deref(), Some("hello\n"));
+            let pending = debouncer.pending.as_ref().expect("pending change");
+            assert_eq!(&*pending.text, "v2\n");
+            assert_eq!(pending.version, 2);
         }
 
-        // Now simulate: flush happened, server has "helloxy\n".
-        // Then user types "z" -> "helloxyz\n".
-        // Caller passes new baseline: "helloxy\n" (what server now has).
+        // Flush with no servers registered: the payload cannot be delivered.
+        let result = manager.flush_pending_changes_broadcast(&uri, "rust").await;
+        assert!(
+            result.is_err(),
+            "undeliverable flush must surface an error, not silently drop the edit"
+        );
+
+        // The entry must survive the flush attempt...
+        assert!(
+            manager.change_debouncers.contains_key(&uri),
+            "flush must not remove the debouncer entry (orphaned-edit race, OV-00326)"
+        );
+        // ...and the pending change must be re-armed for retry, not discarded.
+        {
+            let entry = manager.change_debouncers.get(&uri).unwrap();
+            let debouncer = entry.lock().await;
+            let pending = debouncer
+                .pending
+                .as_ref()
+                .expect("failed flush must retain the pending change for retry (OV-00326)");
+            assert_eq!(&*pending.text, "v2\n");
+            assert_eq!(pending.version, 2);
+        }
+        // last_sent must NOT claim the undelivered version.
+        assert_eq!(manager.get_last_sent_version(&uri).await, 0);
+    }
+
+    /// OV-00326: passing `old_text: None` declares the server-side content
+    /// untrustworthy (external reload) — recorded per-server baselines must
+    /// be dropped so the next flush sends a full-document update instead of
+    /// an incremental diff against a baseline the server may not have.
+    #[tokio::test(flavor = "current_thread")]
+    async fn did_change_without_baseline_drops_server_texts() {
+        let manager = Arc::new(LspManager::new());
+        let uri = Uri::from_str("file:///tmp/ovim-force-full.rs").expect("uri");
+        let other_uri = Uri::from_str("file:///tmp/ovim-other.rs").expect("uri");
+
+        manager
+            .server_texts
+            .insert(("rust".to_string(), uri.clone()), Arc::from("stale\n"));
+        manager
+            .server_texts
+            .insert(("rust".to_string(), other_uri.clone()), Arc::from("keep\n"));
+
+        manager
+            .did_change(uri.clone(), "rust", Arc::from("fresh\n"), None)
+            .await
+            .unwrap();
+
+        assert!(
+            !manager
+                .server_texts
+                .contains_key(&("rust".to_string(), uri.clone())),
+            "force-full resend must drop the recorded baseline for the document"
+        );
+        assert!(
+            manager
+                .server_texts
+                .contains_key(&("rust".to_string(), other_uri.clone())),
+            "baselines for other documents must be untouched"
+        );
+    }
+
+    /// Applies one LSP TextDocumentContentChangeEvent to a mirror string the
+    /// way a server would (UTF-16 positions, lines split on '\n').
+    fn apply_content_change(mirror: &str, change: &serde_json::Value) -> String {
+        let text = change["text"].as_str().expect("change text").to_string();
+        let Some(range) = change.get("range").filter(|r| !r.is_null()) else {
+            // Full-document sync
+            return text;
+        };
+        let pos = |p: &serde_json::Value| -> (usize, u32) {
+            (
+                p["line"].as_u64().expect("line") as usize,
+                p["character"].as_u64().expect("character") as u32,
+            )
+        };
+        let (sl, sc) = pos(&range["start"]);
+        let (el, ec) = pos(&range["end"]);
+        let lines: Vec<&str> = mirror.split('\n').collect();
+        let offset_of = |line: usize, utf16_col: u32| -> usize {
+            let mut offset = 0;
+            for l in lines.iter().take(line) {
+                offset += l.len() + 1;
+            }
+            let line_text = lines.get(line).copied().unwrap_or("");
+            let char_col = crate::lsp::position::utf16_to_char_col(line_text, utf16_col);
+            offset
+                + line_text
+                    .chars()
+                    .take(char_col)
+                    .map(|c| c.len_utf8())
+                    .sum::<usize>()
+        };
+        let start = offset_of(sl, sc).min(mirror.len());
+        let end = offset_of(el, ec).min(mirror.len());
+        format!("{}{}{}", &mirror[..start], text, &mirror[end..])
+    }
+
+    /// OV-00326 end-to-end: a server's copy of the document must track the
+    /// editor exactly when incremental flushes interleave with new edits and
+    /// with baselines the editor got wrong. The fake server records every
+    /// frame ovim sends; replaying didOpen + the didChange stream must
+    /// reproduce the final text, and versions must be strictly increasing.
+    /// Under the old scheme, diffing against caller-supplied `old_text`
+    /// (instead of what the server was actually sent) corrupted the mirror.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn incremental_flush_stream_reconstructs_editor_content() {
+        let dir = std::env::temp_dir().join(format!(
+            "ovim-sync-capture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create capture dir");
+        let capture = dir.join("frames.bin");
+        let capture_str = capture.to_string_lossy().to_string();
+
+        let manager = Arc::new(LspManager::new());
+        let server = super::super::server::LanguageServer::spawn(
+            "rust",
+            "sh",
+            vec!["-c".to_string(), format!("exec cat > '{}'", capture_str)],
+        )
+        .await
+        .expect("spawn fake server");
+        server.force_incremental_sync_for_test(true);
+        manager.servers.insert("rust".to_string(), server);
+        manager
+            .language_server_index
+            .insert("rust".to_string(), vec!["rust".to_string()]);
+
+        let uri = Uri::from_str("file:///tmp/ovim-sync-capture.rs").expect("uri");
+        let v0 = "fn compute(x: u32) -> u32 {\n    x * 2\n}\n";
+        manager
+            .did_open(uri.clone(), "rust", 1, v0.to_string())
+            .await
+            .expect("didOpen");
+
+        // Edit 1: normal keystroke; editor supplies the correct baseline
+        // (which the manager must ignore in favor of its own records).
+        let v1 = "fn compute(x: u32) -> u32 {\n    x * 2 + 1\n}\n";
+        manager
+            .did_change(uri.clone(), "rust", Arc::from(v1), Some(Arc::from(v0)))
+            .await
+            .unwrap();
+        manager
+            .flush_pending_changes_broadcast(&uri, "rust")
+            .await
+            .expect("flush v1");
+
+        // Edit 2: the editor's snapshot lags a flush (the OV-00326 race) and
+        // it passes a STALE baseline. The server's copy must still converge.
+        let v2 = "fn compute(x: u32) -> u32 {\n    x * \"oops\"\n}\n";
         manager
             .did_change(
                 uri.clone(),
                 "rust",
-                Arc::from("helloxyz\n"),
-                Some(Arc::from("helloxy\n")), // new baseline after flush
+                Arc::from(v2),
+                Some(Arc::from(v0)), // stale: server was already sent v1
             )
             .await
             .unwrap();
-
-        {
-            let entry = manager.change_debouncers.get(&uri).unwrap();
-            let debouncer = entry.lock().await;
-            assert_eq!(&*debouncer.pending_text, "helloxyz\n");
-            // Baseline MUST be updated to "helloxy\n", not stuck at "hello\n"
-            assert_eq!(
-                debouncer.old_text.as_deref(),
-                Some("helloxy\n"),
-                "Debouncer must update old_text when caller provides a new baseline"
-            );
-        }
-
-        // Simulate undo: buffer goes back to "helloxy\n".
-        // Server still has "helloxy\n" (from the last flush).
-        // Baseline is "helloxy\n" — same as pending_text.
         manager
-            .did_change(
-                uri.clone(),
-                "rust",
-                Arc::from("helloxy\n"),
-                Some(Arc::from("helloxy\n")),
-            )
+            .flush_pending_changes_broadcast(&uri, "rust")
+            .await
+            .expect("flush v2");
+
+        // Edit 3: coalesced pair — only the latest needs to reach the server.
+        let v3a = "fn compute(x: u32) -> u32 {\n    x * \"oops\"\n}\n\nfn main() {}\n";
+        let v3 = "fn compute(x: u32) -> u32 {\n    x + 40\n}\n\nfn main() {}\n";
+        manager
+            .did_change(uri.clone(), "rust", Arc::from(v3a), Some(Arc::from(v2)))
             .await
             .unwrap();
+        manager
+            .did_change(uri.clone(), "rust", Arc::from(v3), Some(Arc::from(v3a)))
+            .await
+            .unwrap();
+        manager
+            .flush_pending_changes_broadcast(&uri, "rust")
+            .await
+            .expect("flush v3");
 
-        {
-            let entry = manager.change_debouncers.get(&uri).unwrap();
-            let debouncer = entry.lock().await;
-            assert_eq!(&*debouncer.pending_text, "helloxy\n");
-            assert_eq!(debouncer.old_text.as_deref(), Some("helloxy\n"));
-            // When pending_text == old_text, compute_simple_diff returns None
-            // (no diff to send). This is correct — server already has this content.
+        // Wait for the fake server process to have received all frames:
+        // 1 didOpen + 3 didChange.
+        let mut frames: Vec<serde_json::Value> = Vec::new();
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let Ok(raw) = std::fs::read(&capture) else {
+                continue;
+            };
+            frames = parse_lsp_frames(&raw);
+            if frames
+                .iter()
+                .filter(|f| {
+                    matches!(
+                        f["method"].as_str(),
+                        Some("textDocument/didOpen") | Some("textDocument/didChange")
+                    )
+                })
+                .count()
+                >= 4
+            {
+                break;
+            }
         }
+
+        let mut mirror = String::new();
+        let mut last_version = 0i64;
+        let mut did_change_count = 0;
+        for frame in &frames {
+            match frame["method"].as_str() {
+                Some("textDocument/didOpen") => {
+                    mirror = frame["params"]["textDocument"]["text"]
+                        .as_str()
+                        .expect("didOpen text")
+                        .to_string();
+                }
+                Some("textDocument/didChange") => {
+                    did_change_count += 1;
+                    let version = frame["params"]["textDocument"]["version"]
+                        .as_i64()
+                        .expect("version");
+                    assert!(
+                        version > last_version,
+                        "didChange versions must be strictly increasing (got {} after {})",
+                        version,
+                        last_version
+                    );
+                    last_version = version;
+                    for change in frame["params"]["contentChanges"]
+                        .as_array()
+                        .expect("contentChanges")
+                    {
+                        mirror = apply_content_change(&mirror, change);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(did_change_count, 3, "frames: {:#?}", frames);
+        assert_eq!(
+            mirror, v3,
+            "server-side reconstruction diverged from the editor's buffer"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Splits raw captured bytes into parsed JSON-RPC message bodies.
+    fn parse_lsp_frames(mut raw: &[u8]) -> Vec<serde_json::Value> {
+        let mut frames = Vec::new();
+        while let Some(header_end) = raw.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4) {
+            let headers = String::from_utf8_lossy(&raw[..header_end]);
+            let Some(len) = headers
+                .lines()
+                .find_map(|l| l.strip_prefix("Content-Length:"))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+            else {
+                break;
+            };
+            if raw.len() < header_end + len {
+                break;
+            }
+            if let Ok(value) =
+                serde_json::from_slice::<serde_json::Value>(&raw[header_end..header_end + len])
+            {
+                frames.push(value);
+            }
+            raw = &raw[header_end + len..];
+        }
+        frames
     }
 
     /// OV-00210: did_open's contains_key check and the subsequent insert

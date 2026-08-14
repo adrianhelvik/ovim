@@ -572,6 +572,15 @@ impl Editor {
         }
     }
 
+    /// True when a buffer-mutating LSP result computed against
+    /// (`file_path`, `buffer_version`) can still be applied safely: same
+    /// file, not a single edit since the request fired. Results carry
+    /// positions into that exact snapshot — splicing them into a buffer the
+    /// user kept editing garbles the text (OV-00327).
+    fn lsp_mutation_target_is_current(&self, file_path: &str, buffer_version: usize) -> bool {
+        self.buffer().file_path() == Some(file_path) && self.buffer().version() == buffer_version
+    }
+
     /// Poll all action slots (Step 5 — format, references, symbols, code actions,
     /// rename, organize imports, call/type hierarchy, semantic tokens).
     fn poll_action_slots(&mut self) -> bool {
@@ -582,9 +591,15 @@ impl Editor {
         if let Some(result) = self.lsp.slots.format.poll_with_timeout(timeout) {
             match result {
                 Ok(r) if !r.edits.is_empty() => {
-                    self.apply_lsp_edits(r.edits);
-                    self.set_lsp_status("Document formatted".to_string());
-                    changed = true;
+                    if self.lsp_mutation_target_is_current(&r.file_path, r.buffer_version) {
+                        self.apply_lsp_edits(r.edits);
+                        self.set_lsp_status("Document formatted".to_string());
+                        changed = true;
+                    } else {
+                        self.set_lsp_status(
+                            "Format result discarded: buffer changed (rerun format)".to_string(),
+                        );
+                    }
                 }
                 Ok(_) => {
                     self.set_lsp_status("No formatting changes".to_string());
@@ -708,6 +723,16 @@ impl Editor {
         // Code actions
         if let Some(result) = self.lsp.slots.code_actions.poll_with_timeout(timeout) {
             match result {
+                Ok(r)
+                    if !r.actions.is_empty()
+                        && !self.lsp_mutation_target_is_current(&r.file_path, r.buffer_version) =>
+                {
+                    // The action edits embed positions into the request-time
+                    // snapshot; the buffer has moved on (OV-00327).
+                    self.set_lsp_status(
+                        "Code actions discarded: buffer changed (rerun)".to_string(),
+                    );
+                }
                 Ok(r) if !r.actions.is_empty() => {
                     let titles: Vec<String> = r
                         .actions
@@ -737,16 +762,23 @@ impl Editor {
             match result {
                 Ok(r) => {
                     if let Some(workspace_edit) = r.edit {
-                        match self.apply_workspace_edit(workspace_edit) {
-                            Ok(true) => {
-                                self.set_lsp_status(format!("Renamed to '{}'", r.new_name));
-                                changed = true;
-                            }
-                            Ok(false) => {
-                                self.set_lsp_status("Rename failed to apply".to_string());
-                            }
-                            Err(e) => {
-                                self.set_lsp_status(format!("Failed to apply rename: {}", e));
+                        if !self.lsp_mutation_target_is_current(&r.file_path, r.buffer_version) {
+                            // Positions in the edit are stale (OV-00327).
+                            self.set_lsp_status(
+                                "Rename discarded: buffer changed (rerun rename)".to_string(),
+                            );
+                        } else {
+                            match self.apply_workspace_edit(workspace_edit) {
+                                Ok(true) => {
+                                    self.set_lsp_status(format!("Renamed to '{}'", r.new_name));
+                                    changed = true;
+                                }
+                                Ok(false) => {
+                                    self.set_lsp_status("Rename failed to apply".to_string());
+                                }
+                                Err(e) => {
+                                    self.set_lsp_status(format!("Failed to apply rename: {}", e));
+                                }
                             }
                         }
                     } else {
@@ -764,10 +796,17 @@ impl Editor {
             match result {
                 Ok(r) => {
                     if let Some(action) = r.action {
-                        self.lsp.state.available_code_actions = vec![action];
-                        self.apply_code_action(0);
-                        self.set_lsp_status("Imports organized".to_string());
-                        changed = true;
+                        if !self.lsp_mutation_target_is_current(&r.file_path, r.buffer_version) {
+                            // Positions in the action edit are stale (OV-00327).
+                            self.set_lsp_status(
+                                "Organize imports discarded: buffer changed (rerun)".to_string(),
+                            );
+                        } else {
+                            self.lsp.state.available_code_actions = vec![action];
+                            self.apply_code_action(0);
+                            self.set_lsp_status("Imports organized".to_string());
+                            changed = true;
+                        }
                     } else {
                         self.set_lsp_status("No organize imports action available".to_string());
                     }
@@ -913,8 +952,12 @@ impl Editor {
                 }
 
                 let (trigger_col, trigger_prefix) = self.derive_completion_prefix(&result.items);
-                self.completion_menu_mut()
-                    .show(result.items.clone(), trigger_col, trigger_prefix);
+                let items_version = result.buffer_version;
+                let menu = self.completion_menu_mut();
+                menu.show(result.items.clone(), trigger_col, trigger_prefix);
+                // The version check above proved the items' textEdit ranges
+                // target the buffer as it is right now (OV-00327).
+                menu.set_items_buffer_version(items_version);
                 self.lsp.state.available_completions = result.items;
                 self.mark_dirty();
                 true
@@ -1795,16 +1838,17 @@ impl Editor {
                     .await
                     .ok()
                     .flatten();
-                let (flushed_content, flushed_version) = match flushed {
-                    Some((text, ver)) => (Arc::from(text), ver),
-                    None => {
-                        let ver = lsp.get_last_sent_version(&uri).await;
-                        (content, ver)
-                    }
-                };
                 self.lsp.state.current_file_lsp_version = lsp.get_document_version(&uri).await;
-                self.lsp.state.current_file_lsp_sent_version = flushed_version;
-                self.mark_document_flushed(&state_key, flushed_content, flushed_version);
+                self.lsp.state.current_file_lsp_sent_version =
+                    lsp.get_last_sent_version(&uri).await;
+                if let Some((text, ver)) = flushed {
+                    self.mark_document_flushed(&state_key, Arc::from(text), ver);
+                }
+                // On None/Err nothing new reached the server — recording the
+                // CURRENT buffer as flushed here used to claim content the
+                // server never received, silently swallowing the next resend
+                // (OV-00326). Manager reconciliation promotes the queued
+                // snapshot once last_sent actually catches up.
                 true
             }
             DocumentSyncRequestAction::QueueChangeAndFlush => {
@@ -1838,16 +1882,14 @@ impl Editor {
                     .await
                     .ok()
                     .flatten();
-                let (flushed_content, flushed_version) = match flushed {
-                    Some((text, ver)) => (Arc::from(text), ver),
-                    None => {
-                        let ver = lsp.get_last_sent_version(&uri).await;
-                        (content, ver)
-                    }
-                };
                 self.lsp.state.current_file_lsp_version = lsp.get_document_version(&uri).await;
-                self.lsp.state.current_file_lsp_sent_version = flushed_version;
-                self.mark_document_flushed(&state_key, flushed_content, flushed_version);
+                self.lsp.state.current_file_lsp_sent_version =
+                    lsp.get_last_sent_version(&uri).await;
+                if let Some((text, ver)) = flushed {
+                    self.mark_document_flushed(&state_key, Arc::from(text), ver);
+                }
+                // On None/Err: see FlushQueued above — never record content
+                // the server did not receive as flushed (OV-00326).
                 true
             }
         }
@@ -2504,5 +2546,126 @@ mod tests {
         assert!(!editor.poll_pending_completion_response());
         assert!(!editor.completion_menu().is_visible());
         assert!(editor.completion_menu().items().is_empty());
+    }
+
+    fn fire_format_result(editor: &mut Editor, result: crate::editor::lsp_slot::FormatResult) {
+        let (tx, rx) = oneshot::channel::<anyhow::Result<crate::editor::lsp_slot::FormatResult>>();
+        tx.send(Ok(result)).unwrap();
+        let task = tokio::spawn(async {});
+        editor.lsp.slots.format.fire(task, rx);
+    }
+
+    fn whole_buffer_replace_edit(new_text: &str, end_line: u32) -> lsp_types::TextEdit {
+        lsp_types::TextEdit {
+            range: Range::new(Position::new(0, 0), Position::new(end_line, 0)),
+            new_text: new_text.to_string(),
+        }
+    }
+
+    /// OV-00327: a format response computed against buffer version N must
+    /// not be applied after the user kept editing (version N+k) — the edits
+    /// would splice at stale offsets, reverting or garbling what was typed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn stale_format_result_is_discarded() {
+        let mut editor = Editor::with_content("fn main( ){}\n");
+        editor.set_file_path("/tmp/fmt.rs".to_string());
+
+        let stale_version = editor.buffer().version();
+        let file_path = editor.buffer().file_path().unwrap().to_string();
+
+        // User keeps typing while the format request is in flight.
+        editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol(0), "// note\n");
+        let typed_content = editor.buffer().rope().to_string();
+
+        fire_format_result(
+            &mut editor,
+            crate::editor::lsp_slot::FormatResult {
+                edits: vec![whole_buffer_replace_edit("fn main() {}\n", 1)],
+                file_path,
+                buffer_version: stale_version,
+            },
+        );
+
+        editor.poll_action_slots();
+        assert_eq!(
+            editor.buffer().rope().to_string(),
+            typed_content,
+            "stale format edits must not be applied over newer typing"
+        );
+    }
+
+    /// Companion: a format response for the current buffer version applies.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn current_format_result_applies() {
+        let mut editor = Editor::with_content("fn main( ){}\n");
+        editor.set_file_path("/tmp/fmt.rs".to_string());
+
+        let file_path = editor.buffer().file_path().unwrap().to_string();
+        let buffer_version = editor.buffer().version();
+        fire_format_result(
+            &mut editor,
+            crate::editor::lsp_slot::FormatResult {
+                edits: vec![whole_buffer_replace_edit("fn main() {}\n", 1)],
+                file_path,
+                buffer_version,
+            },
+        );
+
+        editor.poll_action_slots();
+        assert_eq!(editor.buffer().rope().to_string(), "fn main() {}\n");
+    }
+
+    /// OV-00327: accepting a completion item whose textEdit range targets an
+    /// older buffer version must fall back to trigger-prefix replacement
+    /// instead of splicing the stale range into the current text.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn stale_completion_accept_falls_back_to_prefix_replacement() {
+        let mut editor = Editor::with_content("self.fo");
+        editor.set_file_path("/tmp/a.rs".to_string());
+        editor.set_mode(crate::mode::Mode::Insert);
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(0, crate::unicode::CharCol(7));
+
+        // Server responded when the buffer was "self.fo": textEdit replaces
+        // cols [5,7) ("fo") with "foo_bar()".
+        let item = CompletionItem {
+            label: "foo_bar".to_string(),
+            insert_text: Some("foo_bar()".to_string()),
+            text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                range: Range::new(Position::new(0, 5), Position::new(0, 7)),
+                new_text: "foo_bar()".to_string(),
+            })),
+            ..Default::default()
+        };
+        let response_version = editor.buffer().version();
+        editor
+            .completion_menu_mut()
+            .show(vec![item.clone()], 5, "fo".to_string());
+        editor
+            .completion_menu_mut()
+            .set_items_buffer_version(response_version);
+
+        // User types one more char before accepting: buffer is "self.foo",
+        // cursor at col 8. The stale range [5,7) no longer covers the
+        // typed prefix — applying it verbatim used to produce
+        // "self.foo_bar()o" (orphaned trailing char).
+        editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol(7), "o");
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(0, crate::unicode::CharCol(8));
+        assert!(editor.buffer().version() > response_version);
+
+        editor.accept_completion();
+
+        assert_eq!(
+            editor.buffer().rope().to_string(),
+            "self.foo_bar()\n",
+            "stale textEdit range must not leave orphaned typed characters"
+        );
     }
 }

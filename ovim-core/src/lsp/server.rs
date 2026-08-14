@@ -1664,6 +1664,14 @@ impl LanguageServer {
         self.inner.has_cap(LspCapFlags::INCREMENTAL_SYNC)
     }
 
+    /// Test-only: force the incremental-sync capability so sync tests can
+    /// exercise the diff path against a fake server that never negotiates
+    /// capabilities.
+    #[cfg(test)]
+    pub(crate) fn force_incremental_sync_for_test(&self, enabled: bool) {
+        self.inner.set_cap(LspCapFlags::INCREMENTAL_SYNC, enabled);
+    }
+
     /// Checks if the server supports folding range (lock-free)
     pub async fn supports_folding_range(&self) -> bool {
         self.inner.has_cap(LspCapFlags::FOLDING_RANGE)

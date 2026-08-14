@@ -96,40 +96,44 @@ pub struct LspServerInfo {
     pub has_capabilities: bool,
 }
 
-/// Debouncer for textDocument/didChange notifications
-/// Coalesces rapid changes to reduce LSP traffic
-pub(crate) struct ChangeDebouncer {
-    /// URI of the document being edited
-    uri: Uri,
-
-    /// Language ID (e.g., "rust", "python")
-    language_id: String,
-
+/// A coalesced didChange payload waiting for the debounce timer.
+pub(crate) struct PendingChange {
     /// Full text of the pending change
-    pending_text: Arc<str>,
-
-    /// Old text before change (for incremental sync)
-    old_text: Option<Arc<str>>,
-
-    /// Timer handle for the debounce delay
-    timer_handle: Option<JoinHandle<()>>,
+    pub(crate) text: Arc<str>,
 
     /// LSP document version assigned when the change was received.
     /// Bumped immediately in `did_change()` so stale diagnostics can be
     /// rejected before the debounce timer fires.  Used by flush instead of
     /// re-incrementing.
-    pending_version: i32,
+    pub(crate) version: i32,
+}
+
+/// Debouncer for textDocument/didChange notifications.
+/// Coalesces rapid changes to reduce LSP traffic.
+///
+/// One entry lives in `change_debouncers` per open document for the whole
+/// didOpen..didClose lifetime. Flushing takes the pending payload under the
+/// mutex but NEVER removes the map entry — the old remove-on-flush scheme
+/// raced `did_change()` (which had already cloned the Arc out of the map)
+/// and orphaned freshly queued edits in a debouncer whose timer flushed
+/// nothing (OV-00326).
+pub(crate) struct ChangeDebouncer {
+    /// Language ID (e.g., "rust", "python")
+    language_id: String,
+
+    /// The coalesced change waiting to be flushed, if any.
+    pending: Option<PendingChange>,
+
+    /// Timer handle for the debounce delay
+    timer_handle: Option<JoinHandle<()>>,
 }
 
 impl ChangeDebouncer {
-    fn new(uri: Uri, language_id: String, version: i32) -> Self {
+    fn new(language_id: String) -> Self {
         Self {
-            uri,
             language_id,
-            pending_text: Arc::from(""),
-            old_text: None,
+            pending: None,
             timer_handle: None,
-            pending_version: version,
         }
     }
 
@@ -188,6 +192,21 @@ pub struct LspManager {
     /// Pending changes being debounced per document
     /// Coalesces rapid changes to reduce LSP traffic by ~1000x
     change_debouncers: DashMap<Uri, Arc<Mutex<ChangeDebouncer>>>,
+
+    /// Per-document flush serialization. Held across the actual didChange
+    /// sends so two flushes for the same URI can never interleave and
+    /// deliver versions out of order. Never held while queueing changes,
+    /// so `did_change()` (called from the editor tick) never blocks on a
+    /// slow server.
+    flush_gates: DashMap<Uri, Arc<Mutex<()>>>,
+
+    /// The exact document text each server last received (via didOpen or a
+    /// successful didChange), keyed by (server_id, uri). This is the ONLY
+    /// trustworthy baseline for incremental diffs: editor-side snapshots
+    /// can lag or be poisoned by flush races, and diffing against anything
+    /// other than what the server actually holds corrupts the server's
+    /// copy of the document (OV-00326).
+    server_texts: DashMap<(String, Uri), Arc<str>>,
 
     /// Channel for debounce flush requests (URI to flush)
     flush_tx: mpsc::Sender<Uri>,
@@ -259,6 +278,8 @@ impl LspManager {
             notification_tx,
             notification_rx: Mutex::new(notification_rx),
             change_debouncers: DashMap::new(),
+            flush_gates: DashMap::new(),
+            server_texts: DashMap::new(),
             flush_tx,
             flush_rx: Mutex::new(Some(flush_rx)),
             diagnostics_changed: AtomicBool::new(false),
@@ -369,6 +390,9 @@ impl LspManager {
 
             // Insert into servers map
             if let Some(mut existing) = self.servers.insert(server_id.clone(), server) {
+                // The fresh process has no documents open — drop baselines
+                // recorded for the replaced instance (OV-00326).
+                self.server_texts.retain(|(sid, _), _| sid != &server_id);
                 if let Err(e) = existing.shutdown().await {
                     lsp_warn!(
                         "LspManager",
@@ -452,6 +476,9 @@ impl LspManager {
             lsp_debug!("LspManager", "Companion server {} initialized", server_id);
 
             if let Some(mut existing) = self.servers.insert(server_id.to_string(), server) {
+                // Fresh process, no documents open — drop stale baselines
+                // recorded for the replaced instance (OV-00326).
+                self.server_texts.retain(|(sid, _), _| sid != server_id);
                 if let Err(e) = existing.shutdown().await {
                     lsp_warn!(
                         "LspManager",
@@ -576,6 +603,12 @@ impl LspManager {
         if let Some((_, mut server)) = self.servers.remove(language) {
             server.shutdown().await?;
         }
+
+        // The server process is gone: its recorded document baselines are
+        // meaningless. A replacement server gets fresh didOpen full text and
+        // re-records them (OV-00326).
+        self.server_texts
+            .retain(|(server_id, _), _| server_id != language);
 
         // Clean up root tracking
         self.server_roots.remove(language);

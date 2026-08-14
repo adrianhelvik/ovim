@@ -15,6 +15,10 @@ pub struct CompletionMenu {
     trigger_col: usize,
     /// The text that was being typed when completion was triggered
     trigger_prefix: String,
+    /// Buffer version the items' textEdit ranges were computed against.
+    /// Accepting an item after further edits must not apply those ranges
+    /// verbatim (OV-00327).
+    items_buffer_version: Option<usize>,
 }
 
 impl CompletionMenu {
@@ -27,6 +31,7 @@ impl CompletionMenu {
             visible: false,
             trigger_col: 0,
             trigger_prefix: String::new(),
+            items_buffer_version: None,
         }
     }
 
@@ -37,7 +42,19 @@ impl CompletionMenu {
         self.visible = true;
         self.trigger_col = trigger_col;
         self.trigger_prefix = trigger_prefix;
+        self.items_buffer_version = None;
         self.apply_filter();
+    }
+
+    /// Records the buffer version the current items' textEdit ranges were
+    /// computed against (OV-00327).
+    pub fn set_items_buffer_version(&mut self, version: usize) {
+        self.items_buffer_version = Some(version);
+    }
+
+    /// The buffer version the current items' textEdit ranges target, if known.
+    pub fn items_buffer_version(&self) -> Option<usize> {
+        self.items_buffer_version
     }
 
     /// Hides the completion menu
@@ -47,6 +64,7 @@ impl CompletionMenu {
         self.items.clear();
         self.selected_index = 0;
         self.trigger_prefix.clear();
+        self.items_buffer_version = None;
     }
 
     /// Returns whether the menu is currently visible

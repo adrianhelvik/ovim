@@ -116,6 +116,8 @@ impl Editor {
 
         let tab_size = self.options.tab_width as u32;
         let insert_spaces = self.options.expand_tab;
+        let file_path = ctx.file_path.clone();
+        let buffer_version = self.buffer().version();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -123,7 +125,11 @@ impl Editor {
                 .lsp
                 .format_document(&ctx.uri, &ctx.language_id, tab_size, insert_spaces)
                 .await;
-            let _ = tx.send(result.map(|edits| crate::editor::lsp_slot::FormatResult { edits }));
+            let _ = tx.send(result.map(|edits| crate::editor::lsp_slot::FormatResult {
+                edits,
+                file_path,
+                buffer_version,
+            }));
         });
 
         self.lsp.slots.format.fire(task, rx);
@@ -135,6 +141,8 @@ impl Editor {
 
         self.set_lsp_status("Fetching code actions...".to_string());
 
+        let file_path = ctx.file_path.clone();
+        let buffer_version = self.buffer().version();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             // Get diagnostics for the current line to provide context for code actions
@@ -230,10 +238,16 @@ impl Editor {
                         .collect();
                     let available =
                         resolve_available_code_actions(ctx.lsp.as_ref(), available).await;
-                    Ok(crate::editor::lsp_slot::CodeActionsResult { actions: available })
+                    Ok(crate::editor::lsp_slot::CodeActionsResult {
+                        actions: available,
+                        file_path: file_path.clone(),
+                        buffer_version,
+                    })
                 }
                 Ok(_) => Ok(crate::editor::lsp_slot::CodeActionsResult {
                     actions: Vec::new(),
+                    file_path: file_path.clone(),
+                    buffer_version,
                 }),
                 Err(e) => Err(e),
             };
@@ -340,6 +354,8 @@ impl Editor {
 
         self.set_lsp_status("Organizing imports...".to_string());
 
+        let file_path = ctx.file_path.clone();
+        let buffer_version = self.buffer().version();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             // Request code actions for organize imports (at file start, no diagnostics needed)
@@ -374,6 +390,8 @@ impl Editor {
 
                     Ok(crate::editor::lsp_slot::OrganizeImportsResult {
                         action: organize_action,
+                        file_path,
+                        buffer_version,
                     })
                 }
                 Err(e) => Err(e),
@@ -391,6 +409,8 @@ impl Editor {
 
         self.set_lsp_status(format!("Renaming to '{}'...", new_name));
         let new_name_clone = new_name.clone();
+        let file_path = ctx.file_path.clone();
+        let buffer_version = self.buffer().version();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -404,8 +424,12 @@ impl Editor {
                     new_name_clone,
                 )
                 .await;
-            let _ = tx
-                .send(result.map(|edit| crate::editor::lsp_slot::RenameResult { edit, new_name }));
+            let _ = tx.send(result.map(|edit| crate::editor::lsp_slot::RenameResult {
+                edit,
+                new_name,
+                file_path,
+                buffer_version,
+            }));
         });
 
         self.lsp.slots.rename.fire(task, rx);

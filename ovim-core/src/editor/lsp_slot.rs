@@ -574,8 +574,15 @@ pub struct DiagnosticResult {
 }
 
 /// Result of a format-document request.
+#[derive(Debug)]
 pub struct FormatResult {
     pub edits: Vec<lsp_types::TextEdit>,
+    /// File path at the time the request was fired. The edits are positions
+    /// into that exact document snapshot — applying them to anything else
+    /// corrupts the buffer.
+    pub file_path: String,
+    /// Buffer version at the time the request was fired.
+    pub buffer_version: usize,
 }
 
 /// Result of a find-references request.
@@ -597,17 +604,28 @@ pub struct WorkspaceSymbolsResult {
 /// Result of a code-actions request.
 pub struct CodeActionsResult {
     pub actions: Vec<super::lsp_state::AvailableCodeAction>,
+    /// File path / buffer version at fire time — action edits embed
+    /// positions into that snapshot (stale ones corrupt the buffer).
+    pub file_path: String,
+    pub buffer_version: usize,
 }
 
 /// Result of a rename request.
 pub struct RenameResult {
     pub edit: Option<lsp_types::WorkspaceEdit>,
     pub new_name: String,
+    /// File path / buffer version at fire time — the workspace edit embeds
+    /// positions into that snapshot (stale ones corrupt the buffer).
+    pub file_path: String,
+    pub buffer_version: usize,
 }
 
 /// Result of an organize-imports request.
 pub struct OrganizeImportsResult {
     pub action: Option<super::lsp_state::AvailableCodeAction>,
+    /// File path / buffer version at fire time — see `RenameResult`.
+    pub file_path: String,
+    pub buffer_version: usize,
 }
 
 /// Result of a call-hierarchy request (incoming or outgoing).
