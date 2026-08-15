@@ -8,7 +8,8 @@
 use super::{
     AgentFuture, AgentProviderAdapter, AgentProviderError, AgentProviderEvent,
     AgentProviderFollowup, AgentProviderSession, AgentProviderStart, AgentToolResult,
-    DelegationEnvelope, ProviderBinding, ScopedTool,
+    DelegationEnvelope, ProviderBinding, ScopedTool, MAX_HANDOFF_ATTACHMENTS,
+    MAX_HANDOFF_ATTACHMENT_BYTES,
 };
 use crate::ai::{
     redact_high_risk_tokens, AiConfig, AiProfileConfig, AiProviderKind, ApiKeyConfig, ChatMessage,
@@ -26,6 +27,10 @@ pub const SUBMIT_HANDOFF_TOOL: &str = "submit_handoff";
 pub const MAX_DELEGATION_SYSTEM_PROMPT_BYTES: usize = 32 * 1024;
 const MAX_PROVIDER_CONTENT_BYTES: usize = 128 * 1024;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
+// JSON may encode each raw content byte as a six-byte `\u00XX` escape. Keep a
+// bounded transport envelope without making escaping reduce the documented raw
+// attachment capacity.
+const MAX_ATTACHMENT_TOOL_ARGUMENT_BYTES: usize = MAX_HANDOFF_ATTACHMENT_BYTES * 6 + 4 * 1024;
 
 /// One independently owned request to the shared streaming transport.
 ///
@@ -399,13 +404,10 @@ impl ProfileAgentSession {
                     "submit_handoff must be the only tool call in its provider round",
                 ));
             }
-            submit_handoff_schema()
-                .validate_instance(&handoff)
-                .map_err(|error| {
-                    AgentProviderError::new(format!(
-                        "submit_handoff arguments failed schema validation: {error}"
-                    ))
-                })?;
+            // Forward the bounded decoded payload to the runner even when the
+            // provider violates the advertised schema. The runner preserves
+            // invalid handoffs durably and can ask this retained session to
+            // repair them; rejecting here used to discard the result entirely.
             if !self.pending_parent_messages.is_empty() {
                 self.messages.push(ChatMessage {
                     role: ChatRole::Assistant,
@@ -645,7 +647,7 @@ impl AgentProviderSession for ProfileAgentSession {
             self.messages.push(ChatMessage {
                 role: ChatRole::User,
                 content: format!(
-                    "Your previous submit_handoff result failed validation. Repair only the result envelope; do not redo the investigation. Preserve every finding and evidence item, correct the schema contradiction, and call submit_handoff exactly once.\n\nValidation error: {}\n\nRejected payload:\n{}",
+                    "Your previous submit_handoff result failed validation. Repair only the result envelope; do not redo the investigation. Preserve every finding and evidence item. If substantial content does not fit the concise summary, call create_handoff_attachment first and reference its artifact_id in submit_handoff.attachments. Then call submit_handoff exactly once in a separate round.\n\nValidation error: {}\n\nRejected payload:\n{}",
                     redact_high_risk_tokens(validation_error),
                     payload
                 ),
@@ -810,9 +812,10 @@ fn submit_handoff_schema() -> crate::ai::tools::StrictJsonSchema {
             },
             "blockers": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 2048 } },
             "followups": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 2048 } },
+            "attachments": { "type": "array", "maxItems": MAX_HANDOFF_ATTACHMENTS, "items": { "type": "string", "pattern": "^art_.+" } },
             "confidence": { "type": "string", "enum": ["low", "medium", "high"] }
         },
-        "required": ["version", "status", "summary", "evidence", "changed_files", "verification", "blockers", "followups", "confidence"]
+        "required": ["version", "status", "summary", "evidence", "changed_files", "verification", "blockers", "followups", "attachments", "confidence"]
     }))
     .expect("submit_handoff schema is static and strict")
 }
@@ -918,12 +921,26 @@ fn validate_tool_call_shape(
             "provider emitted non-object arguments for tool {name:?}"
         )));
     }
+    if name == crate::ai::tools::subagents::CREATE_HANDOFF_ATTACHMENT_TOOL {
+        if let Some(content) = arguments.get("content").and_then(Value::as_str) {
+            if content.len() > MAX_HANDOFF_ATTACHMENT_BYTES {
+                return Err(AgentProviderError::new(format!(
+                    "provider attachment content exceeded {MAX_HANDOFF_ATTACHMENT_BYTES} raw UTF-8 bytes"
+                )));
+            }
+        }
+    }
     let bytes = serde_json::to_vec(arguments)
         .map_err(|error| AgentProviderError::new(error.to_string()))?
         .len();
-    if bytes > MAX_TOOL_ARGUMENT_BYTES {
+    let maximum = if name == crate::ai::tools::subagents::CREATE_HANDOFF_ATTACHMENT_TOOL {
+        MAX_ATTACHMENT_TOOL_ARGUMENT_BYTES
+    } else {
+        MAX_TOOL_ARGUMENT_BYTES
+    };
+    if bytes > maximum {
         return Err(AgentProviderError::new(format!(
-            "provider arguments for tool {name:?} exceeded {MAX_TOOL_ARGUMENT_BYTES} bytes"
+            "provider arguments for tool {name:?} exceeded {maximum} bytes"
         )));
     }
     Ok(())
@@ -1160,6 +1177,7 @@ mod tests {
             "verification": [],
             "blockers": [],
             "followups": [],
+            "attachments": [],
             "confidence": "high"
         })
     }
@@ -1234,6 +1252,74 @@ mod tests {
         assert!(repair_prompt.contains("Repair only the result envelope"));
         assert!(repair_prompt.contains("completed handoff cannot contain blockers"));
         assert!(repair_prompt.contains("verification unavailable"));
+        assert!(repair_prompt.contains("create_handoff_attachment"));
+    }
+
+    #[tokio::test]
+    async fn oversized_handoff_reaches_runner_for_durable_repair() {
+        let mut oversized = completed_handoff();
+        oversized["summary"] = json!("x".repeat(4097));
+        let transport = Arc::new(ScriptedTransport::new([RoundScript {
+            chunks: vec![
+                ScriptChunk::Tool {
+                    id: "oversized",
+                    name: SUBMIT_HANDOFF_TOOL,
+                    arguments: oversized.clone(),
+                },
+                ScriptChunk::Done,
+            ],
+            error: None,
+        }]));
+        let adapter = provider(AiProviderKind::OpenAi, transport);
+        let mut session = adapter
+            .start(start_request(
+                AiProviderKind::OpenAi,
+                vec![scoped_read_tool()],
+            ))
+            .await
+            .unwrap();
+        let payload = next_handoff(&mut session).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&payload).unwrap(),
+            oversized
+        );
+    }
+
+    #[test]
+    fn attachment_transport_limit_measures_raw_utf8_content() {
+        for content in [
+            "x".repeat(MAX_HANDOFF_ATTACHMENT_BYTES),
+            "\0".repeat(MAX_HANDOFF_ATTACHMENT_BYTES),
+            "\\\"".repeat(MAX_HANDOFF_ATTACHMENT_BYTES / 2),
+            "å".repeat(MAX_HANDOFF_ATTACHMENT_BYTES / 2),
+        ] {
+            let at_limit = json!({
+                "name": "report.md",
+                "media_type": "text/markdown",
+                "content": content,
+            });
+            assert!(validate_tool_call_shape(
+                "attachment",
+                crate::ai::tools::subagents::CREATE_HANDOFF_ATTACHMENT_TOOL,
+                &at_limit,
+            )
+            .is_ok());
+        }
+
+        let ordinary = json!({ "content": "x".repeat(MAX_TOOL_ARGUMENT_BYTES) });
+        assert!(validate_tool_call_shape("ordinary", "read_snapshot", &ordinary).is_err());
+
+        let too_large = json!({
+            "name": "report.md",
+            "media_type": "text/markdown",
+            "content": "å".repeat(MAX_HANDOFF_ATTACHMENT_BYTES / 2 + 1),
+        });
+        assert!(validate_tool_call_shape(
+            "attachment",
+            crate::ai::tools::subagents::CREATE_HANDOFF_ATTACHMENT_TOOL,
+            &too_large,
+        )
+        .is_err());
     }
 
     #[tokio::test]

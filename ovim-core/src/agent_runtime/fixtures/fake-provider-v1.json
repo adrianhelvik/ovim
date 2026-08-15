@@ -128,6 +128,34 @@
       ]
     },
     {
+      "name": "invalid_attachment_handoff",
+      "description": "The provider references an attachment that was never durably created.",
+      "calls": [
+        {
+          "call_id": "invalid-attachment-handoff",
+          "events": [
+            { "at_tick": 0, "type": "started" },
+            {
+              "at_tick": 1,
+              "type": "handoff",
+              "payload": {
+                "version": 1,
+                "status": "completed",
+                "summary": "Completed with an invented attachment.",
+                "evidence": [{"path":"src/lib.rs","line":1,"claim":"Inspected the source."}],
+                "changed_files": [],
+                "verification": [],
+                "blockers": [],
+                "followups": [],
+                "attachments": ["art_invented"],
+                "confidence": "high"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "cancellation",
       "description": "Cancellation lands while a tool is in flight.",
       "calls": [

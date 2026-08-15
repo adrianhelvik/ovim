@@ -4,12 +4,15 @@
 //! recording a handoff or treating an agent as complete.
 
 use super::AgentWorkspaceWarning;
-use crate::run_log::RepoPath;
+use crate::run_log::{ArtifactId, RepoPath};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
 
 pub const STRUCTURED_HANDOFF_VERSION: u32 = 1;
+pub const MAX_HANDOFF_ATTACHMENT_BYTES: usize = 1024 * 1024;
+pub const MAX_HANDOFF_ATTACHMENTS: usize = 16;
+pub const MAX_HANDOFF_ATTACHMENT_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,6 +83,8 @@ pub struct StructuredHandoffV1 {
     pub blockers: Vec<String>,
     #[serde(default)]
     pub followups: Vec<String>,
+    #[serde(default)]
+    pub attachments: Vec<ArtifactId>,
     pub confidence: HandoffConfidence,
 }
 
@@ -95,6 +100,7 @@ pub struct HandoffLimits {
     pub max_verification: usize,
     pub max_blockers: usize,
     pub max_followups: usize,
+    pub max_attachments: usize,
 }
 
 impl Default for HandoffLimits {
@@ -110,6 +116,7 @@ impl Default for HandoffLimits {
             max_verification: 64,
             max_blockers: 32,
             max_followups: 32,
+            max_attachments: MAX_HANDOFF_ATTACHMENTS,
         }
     }
 }
@@ -181,6 +188,19 @@ impl HandoffValidator {
             handoff.followups.len(),
             self.limits.max_followups,
         )?;
+        validate_count(
+            "attachments",
+            handoff.attachments.len(),
+            self.limits.max_attachments,
+        )?;
+        let mut attachments = BTreeSet::new();
+        for artifact_id in &handoff.attachments {
+            if !attachments.insert(artifact_id) {
+                return Err(HandoffValidationError::DuplicateAttachment(
+                    artifact_id.clone(),
+                ));
+            }
+        }
 
         for (index, evidence) in handoff.evidence.iter().enumerate() {
             validate_path(
@@ -416,6 +436,7 @@ impl ValidatedHandoff {
                 .collect(),
             blockers: project_text(&self.handoff.blockers, BLOCKERS, TEXT_BYTES),
             followups: project_text(&self.handoff.followups, FOLLOWUPS, TEXT_BYTES),
+            attachments: self.handoff.attachments.clone(),
             omitted_evidence: self.handoff.evidence.len().saturating_sub(EVIDENCE),
             omitted_changed_files: self
                 .handoff
@@ -478,6 +499,8 @@ pub struct ParentHandoffProjection {
     pub verification: Vec<ParentVerificationProjection>,
     pub blockers: Vec<String>,
     pub followups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ArtifactId>,
     pub omitted_evidence: usize,
     pub omitted_changed_files: usize,
     pub omitted_verification: usize,
@@ -538,6 +561,8 @@ pub enum HandoffValidationError {
         path: String,
     },
     DuplicatePath(String),
+    DuplicateAttachment(ArtifactId),
+    InvalidAttachmentReference(String),
     InvalidEvidenceLine {
         index: usize,
     },
@@ -589,6 +614,12 @@ impl fmt::Display for HandoffValidationError {
             ),
             Self::DuplicatePath(path) => {
                 write!(formatter, "handoff changed_files repeats path {path:?}")
+            }
+            Self::DuplicateAttachment(id) => {
+                write!(formatter, "handoff attachments repeats artifact {id}")
+            }
+            Self::InvalidAttachmentReference(detail) => {
+                write!(formatter, "invalid handoff attachment reference: {detail}")
             }
             Self::InvalidEvidenceLine { index } => {
                 write!(
@@ -644,6 +675,7 @@ mod tests {
             }],
             blockers: vec![],
             followups: vec!["Wire the supervisor in the next slice.".into()],
+            attachments: vec![],
             confidence: HandoffConfidence::High,
         }
     }
@@ -711,6 +743,23 @@ mod tests {
     }
 
     #[test]
+    fn validates_unique_attachment_handles() {
+        let mut handoff = completed();
+        let attachment = ArtifactId::parse("art_durable_report").unwrap();
+        handoff.attachments.push(attachment.clone());
+        assert!(HandoffValidator::default()
+            .validate(handoff.clone(), None)
+            .is_ok());
+        handoff.attachments.push(attachment.clone());
+        assert_eq!(
+            HandoffValidator::default()
+                .validate(handoff, None)
+                .unwrap_err(),
+            HandoffValidationError::DuplicateAttachment(attachment)
+        );
+    }
+
+    #[test]
     fn accepts_partial_non_completion_but_requires_explicit_blocker() {
         let partial = StructuredHandoffV1 {
             version: 1,
@@ -721,6 +770,7 @@ mod tests {
             verification: vec![],
             blockers: vec!["Child elapsed-time budget was exhausted.".into()],
             followups: vec![],
+            attachments: vec![],
             confidence: HandoffConfidence::Medium,
         };
         assert!(HandoffValidator::default()

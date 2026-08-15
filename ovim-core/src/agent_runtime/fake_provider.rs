@@ -581,6 +581,7 @@ mod tests {
             BTreeSet::from([
                 "cancellation",
                 "delayed_completion",
+                "invalid_attachment_handoff",
                 "malformed_handoff",
                 "out_of_order_completion",
                 "restart",

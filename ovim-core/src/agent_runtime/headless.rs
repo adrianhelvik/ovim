@@ -491,6 +491,8 @@ pub struct AgentHandoffSnapshot {
     pub changed_files: Vec<String>,
     pub blockers: Vec<String>,
     pub followups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ArtifactId>,
     pub confidence: String,
 }
 
@@ -864,6 +866,7 @@ fn latest_handoffs(events: &[EventEnvelope]) -> BTreeMap<AgentId, AgentHandoffSn
                     changed_files: handoff.changed_files.clone(),
                     blockers: handoff.blockers.clone(),
                     followups: handoff.followups.clone(),
+                    attachments: handoff.attachments.clone(),
                     confidence: format!("{:?}", handoff.confidence).to_lowercase(),
                 },
             ))
@@ -879,10 +882,12 @@ fn artifact_handles_by_agent(
         let Some(agent_id) = &event.agent_id else {
             continue;
         };
-        let EventKind::FileMutation(mutation) = &event.kind else {
-            continue;
+        let artifacts: &[ArtifactRecord] = match &event.kind {
+            EventKind::FileMutation(mutation) => &mutation.artifacts,
+            EventKind::AgentAttachment(attachment) => std::slice::from_ref(&attachment.artifact),
+            _ => continue,
         };
-        for artifact in &mutation.artifacts {
+        for artifact in artifacts {
             result
                 .entry(agent_id.clone())
                 .or_default()
@@ -1131,6 +1136,7 @@ mod tests {
             changed_files: Vec::new(),
             blockers: vec![format!("raw result preserved in event {raw_event_id}")],
             followups: Vec::new(),
+            attachments: Vec::new(),
             confidence: "low".into(),
         };
         let invalid = InvalidHandoffSnapshot {

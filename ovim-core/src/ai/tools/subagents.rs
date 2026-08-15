@@ -3,6 +3,7 @@
 use super::{SideEffect, StrictJsonSchema, ToolDefinition, ToolSchemaError};
 use crate::agent_runtime::{
     AgentCapability, DelegatedAgentPolicy, ScopedTool, SubagentModelCatalog,
+    MAX_HANDOFF_ATTACHMENT_BYTES,
 };
 use crate::ai::{FileScope, RequiredScope};
 use crate::run_log::ToolSideEffect;
@@ -15,6 +16,8 @@ pub const WAIT_AGENT_TOOL: &str = "wait_agent";
 pub const INTERRUPT_AGENT_TOOL: &str = "interrupt_agent";
 pub const SEND_MESSAGE_TOOL: &str = "send_message";
 pub const FOLLOWUP_AGENT_TOOL: &str = "followup_agent";
+pub const CREATE_HANDOFF_ATTACHMENT_TOOL: &str = "create_handoff_attachment";
+pub const READ_HANDOFF_ATTACHMENT_TOOL: &str = "read_handoff_attachment";
 
 pub fn is_parent_control_tool(name: &str) -> bool {
     matches!(
@@ -25,7 +28,53 @@ pub fn is_parent_control_tool(name: &str) -> bool {
             | INTERRUPT_AGENT_TOOL
             | SEND_MESSAGE_TOOL
             | FOLLOWUP_AGENT_TOOL
+            | READ_HANDOFF_ATTACHMENT_TOOL
     )
+}
+
+pub fn attachment_tools() -> Result<Vec<ToolDefinition>, ToolSchemaError> {
+    Ok(vec![
+        definition(
+            CREATE_HANDOFF_ATTACHMENT_TOOL,
+            "Persist substantial handoff content as a durable run artifact before submit_handoff. Return the artifact_id in submit_handoff.attachments; keep the handoff summary concise.".into(),
+            strict(json!({
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                    "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+                    "media_type": { "type": "string", "minLength": 3, "maxLength": 127, "pattern": "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$" },
+                    "content": { "type": "string", "minLength": 1, "maxLength": MAX_HANDOFF_ATTACHMENT_BYTES }
+                },
+                "required": ["name", "media_type", "content"]
+            }))?,
+        ),
+        definition(
+            READ_HANDOFF_ATTACHMENT_TOOL,
+            "Read one durable attachment created by this agent or one of its descendants.".into(),
+            strict(json!({
+                "type": "object", "additionalProperties": false,
+                "properties": { "artifact_id": { "type": "string", "pattern": "^art_.+" } },
+                "required": ["artifact_id"]
+            }))?,
+        ),
+    ])
+}
+
+pub fn delegated_attachment_tools() -> Result<Vec<ScopedTool>, ToolSchemaError> {
+    attachment_tools()?
+        .into_iter()
+        .map(|definition| {
+            Ok(ScopedTool {
+                name: definition.name,
+                description: definition.description,
+                input_schema: definition
+                    .custom_input_schema
+                    .expect("attachment schema is strict"),
+                side_effect: ToolSideEffect::Read,
+                required_capability: AgentCapability::Read,
+                requires_approval: false,
+            })
+        })
+        .collect()
 }
 
 pub fn parent_control_tools(

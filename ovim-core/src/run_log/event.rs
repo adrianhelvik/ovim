@@ -23,6 +23,15 @@ pub enum EventActor {
 }
 
 pub const AGENT_HANDOFF_VALIDATION_FAILED_EVENT_VERSION: u32 = 1;
+pub const AGENT_ATTACHMENT_EVENT_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentAttachmentEvent {
+    pub version: u32,
+    pub name: String,
+    pub artifact: super::ArtifactRecord,
+}
 
 /// A provider completed its investigation but returned a result envelope that
 /// failed validation. The bounded original payload is retained so validation
@@ -141,6 +150,7 @@ pub enum EventKind {
     AgentProgress(AgentProgressEvent),
     AgentHandoff(AgentHandoffEvent),
     AgentHandoffValidationFailed(AgentHandoffValidationFailedEvent),
+    AgentAttachment(AgentAttachmentEvent),
     AgentFollowup(AgentFollowupEvent),
     AgentApprovalRequested(AgentApprovalRequestedEvent),
     AgentApprovalResolved(AgentApprovalResolvedEvent),
@@ -188,6 +198,7 @@ impl Serialize for EventKind {
                 "agent_handoff_validation_failed",
                 serde_json::to_value(value),
             ),
+            Self::AgentAttachment(value) => ("agent_attachment", serde_json::to_value(value)),
             Self::AgentFollowup(value) => ("agent_followup", serde_json::to_value(value)),
             Self::AgentApprovalRequested(value) => {
                 ("agent_approval_requested", serde_json::to_value(value))
@@ -248,6 +259,7 @@ impl<'de> Deserialize<'de> for EventKind {
             "agent_handoff_validation_failed" => {
                 decode(raw.data).map(Self::AgentHandoffValidationFailed)
             }
+            "agent_attachment" => decode(raw.data).map(Self::AgentAttachment),
             "agent_followup" => decode(raw.data).map(Self::AgentFollowup),
             "agent_approval_requested" => decode(raw.data).map(Self::AgentApprovalRequested),
             "agent_approval_resolved" => decode(raw.data).map(Self::AgentApprovalResolved),
@@ -1019,6 +1031,7 @@ mod tests {
                     verification: vec![],
                     blockers: vec![],
                     followups: vec![],
+                    attachments: vec![],
                     confidence: HandoffConfidence::High,
                 },
                 Some(HandoffStatus::Completed),

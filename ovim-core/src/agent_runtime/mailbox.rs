@@ -1492,6 +1492,7 @@ mod tests {
                     verification: vec![],
                     blockers: vec![],
                     followups: vec![],
+                    attachments: vec![],
                     confidence: HandoffConfidence::High,
                 },
                 Some(HandoffStatus::Completed),

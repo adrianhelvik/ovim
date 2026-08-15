@@ -585,6 +585,7 @@ fn event_kind_name(kind: &super::EventKind) -> &str {
         super::EventKind::AgentProgress(_) => "agent_progress",
         super::EventKind::AgentHandoff(_) => "agent_handoff",
         super::EventKind::AgentHandoffValidationFailed(_) => "agent_handoff_validation_failed",
+        super::EventKind::AgentAttachment(_) => "agent_attachment",
         super::EventKind::AgentFollowup(_) => "agent_followup",
         super::EventKind::AgentApprovalRequested(_) => "agent_approval_requested",
         super::EventKind::AgentApprovalResolved(_) => "agent_approval_resolved",

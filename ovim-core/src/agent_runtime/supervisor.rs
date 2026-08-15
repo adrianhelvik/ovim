@@ -1065,6 +1065,20 @@ impl AgentLoopEventSink for SchedulerLoopBridge {
                 .map_err(|error| AgentLoopError::EventSink(error.to_string()))
         })
     }
+
+    fn validate_handoff_attachments(
+        &self,
+        handle: &DispatchHandle,
+        attachments: &[crate::run_log::ArtifactId],
+    ) -> super::AgentFuture<'_, Result<(), super::HandoffValidationError>> {
+        let result = self
+            .scheduler
+            .lock()
+            .map_err(|_| "scheduler lock poisoned".to_string())
+            .and_then(|scheduler| scheduler.validate_handoff_attachments(handle, attachments))
+            .map_err(super::HandoffValidationError::InvalidAttachmentReference);
+        Box::pin(async move { result })
+    }
 }
 
 impl AgentLoopRuntimeHooks for SchedulerLoopBridge {
