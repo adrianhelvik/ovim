@@ -333,6 +333,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 quit_after: true,
             },
         ),
+        "format" | "Format" => {
+            editor.request_format_document();
+            ok("Formatting document...")
+        }
         "LspInfo" => {
             // Show LSP status information in a scratch buffer
             let mut info = String::new();
@@ -2123,6 +2127,16 @@ mod tests {
         let result = execute_command(&mut editor, "w!");
         assert!(matches!(result, CommandResult::Success(_)));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "local original\n");
+    }
+
+    #[test]
+    fn format_command_requests_lsp_document_formatting() {
+        let mut editor = Editor::new();
+
+        let result = execute_command(&mut editor, "format");
+
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(editor.pending_intents().format_document);
     }
 
     /// OV-00331: `:qa` used to check only the CURRENT buffer, silently
