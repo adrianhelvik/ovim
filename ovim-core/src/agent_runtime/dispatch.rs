@@ -1658,6 +1658,7 @@ fn is_runtime_trace_event(kind: &EventKind) -> bool {
         EventKind::AgentProvider(_)
             | EventKind::AgentUsage(_)
             | EventKind::AgentProgress(_)
+            | EventKind::AgentHandoffValidationFailed(_)
             | EventKind::ToolIntent(_)
             | EventKind::ToolStarted(_)
             | EventKind::ToolResult(_)
@@ -1670,7 +1671,10 @@ fn validate_runtime_operation(
     operation_id: Option<&OperationId>,
 ) -> Result<(), DispatchError> {
     match kind {
-        EventKind::AgentProvider(_) | EventKind::AgentUsage(_) | EventKind::AgentProgress(_)
+        EventKind::AgentProvider(_)
+        | EventKind::AgentUsage(_)
+        | EventKind::AgentProgress(_)
+        | EventKind::AgentHandoffValidationFailed(_)
             if operation_id.is_none() =>
         {
             Ok(())
@@ -1721,7 +1725,10 @@ fn apply_runtime_operation(
     operation_id: Option<&OperationId>,
 ) -> Result<(), DispatchError> {
     match kind {
-        EventKind::AgentProvider(_) | EventKind::AgentUsage(_) | EventKind::AgentProgress(_) => {}
+        EventKind::AgentProvider(_)
+        | EventKind::AgentUsage(_)
+        | EventKind::AgentProgress(_)
+        | EventKind::AgentHandoffValidationFailed(_) => {}
         EventKind::ToolIntent(_) => {
             agent.runtime_operations.insert(
                 operation_id.expect("validated operation ID").clone(),
@@ -2659,9 +2666,10 @@ mod tests {
     };
     use crate::ai::AiConfig;
     use crate::run_log::{
-        AgentAttachmentEvent, AgentModelProfileSnapshot, ArtifactExportPolicy, ArtifactRecord,
-        ArtifactRetention, ArtifactSource, ArtifactState, BlobId, ContentRepresentation,
-        InMemoryRunEventSink, MessageEvent, MessageRole, AGENT_ATTACHMENT_EVENT_VERSION,
+        AgentAttachmentEvent, AgentHandoffValidationFailedEvent, AgentModelProfileSnapshot,
+        ArtifactExportPolicy, ArtifactRecord, ArtifactRetention, ArtifactSource, ArtifactState,
+        BlobId, ContentRepresentation, InMemoryRunEventSink, MessageEvent, MessageRole,
+        AGENT_ATTACHMENT_EVENT_VERSION, AGENT_HANDOFF_VALIDATION_FAILED_EVENT_VERSION,
     };
 
     fn catalog() -> Arc<SubagentModelCatalog> {
@@ -3269,6 +3277,43 @@ mod tests {
             scheduler.state(&handle.agent_id),
             Some(&DispatchState::Queued)
         );
+    }
+
+    #[test]
+    fn invalid_handoff_payload_is_a_valid_runtime_trace_event() {
+        let (mut scheduler, sink) = scheduler();
+        let handle = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Explorer),
+                WorkspaceId::parse("wsp_invalid_handoff_trace").unwrap(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        start_running(&mut scheduler, &handle);
+
+        let event = scheduler
+            .record_runtime_event(
+                &handle,
+                EventKind::AgentHandoffValidationFailed(AgentHandoffValidationFailedEvent {
+                    version: AGENT_HANDOFF_VALIDATION_FAILED_EVENT_VERSION,
+                    error: "attachment reference was not durable".into(),
+                    raw_payload: br#"{"version":1}"#.to_vec(),
+                    repair_attempted: true,
+                }),
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            event.kind,
+            EventKind::AgentHandoffValidationFailed(_)
+        ));
+        assert!(sink
+            .events(&handle.run_id)
+            .unwrap()
+            .iter()
+            .any(|stored| stored.event_id == event.event_id));
     }
 
     #[test]
