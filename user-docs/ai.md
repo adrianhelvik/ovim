@@ -222,6 +222,16 @@ interrupts the named child hierarchy while preserving partial run history.
 While a delegated parent waits, it yields its provider-concurrency slot so a
 queued descendant can run; the parent reacquires capacity before resuming.
 
+Substantial child results belong in durable handoff attachments rather than an
+oversized terminal summary. A child calls `create_handoff_attachment` with a
+name, media type, and UTF-8 content, then includes the returned artifact ID in
+`submit_handoff.attachments`. The concise handoff reaches the parent normally;
+the parent reads selected content with `read_handoff_attachment`. Attachment
+blobs are content-addressed, retained with the run, and survive restart. An
+invalid or oversized handoff is preserved and returned to the retained child
+session for one repair attempt instead of being discarded at the provider
+boundary.
+
 `send_message` queues a bounded parent-authored steer only to a live child.
 It does not start a new turn. Ovim records the message before notifying the
 child, claims delivery by durable event ID, and presents it to the provider

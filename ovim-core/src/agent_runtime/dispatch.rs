@@ -1765,6 +1765,7 @@ pub(crate) fn validated_terminal_handoff(
                 verification: Vec::new(),
                 blockers: vec![detail],
                 followups: Vec::new(),
+                attachments: Vec::new(),
                 confidence: HandoffConfidence::Low,
             },
             Some(status),
@@ -2699,6 +2700,7 @@ mod tests {
                         .into_iter()
                         .collect(),
                     followups: vec![],
+                    attachments: vec![],
                     confidence: HandoffConfidence::High,
                 },
                 Some(status),

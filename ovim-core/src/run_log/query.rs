@@ -308,6 +308,7 @@ fn event_kind_label(kind: &EventKind) -> String {
         EventKind::AgentProgress(_) => "agent.progress".into(),
         EventKind::AgentHandoff(_) => "agent.handoff".into(),
         EventKind::AgentHandoffValidationFailed(_) => "agent.handoff_validation_failed".into(),
+        EventKind::AgentAttachment(_) => "agent.attachment".into(),
         EventKind::AgentFollowup(_) => "agent.followup".into(),
         EventKind::AgentApprovalRequested(_) => "agent.approval.requested".into(),
         EventKind::AgentApprovalResolved(_) => "agent.approval.resolved".into(),

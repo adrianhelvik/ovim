@@ -1417,6 +1417,7 @@ fn synthetic_handoff(
                 verification: Vec::new(),
                 blockers: vec![detail],
                 followups: Vec::new(),
+                attachments: Vec::new(),
                 confidence: HandoffConfidence::Low,
             },
             Some(status),

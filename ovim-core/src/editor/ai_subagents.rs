@@ -19,16 +19,20 @@ use crate::agent_runtime::{
 };
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::subagents::{
-    delegated_parent_control_tools, is_parent_control_tool, FOLLOWUP_AGENT_TOOL,
-    INTERRUPT_AGENT_TOOL, LIST_AGENTS_TOOL, SEND_MESSAGE_TOOL, SPAWN_AGENT_TOOL, WAIT_AGENT_TOOL,
+    attachment_tools, delegated_attachment_tools, delegated_parent_control_tools,
+    is_parent_control_tool, CREATE_HANDOFF_ATTACHMENT_TOOL, FOLLOWUP_AGENT_TOOL,
+    INTERRUPT_AGENT_TOOL, LIST_AGENTS_TOOL, READ_HANDOFF_ATTACHMENT_TOOL, SEND_MESSAGE_TOOL,
+    SPAWN_AGENT_TOOL, WAIT_AGENT_TOOL,
 };
 use crate::ai::tools::ToolDefinition;
 use crate::ai::tools::ToolResult;
 use crate::ai::AiConfig;
 use crate::run_log::{
-    AgentId, ArtifactStore, BaseManifest, BaseManifestId, EventActor, EventId, EventKind,
-    LocalRunStore, ManifestId, NewRunEvent, OperationId, RepoPath, RepositoryId, RunEventSink,
-    RunId, TurnId, WorkspaceId,
+    AgentAttachmentEvent, AgentId, ArtifactExportPolicy, ArtifactId, ArtifactRecord,
+    ArtifactRetention, ArtifactSource, ArtifactState, ArtifactStore, BaseManifest, BaseManifestId,
+    ContentRepresentation, EventActor, EventId, EventKind, LocalRunStore, ManifestId, NewRunEvent,
+    OperationId, RepoPath, RepositoryId, RunEventSink, RunId, TurnId, WorkspaceId,
+    AGENT_ATTACHMENT_EVENT_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -314,11 +318,18 @@ impl AiSubagentService {
     }
 
     pub fn parent_tools(&self) -> Result<Vec<ToolDefinition>, String> {
-        crate::ai::tools::subagents::parent_control_tools(
+        let mut tools = crate::ai::tools::subagents::parent_control_tools(
             self.catalog()?.as_ref(),
             &self.startup_policy,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        tools.extend(
+            attachment_tools()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter(|tool| tool.name == READ_HANDOFF_ATTACHMENT_TOOL),
+        );
+        Ok(tools)
     }
 
     pub fn parent_capabilities(&self) -> BTreeSet<AgentCapability> {
@@ -654,15 +665,19 @@ impl AiSubagentRun {
 
 impl AgentToolExtension for EditorAgentToolExtension {
     fn scoped_tools(&self, dispatch: &AgentDispatchRecord) -> Result<Vec<ScopedTool>, String> {
+        let mut tools = delegated_attachment_tools().map_err(|error| error.to_string())?;
         if !dispatch
             .role
             .capabilities
             .contains(&AgentCapability::DispatchAgents)
         {
-            return Ok(Vec::new());
+            return Ok(tools);
         }
-        delegated_parent_control_tools(self.catalog.as_ref(), &self.policy)
-            .map_err(|error| error.to_string())
+        tools.extend(
+            delegated_parent_control_tools(self.catalog.as_ref(), &self.policy)
+                .map_err(|error| error.to_string())?,
+        );
+        Ok(tools)
     }
 
     fn execute(
@@ -678,6 +693,10 @@ impl AgentToolExtension for EditorAgentToolExtension {
                 SEND_MESSAGE_TOOL => run.send_nested_agent_message(&call),
                 FOLLOWUP_AGENT_TOOL => run.followup_nested_agent(&call, &self.policy).await,
                 INTERRUPT_AGENT_TOOL => run.interrupt_nested_agent(&call).await,
+                CREATE_HANDOFF_ATTACHMENT_TOOL => run.create_handoff_attachment(&call),
+                READ_HANDOFF_ATTACHMENT_TOOL => {
+                    run.read_handoff_attachment(&call.handle.agent_id, &call.arguments)
+                }
                 _ => Err(format!(
                     "{} is not a delegated coordination tool",
                     call.tool_name
@@ -690,6 +709,126 @@ impl AgentToolExtension for EditorAgentToolExtension {
 }
 
 impl AiSubagentRun {
+    fn create_handoff_attachment(&self, call: &AgentToolCall) -> Result<serde_json::Value, String> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Arguments {
+            name: String,
+            media_type: String,
+            content: String,
+        }
+        const MAX_ATTACHMENT_BYTES: usize = 1024 * 1024;
+        let args: Arguments =
+            serde_json::from_value(call.arguments.clone()).map_err(|error| error.to_string())?;
+        if args.name.trim().is_empty() || args.name.contains('/') || args.name.contains('\\') {
+            return Err("attachment name must be a non-empty file name".into());
+        }
+        if args.content.len() > MAX_ATTACHMENT_BYTES {
+            return Err(format!(
+                "attachment is {} bytes, maximum is {MAX_ATTACHMENT_BYTES}",
+                args.content.len()
+            ));
+        }
+        let stored = self
+            .artifact_store
+            .put_bytes(args.content.as_bytes())
+            .map_err(|error| error.to_string())?;
+        let artifact = ArtifactRecord {
+            artifact_id: ArtifactId::new(),
+            state: ArtifactState::Available {
+                blob_id: stored.blob_id,
+                byte_len: stored.byte_len,
+            },
+            source: ArtifactSource::Imported {
+                label: Some(args.name.clone()),
+            },
+            representation: ContentRepresentation::EditorText {
+                encoding: Some("utf-8".into()),
+                line_endings: None,
+            },
+            media_type: Some(args.media_type.clone()),
+            retention: ArtifactRetention::Run,
+            export_policy: ArtifactExportPolicy::Include,
+        };
+        self.store
+            .append(NewRunEvent {
+                run_id: self.run_id.clone(),
+                caused_by: Some(call.caused_by_event.clone()),
+                operation_id: None,
+                provider_call_id: None,
+                actor: EventActor::Agent(call.handle.agent_id.clone()),
+                agent_id: Some(call.handle.agent_id.clone()),
+                turn_id: call.causing_turn_id.clone(),
+                workspace_id: Some(call.handle.workspace.workspace_id.clone()),
+                branch_id: None,
+                kind: EventKind::AgentAttachment(AgentAttachmentEvent {
+                    version: AGENT_ATTACHMENT_EVENT_VERSION,
+                    name: args.name.clone(),
+                    artifact: artifact.clone(),
+                }),
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(
+            json!({ "artifact_id": artifact.artifact_id, "name": args.name,
+            "media_type": args.media_type, "byte_len": stored.byte_len }),
+        )
+    }
+
+    fn read_handoff_attachment(
+        &self,
+        reader: &AgentId,
+        arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Arguments {
+            artifact_id: ArtifactId,
+        }
+        let args: Arguments =
+            serde_json::from_value(arguments.clone()).map_err(|error| error.to_string())?;
+        let events = self
+            .store
+            .events(&self.run_id)
+            .map_err(|error| error.to_string())?;
+        let (owner, attachment) = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::AgentAttachment(value)
+                    if value.artifact.artifact_id == args.artifact_id =>
+                {
+                    event.agent_id.as_ref().map(|owner| (owner, value))
+                }
+                _ => None,
+            })
+            .ok_or_else(|| format!("unknown handoff attachment {}", args.artifact_id))?;
+        let records = self
+            .supervisor
+            .dispatches()
+            .map_err(|error| error.to_string())?;
+        let authorized = reader == &self.root_agent_id
+            || reader == owner
+            || records
+                .iter()
+                .find(|record| &record.handle.agent_id == owner)
+                .is_some_and(|record| record.parent_agent_id.as_ref() == Some(reader));
+        if !authorized {
+            return Err("attachment is not owned by this agent or a direct child".into());
+        }
+        let ArtifactState::Available { blob_id, .. } = attachment.artifact.state else {
+            return Err("attachment content is unavailable".into());
+        };
+        let bytes = self
+            .artifact_store
+            .read(blob_id)
+            .map_err(|error| error.to_string())?;
+        let content =
+            String::from_utf8(bytes).map_err(|_| "attachment is not UTF-8 text".to_string())?;
+        Ok(
+            json!({ "artifact_id": args.artifact_id, "name": attachment.name,
+            "media_type": attachment.artifact.media_type, "content": content }),
+        )
+    }
+
     fn spawn_nested_agent(
         &self,
         call: &AgentToolCall,
@@ -1773,6 +1912,7 @@ impl Editor {
         let result = match call.name.as_str() {
             SPAWN_AGENT_TOOL => self.spawn_ai_subagent(&call.arguments),
             LIST_AGENTS_TOOL => self.list_ai_subagents(),
+            READ_HANDOFF_ATTACHMENT_TOOL => self.read_ai_handoff_attachment(&call.arguments),
             SEND_MESSAGE_TOOL => self.send_ai_subagent_message(&call.arguments),
             FOLLOWUP_AGENT_TOOL => Err(
                 "followup_agent is asynchronous and must be dispatched through the editor turn loop"
@@ -2604,6 +2744,21 @@ impl Editor {
         }))
     }
 
+    fn read_ai_handoff_attachment(
+        &self,
+        arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let root = self.active_subagent_root()?;
+        let run = self.ai_state.subagents.run(
+            root.store,
+            root.run_id,
+            root.root_agent_id.clone(),
+            root.repository_id,
+            root.repository_root,
+        )?;
+        run.read_handoff_attachment(&root.root_agent_id, arguments)
+    }
+
     fn capture_snapshot_symbols(&self, repository_root: &Path) -> Vec<SnapshotSymbol> {
         let Some(path) = self.buffer().file_path().map(Path::new) else {
             return Vec::new();
@@ -3280,6 +3435,7 @@ mod tests {
                 INTERRUPT_AGENT_TOOL.into(),
                 SEND_MESSAGE_TOOL.into(),
                 FOLLOWUP_AGENT_TOOL.into(),
+                READ_HANDOFF_ATTACHMENT_TOOL.into(),
             ])
         );
     }
@@ -3377,6 +3533,8 @@ mod tests {
         for required in [
             crate::agent_runtime::SNAPSHOT_SEARCH_SYMBOLS_TOOL,
             crate::agent_runtime::SNAPSHOT_READ_DIAGNOSTICS_TOOL,
+            CREATE_HANDOFF_ATTACHMENT_TOOL,
+            READ_HANDOFF_ATTACHMENT_TOOL,
         ] {
             assert!(child_tools.iter().any(|name| name == required));
         }
@@ -3438,6 +3596,55 @@ mod tests {
             )
             .is_err());
         editor.consume_ai_subagent_updates(&payload).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn child_attachment_is_durable_and_readable_by_root() {
+        let (_repository, _storage, mut editor) = enabled_editor();
+        attach_root_turn(&mut editor);
+        let ToolResult::Success(_) =
+            editor.execute_ai_subagent_control_tool(&spawn_call("attach_report"))
+        else {
+            panic!("spawn should succeed")
+        };
+        let run = editor
+            .ai_state
+            .subagents
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let dispatch = run.supervisor.dispatches().unwrap().remove(0);
+        let cause = run
+            .store
+            .events(&run.run_id)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|event| event.agent_id.as_ref() == Some(&dispatch.handle.agent_id))
+            .unwrap();
+        let input = run.input_factory.build(&dispatch).unwrap();
+        let result = input.tool_executor.execute(AgentToolCall {
+            handle: dispatch.handle.clone(), causing_turn_id: dispatch.causing_turn_id.clone(),
+            caused_by_event: cause.event_id, tool_call_id: "attachment-call".into(),
+            tool_name: CREATE_HANDOFF_ATTACHMENT_TOOL.into(),
+            arguments: json!({"name":"review.md","media_type":"text/markdown","content":"# Durable review\nDetails"}),
+            workspace: input.workspace,
+        }).await.unwrap();
+        let artifact_id = result.result.unwrap()["artifact_id"].clone();
+        let root_id = run.root_agent_id.clone();
+        let read = run
+            .read_handoff_attachment(&root_id, &json!({"artifact_id": artifact_id}))
+            .unwrap();
+        assert_eq!(read["name"], "review.md");
+        assert_eq!(read["content"], "# Durable review\nDetails");
+        let events = run.store.events(&run.run_id).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::AgentAttachment(_))));
     }
 
     #[tokio::test(flavor = "multi_thread")]

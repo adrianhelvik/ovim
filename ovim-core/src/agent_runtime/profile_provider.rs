@@ -399,13 +399,10 @@ impl ProfileAgentSession {
                     "submit_handoff must be the only tool call in its provider round",
                 ));
             }
-            submit_handoff_schema()
-                .validate_instance(&handoff)
-                .map_err(|error| {
-                    AgentProviderError::new(format!(
-                        "submit_handoff arguments failed schema validation: {error}"
-                    ))
-                })?;
+            // Forward the bounded decoded payload to the runner even when the
+            // provider violates the advertised schema. The runner preserves
+            // invalid handoffs durably and can ask this retained session to
+            // repair them; rejecting here used to discard the result entirely.
             if !self.pending_parent_messages.is_empty() {
                 self.messages.push(ChatMessage {
                     role: ChatRole::Assistant,
@@ -645,7 +642,7 @@ impl AgentProviderSession for ProfileAgentSession {
             self.messages.push(ChatMessage {
                 role: ChatRole::User,
                 content: format!(
-                    "Your previous submit_handoff result failed validation. Repair only the result envelope; do not redo the investigation. Preserve every finding and evidence item, correct the schema contradiction, and call submit_handoff exactly once.\n\nValidation error: {}\n\nRejected payload:\n{}",
+                    "Your previous submit_handoff result failed validation. Repair only the result envelope; do not redo the investigation. Preserve every finding and evidence item. If substantial content does not fit the concise summary, call create_handoff_attachment first and reference its artifact_id in submit_handoff.attachments. Then call submit_handoff exactly once in a separate round.\n\nValidation error: {}\n\nRejected payload:\n{}",
                     redact_high_risk_tokens(validation_error),
                     payload
                 ),
@@ -810,9 +807,10 @@ fn submit_handoff_schema() -> crate::ai::tools::StrictJsonSchema {
             },
             "blockers": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 2048 } },
             "followups": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 2048 } },
+            "attachments": { "type": "array", "maxItems": 16, "items": { "type": "string", "pattern": "^art_.+" } },
             "confidence": { "type": "string", "enum": ["low", "medium", "high"] }
         },
-        "required": ["version", "status", "summary", "evidence", "changed_files", "verification", "blockers", "followups", "confidence"]
+        "required": ["version", "status", "summary", "evidence", "changed_files", "verification", "blockers", "followups", "attachments", "confidence"]
     }))
     .expect("submit_handoff schema is static and strict")
 }
@@ -1160,6 +1158,7 @@ mod tests {
             "verification": [],
             "blockers": [],
             "followups": [],
+            "attachments": [],
             "confidence": "high"
         })
     }
@@ -1234,6 +1233,37 @@ mod tests {
         assert!(repair_prompt.contains("Repair only the result envelope"));
         assert!(repair_prompt.contains("completed handoff cannot contain blockers"));
         assert!(repair_prompt.contains("verification unavailable"));
+        assert!(repair_prompt.contains("create_handoff_attachment"));
+    }
+
+    #[tokio::test]
+    async fn oversized_handoff_reaches_runner_for_durable_repair() {
+        let mut oversized = completed_handoff();
+        oversized["summary"] = json!("x".repeat(4097));
+        let transport = Arc::new(ScriptedTransport::new([RoundScript {
+            chunks: vec![
+                ScriptChunk::Tool {
+                    id: "oversized",
+                    name: SUBMIT_HANDOFF_TOOL,
+                    arguments: oversized.clone(),
+                },
+                ScriptChunk::Done,
+            ],
+            error: None,
+        }]));
+        let adapter = provider(AiProviderKind::OpenAi, transport);
+        let mut session = adapter
+            .start(start_request(
+                AiProviderKind::OpenAi,
+                vec![scoped_read_tool()],
+            ))
+            .await
+            .unwrap();
+        let payload = next_handoff(&mut session).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&payload).unwrap(),
+            oversized
+        );
     }
 
     #[tokio::test]
