@@ -618,6 +618,87 @@ fn test_equal_G_handles_trailing_whitespace_after_opening_delimiter() {
 }
 
 #[test]
+fn test_equal_G_ignores_delimiters_in_strings_and_comments() {
+    let mut test = EditorTest::new(
+        "fn main() {\nlet string = \"{\";\n// } should not close the function\ncall();\n}\n",
+    );
+
+    test.set_file_path("/tmp/indent.rs".to_string()).keys("=G");
+
+    assert_eq!(
+        test.buffer_content(),
+        "fn main() {\n    let string = \"{\";\n    // } should not close the function\n    call();\n}\n"
+    );
+}
+
+#[test]
+fn test_equal_G_handles_rust_lifetimes() {
+    let mut test = EditorTest::new("fn get<'a>() {\nvalue\n}\n");
+
+    test.set_file_path("/tmp/indent.rs".to_string()).keys("=G");
+
+    assert_eq!(test.buffer_content(), "fn get<'a>() {\n    value\n}\n");
+}
+
+#[test]
+fn test_equal_G_uses_language_specific_hash_comments() {
+    let mut test = EditorTest::new("items = [\n# ] is only documentation\nvalue,\n]\n");
+
+    test.set_file_path("/tmp/indent.py".to_string()).keys("=G");
+
+    assert_eq!(
+        test.buffer_content(),
+        "items = [\n    # ] is only documentation\n    value,\n]\n"
+    );
+}
+
+#[test]
+fn test_equal_G_ignores_delimiters_in_multiline_comments() {
+    let mut test = EditorTest::new("fn main() {\n/*\n{ not a block\n*/\ncall();\n}\n");
+
+    test.set_file_path("/tmp/indent.rs".to_string()).keys("=G");
+
+    assert_eq!(
+        test.buffer_content(),
+        "fn main() {\n    /*\n    { not a block\n    */\n    call();\n}\n"
+    );
+}
+
+#[test]
+fn test_equal_G_preserves_multiline_literal_contents() {
+    let mut test = EditorTest::new(
+        "fn main() {\nlet text = r#\"\n  keep these two spaces\n}\"#;\ncall();\n}\n",
+    );
+
+    test.set_file_path("/tmp/indent.rs".to_string()).keys("=G");
+
+    assert_eq!(
+        test.buffer_content(),
+        "fn main() {\n    let text = r#\"\n  keep these two spaces\n}\"#;\n    call();\n}\n"
+    );
+}
+
+#[test]
+fn test_equal_G_canonicalizes_equal_width_mixed_indentation() {
+    let mut test = EditorTest::new("{\n\tline\n}\n");
+    test.command("set tabstop=4 shiftwidth=4 expandtab");
+
+    test.keys("=G");
+
+    assert_eq!(test.buffer_content(), "{\n    line\n}\n");
+}
+
+#[test]
+fn test_equal_equal_scans_context_before_selected_line() {
+    let mut test = EditorTest::new("outer([\nvalue\n]);\n");
+
+    test.keys("j==");
+
+    assert_eq!(test.buffer_content(), "outer([\n        value\n]);\n");
+    test.assert_cursor(1, 8);
+}
+
+#[test]
 fn test_equal_equal_undo_restores_indentation() {
     let mut test = EditorTest::new("if true {\ncode\n}\n");
 
