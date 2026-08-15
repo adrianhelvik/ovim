@@ -52,8 +52,12 @@ async fn notify_with_deadline(
     }
 }
 
+/// Projects workspace settings onto the sections a `workspace/configuration`
+/// request asks for. `settings` is the full settings tree for the requesting
+/// server (or `None` when ovim has no settings for it), resolved by the
+/// caller from the server's language and workspace root.
 fn workspace_configuration_values(
-    language: &str,
+    settings: Option<&serde_json::Value>,
     params: Option<&serde_json::Value>,
 ) -> Vec<serde_json::Value> {
     let items = params
@@ -62,12 +66,10 @@ fn workspace_configuration_values(
     let Some(items) = items else {
         return Vec::new();
     };
-    if language != "lua" {
+    let Some(settings) = settings else {
         return vec![serde_json::Value::Null; items.len()];
-    }
+    };
 
-    let settings = super::server::workspace_settings_for_language(language)
-        .expect("Lua workspace settings are defined");
     items
         .iter()
         .map(|item| {
@@ -76,7 +78,7 @@ fn workspace_configuration_values(
             };
             section
                 .split('.')
-                .try_fold(&settings, |value, key| value.get(key))
+                .try_fold(settings, |value, key| value.get(key))
                 .cloned()
                 .unwrap_or(serde_json::Value::Null)
         })
@@ -931,8 +933,12 @@ impl LspManager {
             "workspace/configuration" => {
                 if let Some(id) = request_id {
                     if let Some(server) = self.servers.get(server_id) {
+                        let root = self.server_roots.get(server_id).map(|root| root.clone());
+                        let settings = root.and_then(|root| {
+                            super::server::workspace_settings_for_root(server.language(), &root)
+                        });
                         let response_array = workspace_configuration_values(
-                            server.language(),
+                            settings.as_ref(),
                             request.params.as_ref(),
                         );
                         let response_msg =
@@ -1999,8 +2005,18 @@ mod tests {
 mod workspace_configuration_tests {
     use super::workspace_configuration_values;
 
+    fn lua_host_settings() -> serde_json::Value {
+        serde_json::json!({
+            "Lua": {
+                "runtime": { "version": "Lua 5.4" },
+                "diagnostics": { "globals": ["vim", "ovim"] }
+            }
+        })
+    }
+
     #[test]
-    fn lua_configuration_declares_only_the_host_globals() {
+    fn settings_project_onto_requested_sections() {
+        let settings = lua_host_settings();
         let params = serde_json::json!({
             "items": [
                 {"section": "Lua"},
@@ -2008,7 +2024,7 @@ mod workspace_configuration_tests {
                 {"section": "unmanaged"}
             ]
         });
-        let values = workspace_configuration_values("lua", Some(&params));
+        let values = workspace_configuration_values(Some(&settings), Some(&params));
 
         assert_eq!(values[0]["runtime"]["version"], "Lua 5.4");
         assert_eq!(
@@ -2020,10 +2036,20 @@ mod workspace_configuration_tests {
     }
 
     #[test]
-    fn unconfigured_languages_retain_null_configuration_responses() {
+    fn sectionless_items_receive_the_full_settings_tree() {
+        let settings = lua_host_settings();
+        let params = serde_json::json!({"items": [{}]});
+        assert_eq!(
+            workspace_configuration_values(Some(&settings), Some(&params)),
+            vec![settings]
+        );
+    }
+
+    #[test]
+    fn servers_without_settings_retain_null_configuration_responses() {
         let params = serde_json::json!({"items": [{"section": "rust"}]});
         assert_eq!(
-            workspace_configuration_values("rust", Some(&params)),
+            workspace_configuration_values(None, Some(&params)),
             vec![serde_json::Value::Null]
         );
     }

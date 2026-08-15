@@ -61,12 +61,18 @@ bitflags::bitflags! {
     }
 }
 
-pub(crate) fn workspace_settings_for_language(language: &str) -> Option<serde_json::Value> {
+pub(crate) fn workspace_settings_for_root(
+    language: &str,
+    root: &std::path::Path,
+) -> Option<serde_json::Value> {
     match language {
-        // Ovim exposes these host tables to config/plugins: `vim` is the
-        // Neovim-compatible surface, `ovim` is the editor's own API.
-        // Keep the declaration narrow so LuaLS still catches misspelled globals.
-        "lua" => Some(json!({
+        // The `vim` and `ovim` host tables (and the embedded Lua 5.4
+        // runtime they live in) exist only inside ovim's own config and
+        // plugin Lua, so these settings are scoped to workspaces rooted
+        // there. Other Lua projects keep lua_ls defaults, and the
+        // declaration stays narrow so LuaLS still catches misspelled
+        // globals.
+        "lua" if crate::lua::is_ovim_config_root(root) => Some(json!({
             "Lua": {
                 "runtime": { "version": "Lua 5.4" },
                 "diagnostics": { "globals": ["vim", "ovim"] }
@@ -1008,7 +1014,9 @@ impl LanguageServer {
         self.notify("initialized", serde_json::to_value(InitializedParams {})?)
             .await
             .context("Failed to send initialized notification")?;
-        if let Some(settings) = workspace_settings_for_language(&self.inner.language) {
+        if let Some(settings) = super::uri_to_file_path(&root_uri)
+            .and_then(|root| workspace_settings_for_root(&self.inner.language, &root))
+        {
             self.notify(
                 "workspace/didChangeConfiguration",
                 json!({ "settings": settings }),

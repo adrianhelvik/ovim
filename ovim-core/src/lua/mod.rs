@@ -52,6 +52,67 @@ pub fn register_user_languages(catalog: &Arc<crate::language_catalog::LanguageCa
     }
 }
 
+/// Candidate directories for ovim's own Lua configuration, in priority
+/// order. These are candidates, not guaranteed to exist.
+pub fn config_dir_candidates() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Ok(ovim_config) = std::env::var("OVIM_CONFIG") {
+        dirs.push(std::path::PathBuf::from(ovim_config));
+    }
+
+    if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
+        dirs.push(Path::new(&xdg_config).join("ovim"));
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(Path::new(&home).join(".config").join("ovim"));
+        dirs.push(Path::new(&home).join(".ovim"));
+    }
+
+    dirs
+}
+
+/// Returns true when `root` is a workspace editing ovim's own config or
+/// plugin Lua — the only Lua that runs with the `vim`/`ovim` host globals.
+///
+/// A root qualifies when it coincides with an existing config directory in
+/// either direction (a dotfiles repository rooted above `~/.config/ovim`
+/// still serves init.lua), or when it lies inside a plugin entry. Plugin
+/// entries are commonly symlinks into local checkouts, so both sides are
+/// canonicalized before comparison.
+pub fn is_ovim_config_root(root: &Path) -> bool {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    root_overlaps(&root, &ovim_lua_dirs(&config_dir_candidates()))
+}
+
+/// Expands existing config directories into the canonical set of
+/// directories containing ovim-hosted Lua: the config dirs themselves and
+/// the targets of their plugin entries. Candidates that do not exist are
+/// dropped (canonicalization fails for them).
+fn ovim_lua_dirs(candidates: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    for candidate in candidates {
+        let Ok(config_dir) = candidate.canonicalize() else {
+            continue;
+        };
+        if let Ok(entries) = std::fs::read_dir(config_dir.join("plugins")) {
+            for entry in entries.flatten() {
+                if let Ok(plugin_dir) = entry.path().canonicalize() {
+                    dirs.push(plugin_dir);
+                }
+            }
+        }
+        dirs.push(config_dir);
+    }
+    dirs
+}
+
+fn root_overlaps(root: &Path, dirs: &[std::path::PathBuf]) -> bool {
+    dirs.iter()
+        .any(|dir| root.starts_with(dir) || dir.starts_with(root))
+}
+
 /// Lua runtime context for configuration and plugins
 pub struct LuaContext {
     lua: Lua,
@@ -157,39 +218,10 @@ impl LuaContext {
 
     /// Gets the list of potential config file paths in priority order
     fn get_config_paths() -> Vec<std::path::PathBuf> {
-        let mut paths = Vec::new();
-
-        // $OVIM_CONFIG/init.lua
-        if let Ok(ovim_config) = std::env::var("OVIM_CONFIG") {
-            let mut path = std::path::PathBuf::from(ovim_config);
-            path.push("init.lua");
-            paths.push(path);
-        }
-
-        // $XDG_CONFIG_HOME/ovim/init.lua
-        if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
-            let mut path = std::path::PathBuf::from(xdg_config);
-            path.push("ovim");
-            path.push("init.lua");
-            paths.push(path);
-        }
-
-        // ~/.config/ovim/init.lua
-        if let Some(home) = std::env::var_os("HOME") {
-            let mut path = std::path::PathBuf::from(&home);
-            path.push(".config");
-            path.push("ovim");
-            path.push("init.lua");
-            paths.push(path.clone());
-
-            // ~/.ovim/init.lua
-            let mut alt_path = std::path::PathBuf::from(&home);
-            alt_path.push(".ovim");
-            alt_path.push("init.lua");
-            paths.push(alt_path);
-        }
-
-        paths
+        config_dir_candidates()
+            .into_iter()
+            .map(|dir| dir.join("init.lua"))
+            .collect()
     }
 
     /// Reloads configuration
@@ -237,39 +269,10 @@ impl LuaContext {
 
     /// Gets the list of plugin directories
     fn get_plugin_paths() -> Vec<std::path::PathBuf> {
-        let mut paths = Vec::new();
-
-        // $OVIM_CONFIG/plugins
-        if let Ok(ovim_config) = std::env::var("OVIM_CONFIG") {
-            let mut path = std::path::PathBuf::from(ovim_config);
-            path.push("plugins");
-            paths.push(path);
-        }
-
-        // $XDG_CONFIG_HOME/ovim/plugins
-        if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
-            let mut path = std::path::PathBuf::from(xdg_config);
-            path.push("ovim");
-            path.push("plugins");
-            paths.push(path);
-        }
-
-        // ~/.config/ovim/plugins
-        if let Some(home) = std::env::var_os("HOME") {
-            let mut path = std::path::PathBuf::from(&home);
-            path.push(".config");
-            path.push("ovim");
-            path.push("plugins");
-            paths.push(path);
-
-            // ~/.ovim/plugins
-            let mut alt_path = std::path::PathBuf::from(&home);
-            alt_path.push(".ovim");
-            alt_path.push("plugins");
-            paths.push(alt_path);
-        }
-
-        paths
+        config_dir_candidates()
+            .into_iter()
+            .map(|dir| dir.join("plugins"))
+            .collect()
     }
 
     /// Sets a global variable in Lua
@@ -341,5 +344,38 @@ mod tests {
             }
             other => panic!("expected plugin owner, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ovim_lua_dirs_cover_config_dir_and_symlinked_plugin_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("config/ovim");
+        let checkout = temp.path().join("my-plugin");
+        std::fs::create_dir_all(config_dir.join("plugins")).unwrap();
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::os::unix::fs::symlink(&checkout, config_dir.join("plugins/my-plugin")).unwrap();
+
+        let missing = temp.path().join("does-not-exist");
+        let dirs = ovim_lua_dirs(&[config_dir.clone(), missing]);
+
+        let config_dir = config_dir.canonicalize().unwrap();
+        let checkout = checkout.canonicalize().unwrap();
+        assert!(dirs.contains(&config_dir));
+        assert!(dirs.contains(&checkout), "symlink target not resolved");
+        assert_eq!(dirs.len(), 2, "missing candidates should be dropped");
+
+        // Workspace rooted at the config dir itself, or inside it.
+        assert!(root_overlaps(&config_dir, &dirs));
+        assert!(root_overlaps(&config_dir.join("plugins"), &dirs));
+        // Workspace rooted above the config dir (e.g. a dotfiles repo).
+        assert!(root_overlaps(config_dir.parent().unwrap(), &dirs));
+        // Workspace rooted at the plugin checkout's real path.
+        assert!(root_overlaps(&checkout, &dirs));
+        // Unrelated Lua project.
+        assert!(!root_overlaps(
+            std::path::Path::new("/somewhere/else"),
+            &dirs
+        ));
     }
 }
