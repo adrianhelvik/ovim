@@ -15,6 +15,7 @@ pub mod display;
 pub mod edit;
 pub mod edit_log;
 pub mod editor;
+pub mod editorconfig;
 pub mod fold;
 pub mod git;
 pub mod indentation;

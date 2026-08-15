@@ -250,6 +250,11 @@ Key modules:
 
 Contributions are welcome!
 
+The repository's `.editorconfig` is the cross-editor whitespace baseline.
+`rustfmt.toml` and `cargo fmt` remain authoritative for Rust layout, while
+Clippy covers semantic linting. The pre-commit hooks enforce both formatter and
+lint checks before changes land.
+
 To run the same formatting and Clippy checks as CI before every commit, install
 [pre-commit](https://pre-commit.com/) and enable the repository hooks:
 

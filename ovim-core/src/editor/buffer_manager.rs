@@ -44,7 +44,9 @@ impl Editor {
         }
 
         let mut options = self.options.indent_options();
-        if buffer.file_path().is_some() {
+        if let Some(path) = buffer.file_path() {
+            options =
+                crate::editorconfig::resolve_indent_options(std::path::Path::new(path), options);
             if let Some(modeline) = crate::modeline::Modeline::parse(&buffer.rope().to_string()) {
                 options = options.with_modeline(&modeline);
             }
@@ -953,6 +955,37 @@ mod tests {
             editor.options.tab_width, 4,
             "modelines must not leak globally"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn modeline_overlays_editorconfig_for_only_its_buffer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join(".editorconfig"),
+            "root=true\n[*]\nindent_style=tab\nindent_size=2\ntab_width=8\n",
+        )
+        .expect("write editorconfig");
+        let project_only = dir.path().join("project.rs");
+        let overridden = dir.path().join("overridden.rs");
+        fs::write(&project_only, "fn project() {}\n").expect("write project file");
+        fs::write(&overridden, "// vim: set sw=3 et:\nfn overridden() {}\n")
+            .expect("write overridden file");
+
+        let mut editor = Editor::default();
+        editor.open_file(&project_only).expect("open project file");
+        let project_index = editor.current_buffer_index();
+        assert_eq!(editor.indent_options().tab_width, 8);
+        assert_eq!(editor.indent_options().shift_width, 2);
+        assert!(!editor.indent_options().expand_tab);
+
+        editor.open_file(&overridden).expect("open overridden file");
+        assert_eq!(editor.indent_options().tab_width, 8);
+        assert_eq!(editor.indent_options().shift_width, 3);
+        assert!(editor.indent_options().expand_tab);
+
+        editor.switch_to_buffer(project_index);
+        assert_eq!(editor.indent_options().shift_width, 2);
+        assert!(!editor.indent_options().expand_tab);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

@@ -2902,6 +2902,7 @@ dependencies = [
  "fs2",
  "futures-core",
  "git2",
+ "globset",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",

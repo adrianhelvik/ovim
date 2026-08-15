@@ -46,6 +46,27 @@ Examples:
 
 See [options.md](options.md) for details.
 
+## Project formatting (`.editorconfig`)
+
+ovim reads EditorConfig indentation settings when a file is opened. A minimal
+project policy looks like this:
+
+```ini
+root = true
+
+[*]
+indent_style = space
+indent_size = 4
+
+[*.{json,yaml,yml}]
+indent_size = 2
+```
+
+Use EditorConfig for cross-editor whitespace policy and keep language-native
+formatters (such as rustfmt) as the authority for syntax-aware layout. See the
+[indentation options](options.md#editorconfig) for supported properties and
+precedence.
+
 ## Language Configuration (`languages.toml`)
 
 ovim ships with a default language configuration. Override or extend it in:
