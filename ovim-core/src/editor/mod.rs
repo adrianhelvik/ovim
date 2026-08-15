@@ -1,6 +1,7 @@
 mod ai_agent;
 mod ai_base_manifest;
 mod ai_chat;
+mod ai_chat_code_attachment;
 mod ai_chat_commands;
 mod ai_chat_exa;
 mod ai_chat_images;
@@ -101,10 +102,11 @@ pub use crate::change::{
     ApplyPos, Change, ChangeBuilder, ChangeManager, CursorPos, InsertEntryMode, Range,
     TextObjectType,
 };
+pub use ai_chat_code_attachment::split_code_attachment_message;
 pub use ai_chat_commands::AiChatSlashCompletion;
 pub use ai_chat_session::AI_CHAT_REASONING_EFFORTS;
 pub use ai_chat_state::{
-    AiChatActivity, ChatModelPickerSection, ComprehensionPolicy, QueuedChatInput,
+    AiChatActivity, ChatModelPickerSection, CodeAttachment, ComprehensionPolicy, QueuedChatInput,
     QueuedChatInputKind,
 };
 pub use ai_shell_process::{ShellInspectorView, ShellProcessPhase};

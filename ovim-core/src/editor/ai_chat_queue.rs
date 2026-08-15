@@ -42,10 +42,11 @@ impl Editor {
     pub(crate) fn queue_current_ai_chat_input(&mut self, requested_kind: QueuedChatInputKind) {
         let input = self.ai_chat_input().trim().to_string();
         let has_images = !self.ai_chat_pending_images().is_empty();
-        if input.is_empty() && !has_images {
+        let has_code_attachment = self.ai_chat_pending_code_attachment().is_some();
+        if input.is_empty() && !has_images && !has_code_attachment {
             return;
         }
-        let kind = if has_images {
+        let kind = if has_images || has_code_attachment {
             // Codex steering currently accepts text items only. Keep image
             // messages intact for the next complete provider round.
             QueuedChatInputKind::FollowUp
@@ -61,11 +62,13 @@ impl Editor {
             chat.input.clear();
             chat.input_cursor = 0;
             let images = std::mem::take(&mut chat.pending_images);
+            let code_attachment = chat.pending_code_attachment.take();
             chat.queued_inputs.push_back(QueuedChatInput {
                 id,
                 kind,
                 content: input.clone(),
                 images,
+                code_attachment,
             });
             if kind == QueuedChatInputKind::Steer {
                 if let Some(tx) = chat
@@ -203,6 +206,7 @@ impl Editor {
             chat.input = item.content;
             chat.input_cursor = chat.input.len();
             chat.pending_images = item.images;
+            chat.pending_code_attachment = item.code_attachment;
             chat.history.selected_queued_id = None;
             chat.history.selected_node_id = None;
             chat.focus = crate::ai::chat_types::ChatFocus::TextInput;
@@ -220,6 +224,7 @@ impl Editor {
                 std::mem::take(&mut chat.input),
                 chat.input_cursor,
                 std::mem::take(&mut chat.pending_images),
+                chat.pending_code_attachment.take(),
             )
         });
 
@@ -240,6 +245,7 @@ impl Editor {
                     chat.input = item.content;
                     chat.input_cursor = chat.input.len();
                     chat.pending_images = item.images;
+                    chat.pending_code_attachment = item.code_attachment;
                 }
                 match item.kind {
                     QueuedChatInputKind::Command => {
@@ -260,10 +266,13 @@ impl Editor {
             }
         })();
 
-        if let (Some(chat), Some((input, cursor, images))) = (self.ai_state.chat.as_mut(), draft) {
+        if let (Some(chat), Some((input, cursor, images, code_attachment))) =
+            (self.ai_state.chat.as_mut(), draft)
+        {
             chat.input = input;
             chat.input_cursor = cursor.min(chat.input.len());
             chat.pending_images = images;
+            chat.pending_code_attachment = code_attachment;
         }
 
         result
@@ -329,6 +338,7 @@ mod tests {
             kind: QueuedChatInputKind::Steer,
             content: content.clone(),
             images: Vec::new(),
+            code_attachment: None,
         });
         chat.pending_code_explanation = Some(PendingCodeExplanation {
             tool_call: ToolCallInfo {
@@ -444,6 +454,7 @@ mod tests {
             kind: QueuedChatInputKind::FollowUp,
             content: "older queued follow-up".into(),
             images: Vec::new(),
+            code_attachment: None,
         });
 
         assert!(editor.start_next_queued_ai_chat_input().unwrap());

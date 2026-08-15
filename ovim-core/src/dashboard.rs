@@ -8,7 +8,7 @@
 pub const MENU_ITEMS: &[(&str, &str)] = &[
     ("<Space>sf", "Find a file"),
     ("<Space>sg", "Search the project"),
-    ("<Space><Space>", "AI chat"),
+    ("<Space><Space>", "AI chat · selected code attaches"),
     ("<Space>ca", "Code actions"),
     ("gd", "Jump to definition"),
     ("K", "Hover docs"),

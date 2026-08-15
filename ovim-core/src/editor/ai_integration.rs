@@ -176,10 +176,29 @@ impl Editor {
             allow_edits: true,
             ..Default::default()
         })?;
-        self.set_status_message(
-            "AI chat opened with selection context. Describe the change; surrounding edits are allowed."
-                .to_string(),
-        );
+        let selection = self
+            .ai_state
+            .active_selection
+            .as_ref()
+            .expect("selection was captured")
+            .clone();
+        let buffer = self
+            .get_buffer_by_id(selection.buffer_id)
+            .expect("selected buffer remains open");
+        let attachment = super::ai_chat_state::CodeAttachment {
+            buffer_id: selection.buffer_id,
+            path: buffer.file_path().map(ToString::to_string),
+            start_line: selection.start_line,
+            end_line: selection.end_line,
+            buffer_revision: buffer.version(),
+            text: selection.selected_text,
+        };
+        let label = attachment.label();
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.active_buffer_id = selection.buffer_id;
+            chat.pending_code_attachment = Some(attachment);
+        }
+        self.set_status_message(format!("Attached {label} to AI chat"));
         Ok(())
     }
 
