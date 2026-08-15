@@ -25,13 +25,6 @@ impl Buffer {
 
         // Clamp to valid position
         let insert_pos = insert_pos.min(self.rope.len_chars());
-        if self.ai_insert_is_blocked(insert_pos) {
-            self.mark_ai_lock_blocked();
-            return;
-        }
-        let inserted_len = text.chars().count();
-        self.ai_adjust_locks_for_insert(insert_pos, inserted_len);
-
         // Convert char col to byte col for highlighting (cache stores byte offsets)
         let line_start_char = self.rope.line_to_char(line);
         let col_clamped = col.0.min(self.rope.len_chars() - line_start_char);
@@ -190,12 +183,6 @@ impl Buffer {
         if start_pos >= end_pos {
             return String::new();
         }
-        if self.ai_delete_is_blocked(start_pos, end_pos) {
-            self.mark_ai_lock_blocked();
-            return String::new();
-        }
-        self.ai_adjust_locks_for_delete(start_pos, end_pos);
-
         let deleted = self.rope.slice(start_pos..end_pos).to_string();
 
         // Convert char cols to byte cols for highlighting (cache stores byte offsets)
@@ -275,12 +262,6 @@ impl Buffer {
         if start_pos >= end_pos {
             return;
         }
-        if self.ai_delete_is_blocked(start_pos, end_pos) {
-            self.mark_ai_lock_blocked();
-            return;
-        }
-        self.ai_adjust_locks_for_delete(start_pos, end_pos);
-
         let start_line = self.rope.char_to_line(start_pos);
         let start_char_col = start_pos - self.rope.line_to_char(start_line);
         let end_line = self.rope.char_to_line(end_pos);

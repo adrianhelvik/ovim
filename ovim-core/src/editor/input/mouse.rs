@@ -2,7 +2,7 @@ use crate::markdown_conceal::{apply_conceal, extract_concealed_links, scan_markd
 use crate::{MouseButton, MouseEvent, MouseEventKind};
 use anyhow::Result;
 
-use crate::display::{char_display_width, display_col_to_char_col};
+use crate::display::display_col_to_char_col;
 use crate::editor::ai_chat_input::{chat_input_byte_for_display_column, ChatInputRow};
 use crate::editor::Editor;
 use crate::mode::Mode;
@@ -551,11 +551,6 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         }
     }
 
-    // Handle AI prompt panel clicks (model picker + prompt cursor placement).
-    if mode == Mode::AiPrompt && handle_ai_prompt_click(editor, col, row)? {
-        return Ok(None);
-    }
-
     // Handle picker mode clicks
     if mode == Mode::Picker {
         handle_picker_click(editor, col, row)?;
@@ -891,74 +886,6 @@ fn handle_picker_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Handles a left click inside the AI prompt panel.
-/// Returns true when the click was consumed.
-fn handle_ai_prompt_click(editor: &mut Editor, col: u16, row: u16) -> Result<bool> {
-    if let Some(trigger) = editor.render_cache.ai_prompt_model_trigger_hitbox {
-        if trigger.contains(col, row) {
-            editor.ai_toggle_model_picker();
-            return Ok(true);
-        }
-    }
-
-    for (rect, profile_name) in editor.render_cache.ai_prompt_model_hitboxes.clone() {
-        if rect.contains(col, row) {
-            editor.ai_set_profile(&profile_name);
-            editor.ai_close_model_picker();
-            return Ok(true);
-        }
-    }
-
-    if editor.ai_state.prompt.model_picker_open {
-        editor.ai_close_model_picker();
-    }
-
-    let prompt = editor.ai_prompt_input().to_string();
-    let prompt_len = prompt.len();
-    for (input_rect, start_byte, end_byte) in &editor.render_cache.ai_prompt_input_rows {
-        if input_rect.contains(col, row) {
-            let rel_display_col = (col.saturating_sub(input_rect.x)) as usize;
-            let row_start = (*start_byte).min(prompt_len);
-            let row_end = (*end_byte).min(prompt_len).max(row_start);
-            let new_cursor = prompt_cursor_from_display_col_in_range(
-                &prompt,
-                row_start,
-                row_end,
-                rel_display_col,
-            );
-            editor.ai_state.prompt.cursor = new_cursor;
-            return Ok(true);
-        }
-    }
-
-    if let Some(input_rect) = editor.render_cache.ai_prompt_input_area {
-        if input_rect.contains(col, row) {
-            editor.ai_state.prompt.cursor = prompt_len;
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
-}
-
-fn prompt_cursor_from_display_col_in_range(
-    text: &str,
-    start_byte: usize,
-    end_byte: usize,
-    display_col: usize,
-) -> usize {
-    let mut width = 0;
-    for (rel_idx, ch) in text[start_byte..end_byte].char_indices() {
-        let byte_idx = start_byte + rel_idx;
-        let ch_width = char_display_width(ch);
-        if width + ch_width > display_col {
-            return byte_idx;
-        }
-        width += ch_width;
-    }
-    end_byte
 }
 
 /// Returns true if the screen point (col, row) is inside the rect.

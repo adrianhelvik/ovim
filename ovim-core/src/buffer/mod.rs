@@ -10,7 +10,6 @@ pub use encoding::FileEncoding;
 pub use highlighting::LineHighlights;
 pub use line_ending::{normalize_for_buffer, LineEnding};
 
-use crate::ai::BufferLock;
 use crate::change::ChangeManager;
 use crate::edit::Edit;
 use crate::edit_log::EditLog;
@@ -105,12 +104,6 @@ pub struct Buffer {
     /// is non-empty. Consumers anchor to a specific `version` and call
     /// `edit_log.edits_since(v)` to replay deltas onto stale positions.
     edit_log: EditLog,
-    /// AI-edit locks in absolute char offsets [start_char, end_char)
-    ai_locks: Vec<BufferLock>,
-    /// True if the last attempted edit was blocked by an AI lock.
-    ai_lock_blocked: bool,
-    /// Nesting depth for temporary lock bypass (internal use only).
-    ai_lock_bypass_depth: usize,
     /// Presentation-only label for pathless buffers (walkthrough snapshots,
     /// scratch views), shown in the tab bar and status line instead of
     /// "[No Name]". Unlike `file_path` it carries no save target or LSP
@@ -151,9 +144,6 @@ impl Buffer {
             injection_cache: None,
             recording: None,
             edit_log: EditLog::new(),
-            ai_locks: Vec::new(),
-            ai_lock_blocked: false,
-            ai_lock_bypass_depth: 0,
             display_name: None,
             indent_options: None,
         }
@@ -260,9 +250,6 @@ impl Buffer {
             injection_cache: None,
             recording: None,
             edit_log: EditLog::new(),
-            ai_locks: Vec::new(),
-            ai_lock_blocked: false,
-            ai_lock_bypass_depth: 0,
             display_name: None,
             indent_options: None,
         }
@@ -790,139 +777,6 @@ impl Buffer {
         &mut self.edit_log
     }
 
-    /// Returns active AI locks for this buffer.
-    pub fn ai_locks(&self) -> &[BufferLock] {
-        &self.ai_locks
-    }
-
-    /// Returns true if this buffer has any active AI locks.
-    pub fn has_ai_locks(&self) -> bool {
-        !self.ai_locks.is_empty()
-    }
-
-    /// Adds an AI lock over absolute char range [start_char, end_char).
-    pub fn add_ai_lock(&mut self, id: u64, start_char: usize, end_char: usize) {
-        self.add_ai_lock_with_mode(id, start_char, end_char, true);
-    }
-
-    /// Adds an AI range with explicit blocking mode.
-    pub fn add_ai_lock_with_mode(
-        &mut self,
-        id: u64,
-        start_char: usize,
-        end_char: usize,
-        blocks_edits: bool,
-    ) {
-        if end_char <= start_char {
-            return;
-        }
-        self.ai_locks.push(BufferLock {
-            id,
-            start_char,
-            end_char,
-            blocks_edits,
-        });
-    }
-
-    /// Removes an AI lock by id.
-    pub fn remove_ai_lock(&mut self, id: u64) -> bool {
-        let before = self.ai_locks.len();
-        self.ai_locks.retain(|lock| lock.id != id);
-        self.ai_locks.len() < before
-    }
-
-    /// Clears all AI locks in this buffer.
-    pub fn clear_ai_locks(&mut self) {
-        self.ai_locks.clear();
-    }
-
-    /// Returns true if an edit was recently blocked by an AI lock.
-    /// Calling this resets the flag.
-    pub fn take_ai_lock_blocked(&mut self) -> bool {
-        std::mem::take(&mut self.ai_lock_blocked)
-    }
-
-    /// Returns true when an edit was blocked by an AI lock since the last reset.
-    pub fn ai_lock_blocked(&self) -> bool {
-        self.ai_lock_blocked
-    }
-
-    /// Execute code while bypassing AI lock checks.
-    pub fn with_ai_lock_bypass<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        self.ai_lock_bypass_depth = self.ai_lock_bypass_depth.saturating_add(1);
-        let result = f(self);
-        self.ai_lock_bypass_depth = self.ai_lock_bypass_depth.saturating_sub(1);
-        result
-    }
-
-    pub(crate) fn ai_insert_is_blocked(&self, position: usize) -> bool {
-        if self.ai_lock_bypass_depth > 0 {
-            return false;
-        }
-        self.ai_locks
-            .iter()
-            .filter(|lock| lock.blocks_edits)
-            .any(|lock| position >= lock.start_char && position < lock.end_char)
-    }
-
-    pub(crate) fn ai_delete_is_blocked(&self, start_char: usize, end_char: usize) -> bool {
-        if self.ai_lock_bypass_depth > 0 {
-            return false;
-        }
-        self.ai_locks
-            .iter()
-            .filter(|lock| lock.blocks_edits)
-            .any(|lock| {
-                // Overlap between [start_char, end_char) and [lock.start_char, lock.end_char)
-                start_char < lock.end_char && end_char > lock.start_char
-            })
-    }
-
-    pub(crate) fn mark_ai_lock_blocked(&mut self) {
-        self.ai_lock_blocked = true;
-    }
-
-    pub(crate) fn ai_adjust_locks_for_insert(&mut self, position: usize, inserted_len: usize) {
-        if inserted_len == 0 {
-            return;
-        }
-
-        for lock in &mut self.ai_locks {
-            if position <= lock.start_char {
-                lock.start_char = lock.start_char.saturating_add(inserted_len);
-                lock.end_char = lock.end_char.saturating_add(inserted_len);
-            } else if position < lock.end_char {
-                lock.end_char = lock.end_char.saturating_add(inserted_len);
-            }
-        }
-    }
-
-    pub(crate) fn ai_adjust_locks_for_delete(&mut self, start_char: usize, end_char: usize) {
-        if end_char <= start_char {
-            return;
-        }
-        let deleted_len = end_char - start_char;
-
-        let map_pos = |pos: usize| -> usize {
-            if pos <= start_char {
-                pos
-            } else if pos >= end_char {
-                pos.saturating_sub(deleted_len)
-            } else {
-                start_char
-            }
-        };
-
-        for lock in &mut self.ai_locks {
-            lock.start_char = map_pos(lock.start_char);
-            lock.end_char = map_pos(lock.end_char);
-            if lock.end_char < lock.start_char {
-                lock.end_char = lock.start_char;
-            }
-        }
-        self.ai_locks.retain(|lock| lock.end_char > lock.start_char);
-    }
-
     /// Marks the buffer as unmodified (e.g., after saving)
     pub fn mark_clean(&mut self) {
         self.modified = false;
@@ -956,11 +810,6 @@ impl Buffer {
 
         // Undo/redo: position references are meaningless against new content
         self.change_manager = ChangeManager::new();
-
-        // AI locks/logical regions are invalid against new content
-        self.ai_locks.clear();
-        self.ai_lock_blocked = false;
-        self.ai_lock_bypass_depth = 0;
 
         // Edit log: prior entries reference offsets into the previous rope —
         // replaying them against new content would corrupt projections. Any

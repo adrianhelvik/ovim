@@ -48,7 +48,7 @@ pub fn setup_ai_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
             // requiring a full contexts table.
             if !contexts_provided {
                 if let Some(dp) = configured_default_profile {
-                    for ctx in ["selection", "chat", "query"] {
+                    for ctx in ["chat", "query"] {
                         b.set_ai_context(ctx.to_string(), dp.clone());
                     }
                 }

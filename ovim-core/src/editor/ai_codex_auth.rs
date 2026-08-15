@@ -30,23 +30,9 @@ impl Editor {
         self.ensure_codex_auth_for_profile(&profile_name, CodexAuthResume::None);
     }
 
-    pub(crate) fn maybe_prompt_codex_auth_on_selection_open(&mut self) {
-        let profile_name = self.ai_state.active_profile.clone();
-        self.ensure_codex_auth_for_profile(&profile_name, CodexAuthResume::None);
-    }
-
     pub(crate) fn ensure_codex_auth_for_chat_submit(&mut self) -> bool {
         let profile_name = self.ai_chat_effective_profile();
         self.ensure_codex_auth_for_profile(&profile_name, CodexAuthResume::SubmitChat)
-    }
-
-    pub(crate) fn ensure_codex_auth_for_selection_submit(&mut self) -> bool {
-        let resume = CodexAuthResume::SubmitSelection {
-            buffer_id: self.buffer().id(),
-            buffer_version: self.buffer().version(),
-        };
-        let profile_name = self.ai_state.active_profile.clone();
-        self.ensure_codex_auth_for_profile(&profile_name, resume)
     }
 
     fn ensure_codex_auth_for_profile(
@@ -204,20 +190,6 @@ impl Editor {
                     self.set_status_message(format!("Could not resume the chat message: {error}"));
                 }
             }
-            CodexAuthResume::SubmitSelection {
-                buffer_id,
-                buffer_version,
-            } => {
-                if self.buffer().id() != buffer_id || self.buffer().version() != buffer_version {
-                    self.set_status_message(
-                        "The buffer changed during sign-in; review the selection and submit again",
-                    );
-                    return;
-                }
-                if let Err(error) = self.submit_ai_prompt_job() {
-                    self.set_status_message(format!("Could not resume the AI edit: {error}"));
-                }
-            }
         }
     }
 }
@@ -245,7 +217,8 @@ mod tests {
     #[test]
     fn escape_dismisses_dialog_without_touching_drafts() {
         let mut editor = Editor::default();
-        editor.ai_state.prompt.input = "rewrite this".into();
+        editor.open_ai_chat(ChatOpts::default()).expect("open chat");
+        editor.ai_state.chat.as_mut().expect("chat").input = "rewrite this".into();
         editor.ai_state.codex_auth_dialog = Some(CodexAuthDialog {
             phase: CodexAuthDialogPhase::Offer,
             detail: None,
@@ -257,7 +230,10 @@ mod tests {
             modifiers: Modifiers::NONE,
         });
         assert!(!editor.has_codex_auth_dialog());
-        assert_eq!(editor.ai_state.prompt.input, "rewrite this");
+        assert_eq!(
+            editor.ai_state.chat.as_ref().expect("chat").input,
+            "rewrite this"
+        );
     }
 
     #[test]

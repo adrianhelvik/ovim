@@ -196,7 +196,6 @@ pub(crate) async fn handle_api_request(
                 "COMMAND" => Mode::Command,
                 "SEARCH" => Mode::Search,
                 "PICKER" => Mode::Picker,
-                "AI_PROMPT" => Mode::AiPrompt,
                 "AI_CHAT" => Mode::AiChat,
                 _ => {
                     let _ = tx.send(ApiResponse::Error(ErrorResponse {

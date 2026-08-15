@@ -38,8 +38,8 @@ pub use scope::{Capabilities, RequiredScope, ScopeContext};
 pub use tools::{ToolDefinition, ToolRegistry, ToolResult};
 pub use types::{
     AgentLoopConfig, AiContextPack, AiJobResult, AiProviderKind, AiRequest, ApiKeyConfig,
-    BufferLock, CodeSlice, ContextGatheringPolicy, DiagnosticFact, DiagnosticScope, EditFormat,
-    FileScope, ProfileScope, RetryPolicy, SymbolFact, ToolApprovalMode, PROFILE_LOCAL,
+    CodeSlice, ContextGatheringPolicy, DiagnosticFact, DiagnosticScope, EditFormat, FileScope,
+    ProfileScope, RetryPolicy, SymbolFact, ToolApprovalMode, PROFILE_LOCAL,
 };
 pub use workflow::{
     WorkflowProgressEvent, WorkflowRunRecord, WorkflowRunResult, WorkflowRunStatus,

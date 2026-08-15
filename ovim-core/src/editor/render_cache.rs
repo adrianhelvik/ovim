@@ -65,15 +65,6 @@ pub struct RenderCache {
     pub last_text_width: usize,
     /// Cached blame column width from last render (0 when blame is off)
     pub last_blame_width: usize,
-    /// Cached AI prompt input hit-test area from last render.
-    pub ai_prompt_input_area: Option<crate::Rect>,
-    /// Cached wrapped AI prompt input rows from last render:
-    /// `(row_rect, start_byte, end_byte)`.
-    pub ai_prompt_input_rows: Vec<(crate::Rect, usize, usize)>,
-    /// Cached AI prompt model picker hitboxes from last render.
-    pub ai_prompt_model_hitboxes: Vec<(crate::Rect, String)>,
-    /// Cached AI prompt model picker trigger hitbox from last render.
-    pub ai_prompt_model_trigger_hitbox: Option<crate::Rect>,
     /// Cached AI chat panel area from last render (for mouse scroll hit-testing).
     pub last_chat_area: Option<crate::Rect>,
     /// Shared buffer/chat area used to convert a separator drag into a ratio.

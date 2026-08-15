@@ -51,9 +51,6 @@ mod lsp_manager_mode;
 /// Rename input mode handler
 mod rename_input_mode;
 
-/// AI prompt mode handler
-mod ai_prompt_mode;
-
 /// AI chat mode handler
 mod ai_chat_mode;
 
@@ -190,7 +187,6 @@ impl InputHandler {
                 Mode::Dashboard => dashboard_mode::handle_dashboard_mode(editor, key_event),
                 Mode::LspManager => lsp_manager_mode::handle_lsp_manager_mode(editor, key_event),
                 Mode::RenameInput => rename_input_mode::handle_rename_input_mode(editor, key_event),
-                Mode::AiPrompt => ai_prompt_mode::handle_ai_prompt_mode(editor, key_event),
                 Mode::AiChat => ai_chat_mode::handle_ai_chat_mode(editor, key_event),
             }
         };
@@ -214,10 +210,6 @@ impl InputHandler {
         // 1. Viewport commands (zz, zt, zb) explicitly set scroll position
         // 2. There's a pending viewport command (e.g., 'z' waiting for 't')
         //    This prevents scroll changes between multi-key sequences like 'zt'
-        if editor.buffer_mut().take_ai_lock_blocked() {
-            editor.set_status_message("AI lock active for selected region".to_string());
-        }
-
         // When the mapping layer handled this key it already ran the scroll
         // update on the inner (replayed) dispatch, consuming the one-shot viewport policy.
         // Re-running it here would scroll a second time and, worse, undo a
@@ -229,8 +221,6 @@ impl InputHandler {
         if !preserve_viewport && !is_viewport_pending && !mapping_handled {
             editor.update_scroll_offset();
         }
-
-        editor.ai_post_input_refresh();
 
         // Safety net: ensure cursor is within buffer bounds after every key event.
         // Individual motions/operators should maintain this invariant themselves, but

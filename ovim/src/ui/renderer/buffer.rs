@@ -1,4 +1,4 @@
-use crate::editor::{AiRegionStatus, Editor};
+use crate::editor::Editor;
 use crate::syntax::{Theme, UiGroup};
 use ratatui::{
     layout::Rect,
@@ -1142,126 +1142,6 @@ fn overlay_eol_decoration_at_edge(
     pad_line_to(line, text_width);
 }
 
-/// Per-line viewport context shared between `lock_ranges_for_line` and `ai_region_ranges_for_line`.
-struct ViewportSlice<'a> {
-    line_idx: usize,
-    line_content_chars: usize,
-    char_mapping: &'a [usize],
-    expanded_text: &'a str,
-    line_text: &'a str,
-    wrap: bool,
-    h_offset: usize,
-    text_width: usize,
-    precedes: bool,
-}
-
-fn lock_ranges_for_line(
-    buffer: &crate::buffer::Buffer,
-    slice: &ViewportSlice,
-) -> Vec<(usize, usize)> {
-    let line_start_char = buffer.rope().line_to_char(slice.line_idx);
-    let line_end_char = line_start_char.saturating_add(slice.line_content_chars);
-    let viewport_end = slice.h_offset.saturating_add(slice.text_width);
-    let mut ranges = Vec::new();
-
-    for lock in buffer.ai_locks().iter().filter(|lock| lock.blocks_edits) {
-        let start_abs = lock.start_char.max(line_start_char);
-        let end_abs = lock.end_char.min(line_end_char);
-        if end_abs <= start_abs {
-            continue;
-        }
-
-        let mut start_col = remap_char_col(start_abs - line_start_char, slice.char_mapping);
-        let mut end_col_exclusive = remap_char_col(end_abs - line_start_char, slice.char_mapping);
-
-        if !slice.wrap {
-            let start_display = expanded_char_to_display_col(slice.expanded_text, start_col);
-            let end_display = expanded_char_to_display_col(slice.expanded_text, end_col_exclusive);
-            if end_display <= slice.h_offset || start_display >= viewport_end {
-                continue;
-            }
-            let offset_adjustment = if slice.precedes { 1 } else { 0 };
-            start_col = display_col_to_char_idx(
-                slice.line_text,
-                start_display.saturating_sub(slice.h_offset) + offset_adjustment,
-            );
-            end_col_exclusive = display_col_to_char_idx(
-                slice.line_text,
-                end_display.saturating_sub(slice.h_offset) + offset_adjustment,
-            );
-        }
-
-        if end_col_exclusive > start_col {
-            ranges.push((start_col, end_col_exclusive - 1));
-        }
-    }
-
-    ranges
-}
-
-#[allow(clippy::type_complexity)]
-fn ai_region_ranges_for_line(
-    editor: &Editor,
-    slice: &ViewportSlice,
-) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
-    let line_start_char = editor.buffer().rope().line_to_char(slice.line_idx);
-    let line_end_char = line_start_char.saturating_add(slice.line_content_chars);
-    let viewport_end = slice.h_offset.saturating_add(slice.text_width);
-    let selected_region_id = editor.ai_selected_region_id();
-    let mut generated_ranges = Vec::new();
-    let mut selected_ranges = Vec::new();
-
-    for region in editor.ai_regions() {
-        let show_generated = region.status == AiRegionStatus::Generated;
-        let show_selected = selected_region_id == Some(region.id)
-            && matches!(
-                region.status,
-                AiRegionStatus::Generated | AiRegionStatus::Running
-            );
-        if !show_generated && !show_selected {
-            continue;
-        }
-
-        let start_abs = region.start_char.max(line_start_char);
-        let end_abs = region.end_char.min(line_end_char);
-        if end_abs <= start_abs {
-            continue;
-        }
-
-        let mut start_col = remap_char_col(start_abs - line_start_char, slice.char_mapping);
-        let mut end_col_exclusive = remap_char_col(end_abs - line_start_char, slice.char_mapping);
-
-        if !slice.wrap {
-            let start_display = expanded_char_to_display_col(slice.expanded_text, start_col);
-            let end_display = expanded_char_to_display_col(slice.expanded_text, end_col_exclusive);
-            if end_display <= slice.h_offset || start_display >= viewport_end {
-                continue;
-            }
-            let offset_adjustment = if slice.precedes { 1 } else { 0 };
-            start_col = display_col_to_char_idx(
-                slice.line_text,
-                start_display.saturating_sub(slice.h_offset) + offset_adjustment,
-            );
-            end_col_exclusive = display_col_to_char_idx(
-                slice.line_text,
-                end_display.saturating_sub(slice.h_offset) + offset_adjustment,
-            );
-        }
-
-        if end_col_exclusive > start_col {
-            let range = (start_col, end_col_exclusive - 1);
-            if show_generated {
-                generated_ranges.push(range);
-            }
-            if show_selected {
-                selected_ranges.push(range);
-            }
-        }
-    }
-
-    (generated_ranges, selected_ranges)
-}
-
 /// Splits a rendered Line into multiple visual rows for soft wrapping.
 /// Each row fits within `width` display columns. Rows are padded to full width.
 /// Wide characters (CJK, emoji) that don't fit at a row boundary are pushed to
@@ -1420,7 +1300,7 @@ pub fn render_buffer(
         None
     };
     let has_code_walkthrough = editor.ai_chat_has_pending_code_explanation();
-    let ai_selection = if editor.mode() == crate::mode::Mode::AiPrompt || has_code_walkthrough {
+    let ai_selection = if has_code_walkthrough {
         editor.ai_state.active_selection.as_ref()
     } else {
         None
@@ -1560,34 +1440,13 @@ pub fn render_buffer(
             let has_ai_selection_on_line = ai_selection
                 .map(|selection| line_idx >= selection.start_line && line_idx <= selection.end_line)
                 .unwrap_or(false);
-            let line_start_char = rope.line_to_char(line_idx);
-            let mut line_end_char = if line_idx + 1 < rope.len_lines() {
-                rope.line_to_char(line_idx + 1)
-            } else {
-                rope.len_chars()
-            };
-            if line_end_char > line_start_char && rope.char(line_end_char - 1) == '\n' {
-                line_end_char = line_end_char.saturating_sub(1);
-            }
-            let has_ai_lock_on_line = buffer
-                .ai_locks()
-                .iter()
-                .filter(|lock| lock.blocks_edits)
-                .any(|lock| lock.start_char < line_end_char && lock.end_char > line_start_char);
-            let has_ai_generated_on_line = editor.ai_regions().iter().any(|region| {
-                region.status == AiRegionStatus::Generated
-                    && region.start_char < line_end_char
-                    && region.end_char > line_start_char
-            });
             let is_stable = !has_visual_on_line
                 && !is_cursor_line_early
                 && !is_cursor_line_for_conceal
                 && !has_yank_flash
                 && !has_bracket
                 && !has_search
-                && !has_ai_selection_on_line
-                && !has_ai_lock_on_line
-                && !has_ai_generated_on_line;
+                && !has_ai_selection_on_line;
 
             let md_conceal = editor.options.markdown_conceal;
             // Per-line decoration hash from the per-frame projection. Lets the
@@ -1899,26 +1758,12 @@ pub fn render_buffer(
                 })
                 .collect();
             let line_char_count = line_text_original.chars().count();
-            let viewport_slice = ViewportSlice {
-                line_idx,
-                line_content_chars: line_char_count,
-                char_mapping: &char_mapping,
-                expanded_text: &expanded_text,
-                line_text,
-                wrap,
-                h_offset,
-                text_width,
-                precedes,
-            };
-            let ai_lock_ranges = lock_ranges_for_line(buffer, &viewport_slice);
-            let (ai_generated_ranges, ai_selected_ranges) =
-                ai_region_ranges_for_line(editor, &viewport_slice);
             let ai_selection_ranges = if let Some(selection) = ai_selection {
                 if line_idx < selection.start_line || line_idx > selection.end_line {
                     Vec::new()
                 } else {
                     let (start_col, end_col_inclusive) =
-                        if selection.mode_before_prompt == crate::mode::Mode::VisualLine {
+                        if selection.selection_mode == crate::mode::Mode::VisualLine {
                             if line_char_count == 0 {
                                 (0, 0)
                             } else {
@@ -2008,9 +1853,6 @@ pub fn render_buffer(
                 || has_diagnostics
                 || yank_flash.is_some()
                 || !ai_selection_ranges.is_empty()
-                || !ai_lock_ranges.is_empty()
-                || !ai_generated_ranges.is_empty()
-                || !ai_selected_ranges.is_empty()
                 || !concealed_links.is_empty()
                 || any_decoration;
 
@@ -2061,24 +1903,6 @@ pub fn render_buffer(
                 };
                 for (start_col, end_col) in &ai_selection_ranges {
                     apply_bg_to_column_range(&mut line, *start_col, *end_col, ai_selection_bg);
-                }
-
-                // Generated AI edits stay visible after completion with a muted background.
-                let ai_generated_bg = Color::Rgb(30, 48, 38);
-                for (start_col, end_col) in &ai_generated_ranges {
-                    apply_bg_to_column_range(&mut line, *start_col, *end_col, ai_generated_bg);
-                }
-
-                // Highlight active AI lock spans so users see protected regions.
-                let ai_lock_bg = Color::Rgb(26, 44, 62);
-                for (start_col, end_col) in &ai_lock_ranges {
-                    apply_bg_to_column_range(&mut line, *start_col, *end_col, ai_lock_bg);
-                }
-
-                // When cursor is inside an AI block, highlight the whole block as selected.
-                let ai_selected_bg = Color::Rgb(44, 64, 78);
-                for (start_col, end_col) in &ai_selected_ranges {
-                    apply_bg_to_column_range(&mut line, *start_col, *end_col, ai_selected_bg);
                 }
 
                 // Apply concealed link underline styling
@@ -2900,31 +2724,6 @@ mod tests {
         cache.put(1, 0, 1, 0, 80, false, 4, false, h1, Line::from("row"), true);
         assert!(cache.get(1, 0, 1, 0, 80, false, 4, false, h1).is_some());
         assert!(cache.get(1, 0, 1, 0, 80, false, 4, false, h2).is_none());
-    }
-
-    #[test]
-    fn test_lock_ranges_for_line_basic() {
-        let mut buffer = crate::buffer::Buffer::new_from_str("hello world\n");
-        buffer.add_ai_lock(1, 6, 11);
-
-        let line_text = "hello world";
-        let exp = expand_tabs_with_mapping(line_text, 4);
-        let expanded = exp.text;
-        let char_mapping = exp.char_mapping;
-
-        let slice = ViewportSlice {
-            line_idx: 0,
-            line_content_chars: line_text.chars().count(),
-            char_mapping: &char_mapping,
-            expanded_text: &expanded,
-            line_text: &expanded,
-            wrap: true,
-            h_offset: 0,
-            text_width: 80,
-            precedes: false,
-        };
-        let ranges = lock_ranges_for_line(&buffer, &slice);
-        assert_eq!(ranges, vec![(6, 10)]);
     }
 
     #[test]

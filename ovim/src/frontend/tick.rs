@@ -538,9 +538,6 @@ async fn poll_background_tasks(editor: &mut Editor) {
     if editor.poll_pending_codex_auth() {
         editor.mark_dirty();
     }
-    if editor.poll_pending_ai_jobs() {
-        editor.mark_dirty();
-    }
     if editor.poll_pending_make() {
         editor.mark_dirty();
     }

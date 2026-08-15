@@ -24,9 +24,9 @@ use super::overlays::{
 };
 use super::picker_widget::{render_picker, Fill};
 use super::status_widgets::{
-    ai_prompt_panel_height, render_ai_prompt_line, render_command_line, render_margin_widgets,
-    render_message_line, render_path_completion, render_progress_line, render_rename_input,
-    render_search_line, render_status_line, render_tab_bar, render_top_right_toasts,
+    render_command_line, render_margin_widgets, render_message_line, render_path_completion,
+    render_progress_line, render_rename_input, render_search_line, render_status_line,
+    render_tab_bar, render_top_right_toasts,
 };
 
 // ---------------------------------------------------------------------------
@@ -127,15 +127,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
     // Buffer + optional progress line + status line + command/prompt area
     let has_progress = editor.lsp_progress_message().is_some();
     let is_ai_chat = editor.mode() == crate::mode::Mode::AiChat;
-    let command_height = if editor.mode() == crate::mode::Mode::AiPrompt {
-        let max_height = content_area
-            .height
-            .saturating_sub(if has_progress { 2 } else { 1 })
-            .max(1);
-        ai_prompt_panel_height(editor, content_area.width, max_height)
-    } else {
-        1
-    };
+    let command_height = 1;
 
     // Interactive walkthroughs temporarily dedicate the shared content width
     // to code. The chat remains alive and resumes as soon as the walkthrough
@@ -342,22 +334,12 @@ fn render_status_area(frame: &mut Frame, editor: &mut Editor, theme: &Theme, are
     render_status_line(frame, editor, theme, areas.status_chunk);
 
     // Command/message line below the status line
-    editor.render_cache.ai_prompt_input_area = None;
-    editor.render_cache.ai_prompt_input_rows.clear();
-    editor.render_cache.ai_prompt_model_hitboxes.clear();
-    editor.render_cache.ai_prompt_model_trigger_hitbox = None;
     if editor.mode() == crate::mode::Mode::Command {
         render_command_line(frame, editor, areas.command_chunk);
     } else if editor.mode() == crate::mode::Mode::Search {
         render_search_line(frame, editor, areas.command_chunk);
     } else if editor.mode() == crate::mode::Mode::RenameInput {
         render_rename_input(frame, editor, areas.command_chunk);
-    } else if editor.mode() == crate::mode::Mode::AiPrompt {
-        let layout = render_ai_prompt_line(frame, editor, areas.command_chunk);
-        editor.render_cache.ai_prompt_input_area = layout.input_area;
-        editor.render_cache.ai_prompt_input_rows = layout.input_rows;
-        editor.render_cache.ai_prompt_model_hitboxes = layout.model_hitboxes;
-        editor.render_cache.ai_prompt_model_trigger_hitbox = layout.model_trigger_hitbox;
     } else {
         render_message_line(frame, editor, areas.command_chunk);
     }
@@ -619,35 +601,6 @@ fn set_cursor_position(
                     frame.set_cursor_position((cx, cy));
                 }
             }
-        }
-    } else if editor.mode() == crate::mode::Mode::AiPrompt {
-        if !editor.render_cache.ai_prompt_input_rows.is_empty() {
-            let cursor_byte = editor
-                .ai_prompt_cursor()
-                .min(editor.ai_prompt_input().len());
-            let mut row = *editor.render_cache.ai_prompt_input_rows.last().unwrap();
-            for candidate in &editor.render_cache.ai_prompt_input_rows {
-                if cursor_byte < candidate.2 {
-                    row = *candidate;
-                    break;
-                }
-            }
-            let row_start = row.1.min(editor.ai_prompt_input().len());
-            let row_end = row.2.min(editor.ai_prompt_input().len()).max(row_start);
-            let row_cursor = cursor_byte.clamp(row_start, row_end);
-            let cursor_display = editor.ai_prompt_input()[row_start..row_cursor]
-                .chars()
-                .map(crate::display::char_display_width)
-                .sum::<usize>();
-            let clamped_x = row
-                .0
-                .x
-                .saturating_add(cursor_display.min(row.0.width.saturating_sub(1) as usize) as u16);
-            frame.set_cursor_position((clamped_x, row.0.y));
-        } else if let Some(input_area) = editor.render_cache.ai_prompt_input_area {
-            frame.set_cursor_position((input_area.x, input_area.y));
-        } else {
-            frame.set_cursor_position((command_chunk.x, command_chunk.y));
         }
     } else {
         let rope = editor.buffer().rope();
@@ -1049,7 +1002,6 @@ impl Renderer {
             | crate::mode::Mode::Search
             | crate::mode::Mode::RenameInput
             | crate::mode::Mode::FileTree
-            | crate::mode::Mode::AiPrompt
             | crate::mode::Mode::AiChat => SetCursorStyle::BlinkingBar,
             _ => SetCursorStyle::SteadyBlock,
         };

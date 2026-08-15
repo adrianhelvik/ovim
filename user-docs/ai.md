@@ -31,7 +31,7 @@ lineage can periodically invalidate each other. Codex CLI may be installed and
 signed in separately, but it is not required for Ovim.
 
 The built-in defaults use `gpt-5.6-sol` at medium effort for chat and
-`gpt-5.6-terra` at low effort for selection edits and read-only queries. With
+`gpt-5.6-terra` at low effort for read-only queries. With
 the default `codex` provider, Ovim—not Codex app-server—is the agent harness.
 Ovim sends its own tool schemas, records tool intent, applies auto-mode policy,
 executes approved effects in the repository, and returns results for the next
@@ -298,7 +298,6 @@ Use `vim.ai.setup(...)` in Lua to customize these defaults.
 vim.ai.setup({
   default_profile = "codex_terra",
   contexts = {
-    selection = "codex_terra",
     chat = "codex_sol",
     query = "codex_terra",
   },
@@ -328,7 +327,7 @@ credential lineage for renewal and shows the browser sign-in dialog the next
 time Codex inference is opened or submitted.
 
 To change accounts manually, remove Ovim's `codex-auth.json`, then open AI chat
-or a visual-selection edit and press `Enter` in the sign-in dialog. This does
+and press `Enter` in the sign-in dialog. This does
 not sign Codex CLI in or out.
 
 To retain the previous Codex-owned harness explicitly, configure

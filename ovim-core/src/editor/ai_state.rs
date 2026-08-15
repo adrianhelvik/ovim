@@ -1,13 +1,12 @@
 use crate::ai::chat_types::{ConversationTree, NodeId};
 use crate::ai::skills::SkillCatalog;
 use crate::ai::tools::ToolRegistry;
-use crate::ai::{AiConfig, AiJobResult, EditFormat, PROFILE_LOCAL};
+use crate::ai::{AiConfig, PROFILE_LOCAL};
 use crate::buffer::BufferId;
 use crate::mode::Mode;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
 
 pub(crate) struct DurableRunServices {
     pub store: Arc<crate::run_log::LocalRunStore>,
@@ -26,14 +25,6 @@ pub struct ChatRuntimeNodeRef {
     pub branch: crate::agent_runtime::BranchLocator,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct AiPromptState {
-    pub input: String,
-    pub cursor: usize,
-    pub model_picker_open: bool,
-    pub model_picker_index: usize,
-}
-
 #[derive(Debug, Clone)]
 pub struct AiSelectionSnapshot {
     /// Buffer the coordinates and selected text were captured from.
@@ -49,43 +40,7 @@ pub struct AiSelectionSnapshot {
     pub end_char: usize,
     pub anchor_line: usize,
     pub selected_text: String,
-    pub mode_before_prompt: Mode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AiRegionStatus {
-    Running,
-    Generated,
-    Failed,
-    Cancelled,
-}
-
-#[derive(Debug, Clone)]
-pub struct AiEditRegion {
-    pub id: u64,
-    pub start_char: usize,
-    pub end_char: usize,
-    pub status: AiRegionStatus,
-    pub prompt: String,
-    pub original_text: String,
-    pub generated_text: String,
-    pub profile_name: String,
-    pub provider_label: String,
-    pub edit_format: EditFormat,
-    pub reasoning_lines: Vec<String>,
-    pub raw_output: Option<String>,
-    pub created_at: Instant,
-    pub updated_at: Instant,
-}
-
-pub struct PendingAiJob {
-    pub job_id: u64,
-    pub lock_id: u64,
-    pub selection: AiSelectionSnapshot,
-    pub submitted_at: Instant,
-    pub task: tokio::task::JoinHandle<anyhow::Result<AiJobResult>>,
-    pub receiver: tokio::sync::oneshot::Receiver<anyhow::Result<AiJobResult>>,
-    pub completed_result: Option<anyhow::Result<AiJobResult>>,
+    pub selection_mode: Mode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,10 +61,6 @@ pub struct CodexAuthDialogSummary {
 pub(crate) enum CodexAuthResume {
     None,
     SubmitChat,
-    SubmitSelection {
-        buffer_id: BufferId,
-        buffer_version: usize,
-    },
 }
 
 pub(crate) struct CodexAuthDialog {
@@ -148,21 +99,12 @@ pub struct AiState {
     /// Dedicated read-only delegated-agent control plane. It snapshots the
     /// startup config and never replaces root chat orchestration.
     pub(crate) subagents: Box<super::ai_subagents::AiSubagentService>,
-    pub prompt: AiPromptState,
     pub active_selection: Option<AiSelectionSnapshot>,
-    pub pending_jobs: Vec<PendingAiJob>,
-    /// Global because both chat and selection inference can require sign-in.
+    /// Global because opening chat can require sign-in.
     pub(crate) codex_auth_dialog: Option<CodexAuthDialog>,
     pub(crate) pending_codex_auth: Option<PendingCodexAuth>,
     pub(crate) pending_external_url: Option<String>,
-    pub regions: Vec<AiEditRegion>,
-    pub selected_region_id: Option<u64>,
-    pub selection_hold_until_exit: bool,
     pub active_profile: String,
-    pub edit_format: EditFormat,
-    pub next_lock_id: u64,
-    pub next_job_id: u64,
-    pub last_observed_buffer_version: usize,
     /// Active chat session state (None when chat is closed).
     pub chat: Option<super::ai_chat_state::AiChatState>,
     /// Persistent conversations keyed by (stable_buffer_id, conversation_name).
@@ -205,14 +147,10 @@ impl AiState {
         } else {
             PROFILE_LOCAL.to_string()
         };
-        let edit_format = config
-            .resolve_profile(&default_profile)
-            .map(|profile| profile.edit_format.clone())
-            .unwrap_or_default();
 
         // Initialize default contexts if empty
         if config.contexts.is_empty() {
-            for ctx in &["selection", "chat", "query"] {
+            for ctx in &["chat", "query"] {
                 config
                     .contexts
                     .insert(ctx.to_string(), default_profile.clone());
@@ -236,20 +174,11 @@ impl AiState {
             resume_durable_conversations: false,
             config,
             subagents,
-            prompt: AiPromptState::default(),
             active_selection: None,
-            pending_jobs: Vec::new(),
             codex_auth_dialog: None,
             pending_codex_auth: None,
             pending_external_url: None,
-            regions: Vec::new(),
-            selected_region_id: None,
-            selection_hold_until_exit: false,
             active_profile: default_profile,
-            edit_format,
-            next_lock_id: 1,
-            next_job_id: 1,
-            last_observed_buffer_version: 0,
             chat: None,
             conversations: HashMap::new(),
             conversation_runtime_nodes: HashMap::new(),

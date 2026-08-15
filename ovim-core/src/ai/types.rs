@@ -221,13 +221,3 @@ pub struct AiJobResult {
     /// Elision markers detected in the replacement text (empty = clean).
     pub elision_markers: Vec<String>,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BufferLock {
-    pub id: u64,
-    pub start_char: usize,
-    pub end_char: usize,
-    /// Whether edits overlapping this range should be blocked.
-    /// Running AI jobs use `true`; generated-range tracking uses `false`.
-    pub blocks_edits: bool,
-}

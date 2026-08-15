@@ -85,7 +85,7 @@ impl Default for ChatContextConfig {
 pub struct AiConfig {
     pub default_profile: String,
     pub profiles: HashMap<String, AiProfileConfig>,
-    /// Maps context names ("chat", "selection", "query") to profile names.
+    /// Maps context names (such as "chat" and "query") to profile names.
     pub contexts: HashMap<String, String>,
     /// Named API key sources (env var or file).
     pub api_key_registry: HashMap<String, ApiKeyConfig>,
