@@ -989,7 +989,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         KeyCode::Char('=') => {
             if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
-                let options = editor.options.indent_options();
+                let options = editor.indent_options();
                 let cursor_before = editor.cursor_position();
                 let ((), edits) = editor.buffer_mut().record(|buf| {
                     let _ = helpers::auto_indent_lines(buf, start_line, end_line + 1, options);

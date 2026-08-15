@@ -567,9 +567,8 @@ impl Editor {
                 .map_err(|e| format!("failed to open '{}': {}", absolute_path.display(), e))?;
             // Push directly (not add_buffer) to avoid changing current_buffer_index
             // or % register — AI chat tracks its active buffer via active_buffer_id.
-            self.buffers.push(buffer);
+            let idx = self.push_buffer(buffer);
             self.lsp.state.needs_lsp_init = true;
-            let idx = self.buffers.len().saturating_sub(1);
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.active_buffer_id = self.buffers[idx].id();
             }
@@ -593,9 +592,8 @@ impl Editor {
         let mut buffer = crate::buffer::Buffer::new();
         buffer.set_file_path(absolute_path.to_string_lossy().to_string());
         // Push directly (not add_buffer) — see comment above.
-        self.buffers.push(buffer);
+        let idx = self.push_buffer(buffer);
         self.lsp.state.needs_lsp_init = true;
-        let idx = self.buffers.len().saturating_sub(1);
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.active_buffer_id = self.buffers[idx].id();
         }

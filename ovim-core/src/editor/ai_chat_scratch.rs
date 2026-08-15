@@ -19,6 +19,7 @@ impl Editor {
         // Create a new buffer with the current input
         let mut buffer = crate::buffer::Buffer::default();
         buffer.replace_all(&original_input);
+        buffer.set_indent_options(self.indent_options());
         let scratch_buffer_id = buffer.id();
         self.buffers.push(buffer);
         let scratch_index = self.buffers.len() - 1;
@@ -56,7 +57,9 @@ impl Editor {
             self.buffers.remove(index);
         }
         if self.buffers.is_empty() {
-            self.buffers.push(crate::buffer::Buffer::default());
+            let mut buffer = crate::buffer::Buffer::default();
+            buffer.set_indent_options(self.options.indent_options());
+            self.buffers.push(buffer);
         }
         if let Some(index) = self.find_buffer_index_by_id(scratch.original_buffer_id) {
             self.current_buffer_index = index;

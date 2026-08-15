@@ -45,6 +45,37 @@ impl IndentOptions {
         }
     }
 
+    /// Overlay the indentation fields accepted from a Vim modeline. Invalid
+    /// widths are ignored so an untrusted file cannot create unsafe editor
+    /// state (for example, `tabstop=0`).
+    pub fn with_modeline(mut self, modeline: &crate::modeline::Modeline) -> Self {
+        if let Some(value) = modeline
+            .get_int("tabstop", "ts")
+            .filter(|value| (1..=16).contains(value))
+        {
+            self.tab_width = value;
+        }
+        if let Some(value) = modeline
+            .get_int("shiftwidth", "sw")
+            .filter(|value| (1..=16).contains(value))
+        {
+            self.shift_width = value;
+        }
+        if let Some(value) = modeline
+            .get_signed_int("softtabstop", "sts")
+            .filter(|value| (-1..=16).contains(value))
+        {
+            self.soft_tab_stop = value;
+        }
+        if let Some(value) = modeline.get_bool("expandtab", "et") {
+            self.expand_tab = value;
+        }
+        if let Some(value) = modeline.get_bool("copyindent", "ci") {
+            self.copy_indent = value;
+        }
+        self.normalized()
+    }
+
     /// Effective insert-mode soft-tab width.
     pub fn effective_soft_tab_width(self) -> usize {
         let options = self.normalized();

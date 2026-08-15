@@ -528,7 +528,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let cursor = editor.buffer().cursor();
             let start_line = cursor.line();
             let end_line = start_line + count;
-            let options = editor.options.indent_options();
+            let options = editor.indent_options();
             helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, options)?;
             editor.clear_count();
             true
@@ -537,7 +537,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let cursor = editor.buffer().cursor();
             let start_line = cursor.line();
             let end_line = start_line + count + 1;
-            let options = editor.options.indent_options();
+            let options = editor.indent_options();
             helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, options)?;
             editor.clear_count();
             true
@@ -547,7 +547,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let current_line = cursor.line();
             let start_line = current_line.saturating_sub(count);
             let end_line = current_line + 1;
-            let options = editor.options.indent_options();
+            let options = editor.indent_options();
             helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, options)?;
             editor.clear_count();
             true
@@ -708,7 +708,7 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
             helpers::dedent_lines_with_tracking(editor, start_line, end_line + 1, cursor_before)?;
         }
         Operator::AutoIndent => {
-            let options = editor.options.indent_options();
+            let options = editor.indent_options();
             helpers::auto_indent_lines_with_tracking(editor, start_line, end_line + 1, options)?;
         }
         Operator::Delete => {
@@ -842,7 +842,7 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
             helpers::dedent_lines_with_tracking(editor, start_line, end_line + 1, cursor_before)?;
         }
         Operator::AutoIndent => {
-            let options = editor.options.indent_options();
+            let options = editor.indent_options();
             helpers::auto_indent_lines_with_tracking(editor, start_line, end_line + 1, options)?;
         }
         Operator::Fold => {

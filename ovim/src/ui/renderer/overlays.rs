@@ -104,7 +104,7 @@ pub fn render_hover_window(
     // Convert cursor to screen coordinates
     let rope = editor.buffer().rope();
     let line_text = ovim_core::display::line_content(rope, cursor_line);
-    let tab_width = editor.options.tab_width;
+    let tab_width = editor.indent_options().tab_width;
     let char_col = ovim_core::unicode::grapheme_to_char_col(
         &line_text,
         ovim_core::unicode::GraphemeCol(cursor_col),
@@ -299,7 +299,7 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
     let line_text = ovim_core::display::line_content(rope, cursor_line);
 
     // Convert character column to display column (accounting for tabs, emojis, and inline decorations)
-    let tab_width = editor.options.tab_width;
+    let tab_width = editor.indent_options().tab_width;
     let char_col = ovim_core::unicode::grapheme_to_char_col(
         &line_text,
         ovim_core::unicode::GraphemeCol(cursor_col),
@@ -760,7 +760,7 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &mut Editor) {
                     buffer.width,
                     buffer.height,
                     body,
-                    editor.options.tab_width,
+                    editor.indent_options().tab_width,
                 ) else {
                     return;
                 };
@@ -789,7 +789,7 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &mut Editor) {
                     buffer.width,
                     buffer.height,
                     comment,
-                    editor.options.tab_width,
+                    editor.indent_options().tab_width,
                 ) else {
                     return;
                 };

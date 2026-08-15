@@ -159,7 +159,7 @@ pub fn insert_char(editor: &mut Editor, c: char) -> Result<()> {
 }
 
 pub fn insert_newline(editor: &mut Editor) -> Result<()> {
-    let options = editor.options.indent_options();
+    let options = editor.indent_options();
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
@@ -268,7 +268,7 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
         let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
         let char_col = grapheme_to_char_col(&line_text, grapheme_col);
         let before: String = line_text.chars().take(char_col.0).collect();
-        let options = editor.options.indent_options();
+        let options = editor.indent_options();
 
         // Soft-tab backspace is visual-column based and works for spaces,
         // hard tabs, and mixed prefixes. Re-encoding the prefix avoids
@@ -433,7 +433,7 @@ pub fn indent_line_insert(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    let options = editor.options.indent_options();
+    let options = editor.indent_options();
     let (current_width, old_indent_chars) = editor
         .buffer()
         .line_text(line_idx)
@@ -469,7 +469,7 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    let options = editor.options.indent_options();
+    let options = editor.indent_options();
 
     // Get current line
     let line_text = match editor.buffer().line_text(line_idx) {
@@ -539,7 +539,7 @@ pub fn electric_dedent_close_bracket(editor: &mut Editor, c: char) -> Result<()>
 pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
-    let options = editor.options.indent_options();
+    let options = editor.indent_options();
 
     // Reconstruct indentation from visual width unless copyindent requests the
     // source line's exact whitespace representation.
@@ -593,7 +593,7 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
 pub fn insert_line_above(editor: &mut Editor) -> Result<bool> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
-    let options = editor.options.indent_options();
+    let options = editor.indent_options();
 
     // Get indentation from current line in the configured representation.
     let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
@@ -1291,7 +1291,7 @@ pub fn indent_lines_with_tracking(
     end_line: usize,
     cursor_before: CursorPos,
 ) -> Result<()> {
-    let options = editor.options.indent_options();
+    let options = editor.indent_options();
     let actual_end = end_line.min(editor.buffer().line_count());
 
     let ((), edits) = editor.buffer_mut().record(|buf| {
@@ -1321,7 +1321,7 @@ pub fn dedent_lines_with_tracking(
     end_line: usize,
     cursor_before: CursorPos,
 ) -> Result<()> {
-    let options = editor.options.indent_options();
+    let options = editor.indent_options();
     let ((), edits) = editor.buffer_mut().record(|buf| {
         let actual_end = end_line.min(buf.line_count());
         buf.dedent_lines_at(start_line, actual_end, options);
@@ -1963,7 +1963,7 @@ pub fn auto_indent_lines_with_tracking(
 
 /// Insert a tab character or equivalent spaces, respecting expandtab.
 pub fn insert_tab(editor: &mut Editor) -> Result<()> {
-    let options = editor.options.indent_options();
+    let options = editor.indent_options();
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();

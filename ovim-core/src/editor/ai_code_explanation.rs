@@ -827,7 +827,7 @@ impl Editor {
                 let body_rows = concept_body_rows_for_viewport(
                     presentation_width,
                     &body,
-                    self.options.tab_width,
+                    self.indent_options().tab_width,
                 );
                 let row_limit = concept_body_row_limit(presentation_height);
                 if body_rows > row_limit {
@@ -851,8 +851,11 @@ impl Editor {
                     "step {step_number} comment exceeds {MAX_WALKTHROUGH_COMMENT_BYTES} bytes"
                 )));
             }
-            let comment_rows =
-                comment_rows_for_viewport(presentation_width, &comment, self.options.tab_width);
+            let comment_rows = comment_rows_for_viewport(
+                presentation_width,
+                &comment,
+                self.indent_options().tab_width,
+            );
             if comment_rows > MAX_WALKTHROUGH_COMMENT_ROWS {
                 return Err(ToolResult::Error(format!(
                     "step {step_number} comment wraps to {comment_rows} rows; keep it within {MAX_WALKTHROUGH_COMMENT_ROWS} rows or split the explanation into focused steps"
@@ -1031,7 +1034,7 @@ impl Editor {
                         crate::wrap::visual_line_count(
                             lines.get(line).copied().unwrap_or(""),
                             width,
-                            self.options.tab_width,
+                            self.indent_options().tab_width,
                         ),
                     )
                 })

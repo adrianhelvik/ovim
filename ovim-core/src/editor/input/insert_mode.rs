@@ -154,7 +154,7 @@ fn exit_insert_mode(editor: &mut Editor) {
             Some(RepeatAction::OpenLine {
                 above: matches!(mode, InsertEntryMode::OpenAbove),
                 inserted_text,
-                options: editor.options.indent_options(),
+                options: editor.indent_options(),
             })
         }
         _ => None,

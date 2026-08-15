@@ -224,7 +224,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                         .unwrap_or_default(),
                     cursor.col(),
                 );
-                let tab_width = editor.options.tab_width;
+                let tab_width = editor.indent_options().tab_width;
 
                 // Convert char col to display col for wrap map operations
                 let line_text = editor
@@ -295,7 +295,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                         .unwrap_or_default(),
                     cursor.col(),
                 );
-                let tab_width = editor.options.tab_width;
+                let tab_width = editor.indent_options().tab_width;
 
                 let line_text = editor
                     .buffer()
@@ -767,7 +767,7 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
         Some(m) => m,
         None => return Ok(()),
     };
-    let tab_width = editor.options.tab_width;
+    let tab_width = editor.indent_options().tab_width;
 
     let line_text = editor
         .buffer()

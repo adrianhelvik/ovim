@@ -36,6 +36,22 @@ pub(crate) fn is_scratch_buffer(buffer: &crate::buffer::Buffer) -> bool {
 }
 
 impl Editor {
+    /// Resolve editor defaults plus a file's modeline into a stable policy.
+    /// EditorConfig is layered into this same seam by the configuration pass.
+    pub(crate) fn initialize_buffer_indent_options(&self, buffer: &mut Buffer) {
+        if buffer.indent_options().is_some() {
+            return;
+        }
+
+        let mut options = self.options.indent_options();
+        if buffer.file_path().is_some() {
+            if let Some(modeline) = crate::modeline::Modeline::parse(&buffer.rope().to_string()) {
+                options = options.with_modeline(&modeline);
+            }
+        }
+        buffer.set_indent_options(options);
+    }
+
     /// Gets a reference to the current buffer
     pub fn buffer(&self) -> &Buffer {
         &self.buffers[self.current_buffer_index]
@@ -103,6 +119,7 @@ impl Editor {
     pub fn push_buffer(&mut self, buf: Buffer) -> usize {
         let mut buf = buf;
         buf.set_language_catalog(self.language_catalog.clone());
+        self.initialize_buffer_indent_options(&mut buf);
         self.buffers.push(buf);
         self.buffers.len() - 1
     }
@@ -294,6 +311,7 @@ impl Editor {
     /// Adds a new buffer and switches to it
     pub fn add_buffer(&mut self, mut buffer: Buffer) {
         buffer.set_language_catalog(self.language_catalog.clone());
+        self.initialize_buffer_indent_options(&mut buffer);
         self.buffers.push(buffer);
         self.current_buffer_index = self.buffers.len() - 1;
         self.clear_lsp_state();
@@ -350,11 +368,11 @@ impl Editor {
 
         // Load the file into a new buffer (don't switch to it)
         let buffer = Buffer::load_file(&file_path).ok()?;
-        self.buffers.push(buffer);
+        let index = self.push_buffer(buffer);
         // Note: We intentionally don't change current_buffer_index here
         // to avoid switching away from the user's current file
 
-        Some(self.buffers.len() - 1)
+        Some(index)
     }
 
     /// Applies a batch of LSP `TextEdit`s to a buffer per the spec's ordering
@@ -754,8 +772,12 @@ impl Editor {
         // file_path() is always Some. The unwrap_or is a defensive fallback
         // that is unreachable in practice.
         let buffer = Buffer::load_file(path)?;
+        let modeline = crate::modeline::Modeline::parse(&buffer.rope().to_string());
         let resolved_path = buffer.file_path().unwrap_or(path_str).to_string();
         self.add_buffer(buffer);
+        if let Some(modeline) = modeline.as_ref() {
+            self.apply_modeline(modeline);
+        }
         self.registers.set_current_file(resolved_path);
         Ok(())
     }
@@ -890,6 +912,73 @@ mod tests {
             .expect("switch to existing markdown buffer");
         assert_eq!(editor.lsp_status(), "");
         assert_eq!(editor.status_message(), "");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn indentation_policy_is_buffer_local_across_sync_and_async_loads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let spaces = dir.path().join("spaces.rs");
+        let tabs = dir.path().join("tabs.rs");
+        fs::write(
+            &spaces,
+            "// vim: set ts=2 sw=2 sts=-1 et:\nfn spaces() {}\n",
+        )
+        .expect("write spaces");
+        fs::write(&tabs, "// vim: set ts=8 sw=4 sts=4 noet:\nfn tabs() {}\n").expect("write tabs");
+
+        let mut editor = Editor::default();
+        editor.open_file(&spaces).expect("sync open spaces");
+        let spaces_index = editor.current_buffer_index();
+        assert_eq!(editor.indent_options().tab_width, 2);
+        assert_eq!(editor.indent_options().shift_width, 2);
+        assert!(editor.indent_options().expand_tab);
+
+        editor
+            .load_file_async(&tabs)
+            .await
+            .expect("async open tabs");
+        let tabs_index = editor.current_buffer_index();
+        assert_eq!(editor.indent_options().tab_width, 8);
+        assert_eq!(editor.indent_options().shift_width, 4);
+        assert!(!editor.indent_options().expand_tab);
+
+        editor.switch_to_buffer(spaces_index);
+        assert_eq!(editor.indent_options().tab_width, 2);
+        assert_eq!(editor.indent_options().shift_width, 2);
+        assert!(editor.indent_options().expand_tab);
+
+        editor.switch_to_buffer(tabs_index);
+        assert_eq!(editor.indent_options().tab_width, 8);
+        assert_eq!(
+            editor.options.tab_width, 4,
+            "modelines must not leak globally"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn set_updates_current_and_future_buffers_without_mutating_existing_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = dir.path().join("first.rs");
+        let second = dir.path().join("second.rs");
+        let future = dir.path().join("future.rs");
+        for path in [&first, &second, &future] {
+            fs::write(path, "fn main() {}\n").expect("write file");
+        }
+
+        let mut editor = Editor::default();
+        editor.open_file(&first).expect("open first");
+        let first_index = editor.current_buffer_index();
+        editor.open_file(&second).expect("open second");
+
+        let result = crate::cmd_set::handle_set_command(&mut editor, "shiftwidth=2");
+        assert!(matches!(result, crate::CommandResult::Success(_)));
+        assert_eq!(editor.indent_options().shift_width, 2);
+
+        editor.switch_to_buffer(first_index);
+        assert_eq!(editor.indent_options().shift_width, 4);
+
+        editor.open_file(&future).expect("open future");
+        assert_eq!(editor.indent_options().shift_width, 2);
     }
 
     /// OV-00231: When a workspace edit modifies a file the user has not

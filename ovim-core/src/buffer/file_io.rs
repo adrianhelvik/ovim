@@ -135,6 +135,7 @@ impl Buffer {
             ai_lock_blocked: false,
             ai_lock_bypass_depth: 0,
             display_name: None,
+            indent_options: None,
         };
 
         // Don't enable syntax highlighting immediately - defer for lazy loading

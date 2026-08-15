@@ -133,7 +133,7 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
     // text — resolve a *view* char index there, then map it back to a source
     // char column via the conceal transform.
     let raw_line = raw_line_text(buffer_line);
-    let tab_width = editor.options.tab_width;
+    let tab_width = editor.indent_options().tab_width;
     let char_col = if conceal_active && buffer_line != cursor_line {
         let spans = scan_markdown_conceal(&raw_line);
         if spans.is_empty() {
@@ -653,7 +653,7 @@ fn handle_ai_chat_input_click(editor: &mut Editor, col: u16, row: u16) -> bool {
                 end,
             },
             col.saturating_sub(rect.x) as usize,
-            editor.options.tab_width,
+            editor.indent_options().tab_width,
         )
     } else {
         editor.ai_chat_input().len()

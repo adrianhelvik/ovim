@@ -81,7 +81,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         KeyCode::Char('t') => TextObjects::tag(editor.buffer(), text_obj_type == 'a'),
         KeyCode::Char('i') => {
-            let tab_width = editor.options.tab_width;
+            let tab_width = editor.indent_options().tab_width;
             if text_obj_type == 'i' {
                 TextObjects::inner_indent(editor.buffer(), tab_width)
             } else {
@@ -138,7 +138,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         KeyCode::Char('t') => TextObjectType::Tag { inner },
         KeyCode::Char('i') => TextObjectType::Indent {
             inner,
-            tab_width: editor.options.tab_width,
+            tab_width: editor.indent_options().tab_width,
         },
         KeyCode::Char('f') => TextObjectType::Function { inner },
         _ => unreachable!("text object key should be validated before object_type mapping"),

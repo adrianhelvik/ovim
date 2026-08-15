@@ -1187,7 +1187,7 @@ pub fn ai_prompt_panel_height(editor: &Editor, panel_width: u16, max_height: u16
         editor.ai_prompt_input(),
         first_row_width,
         continuation_row_width,
-        editor.options.tab_width,
+        editor.indent_options().tab_width,
         usize::MAX,
     )
     .len();
@@ -1391,7 +1391,7 @@ pub fn render_ai_prompt_line(
         prompt,
         first_row_width,
         continuation_row_width,
-        editor.options.tab_width,
+        editor.indent_options().tab_width,
         input_rows_area.height.max(1) as usize,
     );
 
