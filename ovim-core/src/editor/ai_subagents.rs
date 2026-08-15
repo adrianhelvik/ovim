@@ -15,7 +15,8 @@ use crate::agent_runtime::{
     DispatchRequest, FollowupAgentRequest, ModelFallbackPolicy, ProfileAgentProvider,
     ReasoningEffort, RequestedModelRoute, ScopedTool, SendAgentMessageRequest,
     SnapshotAgentLoopInputFactory, SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog,
-    WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy,
+    WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy, MAX_HANDOFF_ATTACHMENTS,
+    MAX_HANDOFF_ATTACHMENT_BYTES, MAX_HANDOFF_ATTACHMENT_TOTAL_BYTES,
 };
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::subagents::{
@@ -717,18 +718,45 @@ impl AiSubagentRun {
             media_type: String,
             content: String,
         }
-        const MAX_ATTACHMENT_BYTES: usize = 1024 * 1024;
         let args: Arguments =
             serde_json::from_value(call.arguments.clone()).map_err(|error| error.to_string())?;
         if args.name.trim().is_empty() || args.name.contains('/') || args.name.contains('\\') {
             return Err("attachment name must be a non-empty file name".into());
         }
-        if args.content.len() > MAX_ATTACHMENT_BYTES {
+        if !valid_media_type(&args.media_type) {
+            return Err(
+                "attachment media_type must be a normalized IANA-style type/subtype".into(),
+            );
+        }
+        if args.content.len() > MAX_HANDOFF_ATTACHMENT_BYTES {
             return Err(format!(
-                "attachment is {} bytes, maximum is {MAX_ATTACHMENT_BYTES}",
+                "attachment is {} bytes, maximum is {MAX_HANDOFF_ATTACHMENT_BYTES}",
                 args.content.len()
             ));
         }
+        let events = self
+            .store
+            .events(&self.run_id)
+            .map_err(|error| error.to_string())?;
+        let owned = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::AgentAttachment(attachment)
+                    if event.agent_id.as_ref() == Some(&call.handle.agent_id) =>
+                {
+                    Some(attachment)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let prior_bytes = owned
+            .iter()
+            .filter_map(|attachment| match attachment.artifact.state {
+                ArtifactState::Available { byte_len, .. } => Some(byte_len),
+                _ => None,
+            })
+            .sum::<u64>();
+        validate_attachment_budget(owned.len(), prior_bytes, args.content.len())?;
         let stored = self
             .artifact_store
             .put_bytes(args.content.as_bytes())
@@ -739,8 +767,8 @@ impl AiSubagentRun {
                 blob_id: stored.blob_id,
                 byte_len: stored.byte_len,
             },
-            source: ArtifactSource::Imported {
-                label: Some(args.name.clone()),
+            source: ArtifactSource::AgentHandoff {
+                name: args.name.clone(),
             },
             representation: ContentRepresentation::EditorText {
                 encoding: Some("utf-8".into()),
@@ -1196,6 +1224,44 @@ impl AiSubagentRun {
             .map_err(|error| error.to_string())?;
         Ok(json!({ "outcome": "interrupted", "agent_ids": interrupted }))
     }
+}
+
+fn validate_attachment_budget(
+    existing_count: usize,
+    existing_bytes: u64,
+    requested_bytes: usize,
+) -> Result<(), String> {
+    if existing_count >= MAX_HANDOFF_ATTACHMENTS {
+        return Err(format!(
+            "agent already created the maximum of {MAX_HANDOFF_ATTACHMENTS} handoff attachments"
+        ));
+    }
+    let requested_bytes = u64::try_from(requested_bytes)
+        .map_err(|_| "attachment size does not fit durable accounting".to_string())?;
+    let total_limit =
+        u64::try_from(MAX_HANDOFF_ATTACHMENT_TOTAL_BYTES).expect("attachment total limit fits u64");
+    if existing_bytes.saturating_add(requested_bytes) > total_limit {
+        return Err(format!(
+            "agent handoff attachments would exceed the {MAX_HANDOFF_ATTACHMENT_TOTAL_BYTES}-byte total limit"
+        ));
+    }
+    Ok(())
+}
+
+fn valid_media_type(value: &str) -> bool {
+    fn token(value: &str) -> bool {
+        !value.is_empty()
+            && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(
+                        byte,
+                        b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+                    )
+            })
+    }
+    value
+        .split_once('/')
+        .is_some_and(|(kind, subtype)| token(kind) && token(subtype))
 }
 
 fn agent_record_depth(
@@ -3341,6 +3407,21 @@ mod tests {
     }
 
     #[test]
+    fn attachment_budget_enforces_count_and_cumulative_bytes() {
+        assert!(validate_attachment_budget(0, 0, MAX_HANDOFF_ATTACHMENT_BYTES).is_ok());
+        assert!(validate_attachment_budget(MAX_HANDOFF_ATTACHMENTS, 0, 1)
+            .unwrap_err()
+            .contains("maximum"));
+        assert!(validate_attachment_budget(
+            8,
+            u64::try_from(MAX_HANDOFF_ATTACHMENT_TOTAL_BYTES).unwrap(),
+            1,
+        )
+        .unwrap_err()
+        .contains("total limit"));
+    }
+
+    #[test]
     fn idle_service_rebuilds_after_profile_merge() {
         let mut config = AiConfig::default();
         let mut service = AiSubagentService::new(&config);
@@ -3629,7 +3710,7 @@ mod tests {
         let input = run.input_factory.build(&dispatch).unwrap();
         let result = input.tool_executor.execute(AgentToolCall {
             handle: dispatch.handle.clone(), causing_turn_id: dispatch.causing_turn_id.clone(),
-            caused_by_event: cause.event_id, tool_call_id: "attachment-call".into(),
+            caused_by_event: cause.event_id.clone(), tool_call_id: "attachment-call".into(),
             tool_name: CREATE_HANDOFF_ATTACHMENT_TOOL.into(),
             arguments: json!({"name":"review.md","media_type":"text/markdown","content":"# Durable review\nDetails"}),
             workspace: input.workspace,
@@ -3645,6 +3726,38 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| matches!(event.kind, EventKind::AgentAttachment(_))));
+        drop(events);
+
+        for index in 1..MAX_HANDOFF_ATTACHMENTS {
+            run.create_handoff_attachment(&AgentToolCall {
+                handle: dispatch.handle.clone(),
+                causing_turn_id: dispatch.causing_turn_id.clone(),
+                caused_by_event: cause.event_id.clone(),
+                tool_call_id: format!("attachment-{index}"),
+                tool_name: CREATE_HANDOFF_ATTACHMENT_TOOL.into(),
+                arguments: json!({
+                    "name": format!("report-{index}.md"),
+                    "media_type": "text/markdown",
+                    "content": "bounded",
+                }),
+                workspace: run.input_factory.build(&dispatch).unwrap().workspace,
+            })
+            .unwrap();
+        }
+        let overflow = run.create_handoff_attachment(&AgentToolCall {
+            handle: dispatch.handle.clone(),
+            causing_turn_id: dispatch.causing_turn_id.clone(),
+            caused_by_event: cause.event_id,
+            tool_call_id: "attachment-overflow".into(),
+            tool_name: CREATE_HANDOFF_ATTACHMENT_TOOL.into(),
+            arguments: json!({
+                "name": "overflow.md",
+                "media_type": "text/markdown",
+                "content": "too many",
+            }),
+            workspace: run.input_factory.build(&dispatch).unwrap().workspace,
+        });
+        assert!(overflow.unwrap_err().contains("maximum"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

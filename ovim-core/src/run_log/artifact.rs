@@ -198,6 +198,9 @@ pub enum ArtifactSource {
     Message {
         event_id: EventId,
     },
+    AgentHandoff {
+        name: String,
+    },
     Imported {
         label: Option<String>,
     },

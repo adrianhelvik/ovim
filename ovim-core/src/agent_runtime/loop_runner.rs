@@ -482,6 +482,12 @@ pub trait AgentLoopEventSink: Send + Sync {
         &self,
         event: AgentLoopEventRecord,
     ) -> AgentFuture<'_, Result<EventEnvelope, AgentLoopError>>;
+
+    fn validate_handoff_attachments(
+        &self,
+        handle: &DispatchHandle,
+        attachments: &[crate::run_log::ArtifactId],
+    ) -> AgentFuture<'_, Result<(), HandoffValidationError>>;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -923,8 +929,22 @@ impl AgentLoopRunner {
                         "provider returned a handoff with a tool still in flight",
                     )
                     .await?;
-                    match input.handoff_validator.validate_json(&payload, None) {
-                        Ok(handoff) => break handoff,
+                    let validation = match input.handoff_validator.validate_json(&payload, None) {
+                        Ok(handoff) => match input
+                            .event_sink
+                            .validate_handoff_attachments(
+                                &input.handle,
+                                &handoff.as_handoff().attachments,
+                            )
+                            .await
+                        {
+                            Ok(()) => break handoff,
+                            Err(error) => Err(error),
+                        },
+                        Err(error) => Err(error),
+                    };
+                    match validation {
+                        Ok(()) => unreachable!("valid handoffs break from the provider loop"),
                         Err(error) => {
                             let preserved =
                                 record_invalid_handoff(&input, &payload, &error, true).await?;
@@ -1573,6 +1593,23 @@ mod tests {
         ) -> AgentFuture<'_, Result<EventEnvelope, AgentLoopError>> {
             Box::pin(async move { self.append(record) })
         }
+
+        fn validate_handoff_attachments(
+            &self,
+            _handle: &DispatchHandle,
+            attachments: &[crate::run_log::ArtifactId],
+        ) -> AgentFuture<'_, Result<(), HandoffValidationError>> {
+            let has_attachments = !attachments.is_empty();
+            Box::pin(async move {
+                if has_attachments {
+                    Err(HandoffValidationError::InvalidAttachmentReference(
+                        "test sink cannot resolve attachments".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+        }
     }
 
     impl AgentLoopRuntimeHooks for RecordingHarness {
@@ -1947,6 +1984,30 @@ mod tests {
         assert!(!preserved.1.raw_payload.is_empty());
         assert!(preserved.1.repair_attempted);
         assert!(result.handoff.as_handoff().blockers[0].contains(preserved.0.event_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn invented_attachment_handoff_is_preserved_and_fails_validation() {
+        let harness = Arc::new(RecordingHarness::new());
+        let result = AgentLoopRunner::run(input(
+            "invalid_attachment_handoff",
+            harness.clone(),
+            AgentCancellationToken::new(),
+        ))
+        .await
+        .unwrap();
+
+        assert_eq!(result.handoff.status(), HandoffStatus::Failed);
+        let events = harness.sink.events(&result_event_run(&harness)).unwrap();
+        let invalid = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::AgentHandoffValidationFailed(failed) => Some(failed),
+                _ => None,
+            })
+            .expect("invented attachment handoff must be preserved");
+        assert!(invalid.error.contains("cannot resolve attachments"));
+        assert!(invalid.repair_attempted);
     }
 
     #[tokio::test]

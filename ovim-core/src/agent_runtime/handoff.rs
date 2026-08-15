@@ -10,6 +10,9 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 pub const STRUCTURED_HANDOFF_VERSION: u32 = 1;
+pub const MAX_HANDOFF_ATTACHMENT_BYTES: usize = 1024 * 1024;
+pub const MAX_HANDOFF_ATTACHMENTS: usize = 16;
+pub const MAX_HANDOFF_ATTACHMENT_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,7 +116,7 @@ impl Default for HandoffLimits {
             max_verification: 64,
             max_blockers: 32,
             max_followups: 32,
-            max_attachments: 16,
+            max_attachments: MAX_HANDOFF_ATTACHMENTS,
         }
     }
 }
@@ -559,6 +562,7 @@ pub enum HandoffValidationError {
     },
     DuplicatePath(String),
     DuplicateAttachment(ArtifactId),
+    InvalidAttachmentReference(String),
     InvalidEvidenceLine {
         index: usize,
     },
@@ -613,6 +617,9 @@ impl fmt::Display for HandoffValidationError {
             }
             Self::DuplicateAttachment(id) => {
                 write!(formatter, "handoff attachments repeats artifact {id}")
+            }
+            Self::InvalidAttachmentReference(detail) => {
+                write!(formatter, "invalid handoff attachment reference: {detail}")
             }
             Self::InvalidEvidenceLine { index } => {
                 write!(

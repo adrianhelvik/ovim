@@ -230,7 +230,9 @@ the parent reads selected content with `read_handoff_attachment`. Attachment
 blobs are content-addressed, retained with the run, and survive restart. An
 invalid or oversized handoff is preserved and returned to the retained child
 session for one repair attempt instead of being discarded at the provider
-boundary.
+boundary. Each child may create at most 16 attachments, each at most 1 MiB and
+at most 8 MiB in total. Terminalization verifies that every referenced artifact
+was durably created by that child.
 
 `send_message` queues a bounded parent-authored steer only to a live child.
 It does not start a new turn. Ovim records the message before notifying the

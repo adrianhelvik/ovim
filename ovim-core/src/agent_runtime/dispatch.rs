@@ -14,9 +14,9 @@ use crate::run_log::{
     AgentLifecycleEvent, AgentLifecycleState, AgentModelEffortSnapshot,
     AgentModelFallbackPolicySnapshot, AgentModelRouteResolutionSnapshot,
     AgentRequestedModelRouteSnapshot, AgentResolvedModelRouteSnapshot,
-    AgentWorkspacePolicySnapshot, AgentWorkspaceStrategySnapshot, EventActor, EventEnvelope,
-    EventId, EventKind, ManifestId, NewRunEvent, OperationId, RunEventSink, RunId, RunLogError,
-    ToolOutcome, TurnId, WorkspaceId, AGENT_FOLLOWUP_EVENT_VERSION,
+    AgentWorkspacePolicySnapshot, AgentWorkspaceStrategySnapshot, ArtifactId, EventActor,
+    EventEnvelope, EventId, EventKind, ManifestId, NewRunEvent, OperationId, RunEventSink, RunId,
+    RunLogError, ToolOutcome, TurnId, WorkspaceId, AGENT_FOLLOWUP_EVENT_VERSION,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -1248,6 +1248,37 @@ impl AgentDispatchScheduler {
             .collect::<Vec<_>>();
         records.sort_by_key(|agent| agent.queue_sequence);
         records
+    }
+
+    pub fn validate_handoff_attachments(
+        &self,
+        handle: &DispatchHandle,
+        attachments: &[ArtifactId],
+    ) -> Result<(), String> {
+        if !self.agents.contains_key(&handle.agent_id) {
+            return Err(format!("unknown agent {}", handle.agent_id));
+        }
+        let events = self
+            .sink
+            .events(&self.run_id)
+            .map_err(|error| error.to_string())?;
+        for artifact_id in attachments {
+            let owned = events.iter().any(|event| {
+                event.agent_id.as_ref() == Some(&handle.agent_id)
+                    && matches!(
+                        &event.kind,
+                        EventKind::AgentAttachment(attachment)
+                            if attachment.artifact.artifact_id == *artifact_id
+                    )
+            });
+            if !owned {
+                return Err(format!(
+                    "artifact {artifact_id} was not durably created by agent {}",
+                    handle.agent_id
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Append a provider/tool event to this child’s causal trace and advance
@@ -2628,7 +2659,9 @@ mod tests {
     };
     use crate::ai::AiConfig;
     use crate::run_log::{
-        AgentModelProfileSnapshot, InMemoryRunEventSink, MessageEvent, MessageRole,
+        AgentAttachmentEvent, AgentModelProfileSnapshot, ArtifactExportPolicy, ArtifactRecord,
+        ArtifactRetention, ArtifactSource, ArtifactState, BlobId, ContentRepresentation,
+        InMemoryRunEventSink, MessageEvent, MessageRole, AGENT_ATTACHMENT_EVENT_VERSION,
     };
 
     fn catalog() -> Arc<SubagentModelCatalog> {
@@ -2643,6 +2676,76 @@ mod tests {
             catalog(),
         );
         (scheduler, sink)
+    }
+
+    #[test]
+    fn handoff_attachment_references_must_be_durable_and_owned() {
+        let (mut scheduler, sink) = scheduler();
+        let first = scheduler
+            .dispatch(request(
+                AgentRoleTemplate::built_in(AgentKindName::Explorer),
+                WorkspaceId::new(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        let second = scheduler
+            .dispatch(request(
+                AgentRoleTemplate::built_in(AgentKindName::Explorer),
+                WorkspaceId::new(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        let artifact_id = ArtifactId::new();
+        let cause = sink
+            .events(&first.run_id)
+            .unwrap()
+            .last()
+            .unwrap()
+            .event_id
+            .clone();
+        sink.append(NewRunEvent {
+            run_id: first.run_id.clone(),
+            caused_by: Some(cause),
+            operation_id: None,
+            provider_call_id: None,
+            actor: EventActor::Agent(first.agent_id.clone()),
+            agent_id: Some(first.agent_id.clone()),
+            turn_id: None,
+            workspace_id: Some(first.workspace.workspace_id.clone()),
+            branch_id: None,
+            kind: EventKind::AgentAttachment(AgentAttachmentEvent {
+                version: AGENT_ATTACHMENT_EVENT_VERSION,
+                name: "report.md".into(),
+                artifact: ArtifactRecord {
+                    artifact_id: artifact_id.clone(),
+                    state: ArtifactState::Available {
+                        blob_id: BlobId::digest(b"report"),
+                        byte_len: 6,
+                    },
+                    source: ArtifactSource::Imported {
+                        label: Some("report.md".into()),
+                    },
+                    representation: ContentRepresentation::EditorText {
+                        encoding: Some("utf-8".into()),
+                        line_endings: None,
+                    },
+                    media_type: Some("text/markdown".into()),
+                    retention: ArtifactRetention::Run,
+                    export_policy: ArtifactExportPolicy::Include,
+                },
+            }),
+        })
+        .unwrap();
+
+        assert!(scheduler
+            .validate_handoff_attachments(&first, std::slice::from_ref(&artifact_id))
+            .is_ok());
+        assert!(scheduler
+            .validate_handoff_attachments(&second, std::slice::from_ref(&artifact_id))
+            .is_err());
+        assert!(scheduler
+            .validate_handoff_attachments(&first, &[ArtifactId::new()])
+            .is_err());
     }
 
     fn request(

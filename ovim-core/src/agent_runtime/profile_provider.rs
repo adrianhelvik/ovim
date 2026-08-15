@@ -8,7 +8,8 @@
 use super::{
     AgentFuture, AgentProviderAdapter, AgentProviderError, AgentProviderEvent,
     AgentProviderFollowup, AgentProviderSession, AgentProviderStart, AgentToolResult,
-    DelegationEnvelope, ProviderBinding, ScopedTool,
+    DelegationEnvelope, ProviderBinding, ScopedTool, MAX_HANDOFF_ATTACHMENTS,
+    MAX_HANDOFF_ATTACHMENT_BYTES,
 };
 use crate::ai::{
     redact_high_risk_tokens, AiConfig, AiProfileConfig, AiProviderKind, ApiKeyConfig, ChatMessage,
@@ -26,6 +27,7 @@ pub const SUBMIT_HANDOFF_TOOL: &str = "submit_handoff";
 pub const MAX_DELEGATION_SYSTEM_PROMPT_BYTES: usize = 32 * 1024;
 const MAX_PROVIDER_CONTENT_BYTES: usize = 128 * 1024;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
+const MAX_ATTACHMENT_TOOL_ARGUMENT_BYTES: usize = MAX_HANDOFF_ATTACHMENT_BYTES + 4 * 1024;
 
 /// One independently owned request to the shared streaming transport.
 ///
@@ -807,7 +809,7 @@ fn submit_handoff_schema() -> crate::ai::tools::StrictJsonSchema {
             },
             "blockers": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 2048 } },
             "followups": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 2048 } },
-            "attachments": { "type": "array", "maxItems": 16, "items": { "type": "string", "pattern": "^art_.+" } },
+            "attachments": { "type": "array", "maxItems": MAX_HANDOFF_ATTACHMENTS, "items": { "type": "string", "pattern": "^art_.+" } },
             "confidence": { "type": "string", "enum": ["low", "medium", "high"] }
         },
         "required": ["version", "status", "summary", "evidence", "changed_files", "verification", "blockers", "followups", "attachments", "confidence"]
@@ -919,9 +921,14 @@ fn validate_tool_call_shape(
     let bytes = serde_json::to_vec(arguments)
         .map_err(|error| AgentProviderError::new(error.to_string()))?
         .len();
-    if bytes > MAX_TOOL_ARGUMENT_BYTES {
+    let maximum = if name == crate::ai::tools::subagents::CREATE_HANDOFF_ATTACHMENT_TOOL {
+        MAX_ATTACHMENT_TOOL_ARGUMENT_BYTES
+    } else {
+        MAX_TOOL_ARGUMENT_BYTES
+    };
+    if bytes > maximum {
         return Err(AgentProviderError::new(format!(
-            "provider arguments for tool {name:?} exceeded {MAX_TOOL_ARGUMENT_BYTES} bytes"
+            "provider arguments for tool {name:?} exceeded {maximum} bytes"
         )));
     }
     Ok(())
@@ -1264,6 +1271,36 @@ mod tests {
             serde_json::from_slice::<Value>(&payload).unwrap(),
             oversized
         );
+    }
+
+    #[test]
+    fn attachment_tool_has_its_own_bounded_transport_ceiling() {
+        let at_limit = json!({
+            "name": "report.md",
+            "media_type": "text/markdown",
+            "content": "x".repeat(MAX_HANDOFF_ATTACHMENT_BYTES),
+        });
+        assert!(validate_tool_call_shape(
+            "attachment",
+            crate::ai::tools::subagents::CREATE_HANDOFF_ATTACHMENT_TOOL,
+            &at_limit,
+        )
+        .is_ok());
+
+        let ordinary = json!({ "content": "x".repeat(MAX_TOOL_ARGUMENT_BYTES) });
+        assert!(validate_tool_call_shape("ordinary", "read_snapshot", &ordinary).is_err());
+
+        let too_large = json!({
+            "name": "report.md",
+            "media_type": "text/markdown",
+            "content": "x".repeat(MAX_ATTACHMENT_TOOL_ARGUMENT_BYTES),
+        });
+        assert!(validate_tool_call_shape(
+            "attachment",
+            crate::ai::tools::subagents::CREATE_HANDOFF_ATTACHMENT_TOOL,
+            &too_large,
+        )
+        .is_err());
     }
 
     #[tokio::test]

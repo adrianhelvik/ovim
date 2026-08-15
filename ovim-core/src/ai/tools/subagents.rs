@@ -3,6 +3,7 @@
 use super::{SideEffect, StrictJsonSchema, ToolDefinition, ToolSchemaError};
 use crate::agent_runtime::{
     AgentCapability, DelegatedAgentPolicy, ScopedTool, SubagentModelCatalog,
+    MAX_HANDOFF_ATTACHMENT_BYTES,
 };
 use crate::ai::{FileScope, RequiredScope};
 use crate::run_log::ToolSideEffect;
@@ -40,8 +41,8 @@ pub fn attachment_tools() -> Result<Vec<ToolDefinition>, ToolSchemaError> {
                 "type": "object", "additionalProperties": false,
                 "properties": {
                     "name": { "type": "string", "minLength": 1, "maxLength": 255 },
-                    "media_type": { "type": "string", "minLength": 1, "maxLength": 127 },
-                    "content": { "type": "string", "minLength": 1, "maxLength": 1048576 }
+                    "media_type": { "type": "string", "minLength": 3, "maxLength": 127, "pattern": "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$" },
+                    "content": { "type": "string", "minLength": 1, "maxLength": MAX_HANDOFF_ATTACHMENT_BYTES }
                 },
                 "required": ["name", "media_type", "content"]
             }))?,
