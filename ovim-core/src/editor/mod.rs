@@ -197,6 +197,10 @@ pub struct EditorOptions {
     pub shift_width: usize,
     /// Use spaces instead of tabs (default: true)
     pub expand_tab: bool,
+    /// Insert-mode soft tab stop. -1 follows shiftwidth, 0 follows tabstop.
+    pub soft_tab_stop: isize,
+    /// Preserve the exact existing whitespace prefix when autoindenting.
+    pub copy_indent: bool,
     /// Show line numbers (default: false)
     pub number: bool,
     /// Show relative line numbers (default: false)
@@ -259,6 +263,8 @@ impl Default for EditorOptions {
             tab_width: 4,
             shift_width: 4,
             expand_tab: true,
+            soft_tab_stop: -1,
+            copy_indent: false,
             number: true,
             relative_number: false,
             scroll: None,
@@ -284,6 +290,30 @@ impl Default for EditorOptions {
             lsp_auto_install: AutoInstallMode::default(),
             inlay_hints: false,
         }
+    }
+}
+
+impl EditorOptions {
+    /// Snapshot the indentation-related options for one editing operation.
+    pub fn indent_options(&self) -> crate::indentation::IndentOptions {
+        crate::indentation::IndentOptions {
+            tab_width: self.tab_width,
+            shift_width: self.shift_width,
+            soft_tab_stop: self.soft_tab_stop,
+            expand_tab: self.expand_tab,
+            copy_indent: self.copy_indent,
+        }
+        .normalized()
+    }
+
+    /// Replace the editor-level defaults used by newly created buffers.
+    pub fn set_indent_options(&mut self, options: crate::indentation::IndentOptions) {
+        let options = options.normalized();
+        self.tab_width = options.tab_width;
+        self.shift_width = options.shift_width;
+        self.soft_tab_stop = options.soft_tab_stop;
+        self.expand_tab = options.expand_tab;
+        self.copy_indent = options.copy_indent;
     }
 }
 
@@ -483,6 +513,27 @@ pub enum FindDirection {
 }
 
 impl Editor {
+    /// Effective indentation policy for the active buffer.
+    pub fn indent_options(&self) -> crate::indentation::IndentOptions {
+        self.buffer()
+            .indent_options()
+            .unwrap_or_else(|| self.options.indent_options())
+    }
+
+    /// Set indentation for the active buffer and update the defaults inherited
+    /// by buffers opened later. Existing buffers keep their own policy.
+    pub fn set_indent_options(&mut self, options: crate::indentation::IndentOptions) {
+        let options = options.normalized();
+        self.options.set_indent_options(options);
+        self.buffer_mut().set_indent_options(options);
+    }
+
+    /// Set indentation only for the active buffer. File policy sources such
+    /// as EditorConfig and modelines use this to avoid cross-file leakage.
+    pub fn set_local_indent_options(&mut self, options: crate::indentation::IndentOptions) {
+        self.buffer_mut().set_indent_options(options);
+    }
+
     /// Creates a new editor with an empty buffer
     /// Starts in Dashboard mode when no file is opened
     pub fn new() -> Self {
@@ -1000,7 +1051,7 @@ impl Editor {
             return WrapMapRefresh::Disable;
         }
         let width = text_width.max(1);
-        let tab_width = self.options.tab_width;
+        let tab_width = self.indent_options().tab_width;
         // Use the rope's raw line count (includes the trailing empty line after
         // a final `\n`) so the wrap map covers every valid cursor position.
         let line_count = self.buffer().rope().len_lines();
@@ -1185,7 +1236,7 @@ impl Editor {
                 let disp_col = crate::display::char_col_to_display_col(
                     &line_text,
                     cursor_char_col,
-                    self.options.tab_width,
+                    self.indent_options().tab_width,
                 );
                 let (cursor_visual_row, _) =
                     wrap_map.cursor_to_visual(cursor_line, disp_col, &line_text);
@@ -1267,7 +1318,7 @@ impl Editor {
         // Extract cursor column and options before mutably borrowing window_manager
         // Convert char column to display column for proper horizontal scrolling
         let cursor_line = self.buffer().cursor().line();
-        let tab_width = self.options.tab_width;
+        let tab_width = self.indent_options().tab_width;
         let cursor_char_col =
             self.cursor_grapheme_to_char_col(cursor_line, self.buffer().cursor().col());
         let cursor_display_col = {
@@ -1375,7 +1426,7 @@ impl Editor {
             );
         }
         .max(1);
-        let tab_width = self.options.tab_width;
+        let tab_width = self.indent_options().tab_width;
 
         let line_count = self.buffer().line_count();
         let max_line = line_count.saturating_sub(1);
@@ -1720,17 +1771,15 @@ impl Editor {
 
         // Load new buffer
         let new_buffer = Buffer::load_file_async(path).await?;
-
-        // Parse and apply modeline options from the loaded file
-        let content = new_buffer.rope().to_string();
-        if let Some(modeline) = crate::modeline::Modeline::parse(&content) {
-            self.apply_modeline(&modeline);
-        }
+        let modeline = crate::modeline::Modeline::parse(&new_buffer.rope().to_string());
 
         // Load git branch name for the new file
         self.git_branch = new_buffer.file_path().and_then(crate::git::branch_name);
 
         self.add_buffer(new_buffer);
+        if let Some(modeline) = modeline.as_ref() {
+            self.apply_modeline(modeline);
+        }
 
         // Update current file register
         self.registers.set_current_file(path_str);
@@ -1793,15 +1842,8 @@ impl Editor {
     /// Apply modeline options to editor settings
     fn apply_modeline(&mut self, modeline: &crate::modeline::Modeline) {
         // Indentation options
-        if let Some(ts) = modeline.get_int("tabstop", "ts") {
-            self.options.tab_width = ts;
-        }
-        if let Some(sw) = modeline.get_int("shiftwidth", "sw") {
-            self.options.shift_width = sw;
-        }
-        if let Some(et) = modeline.get_bool("expandtab", "et") {
-            self.options.expand_tab = et;
-        }
+        let indent = self.indent_options().with_modeline(modeline);
+        self.set_local_indent_options(indent);
 
         // Display options
         if let Some(tw) = modeline.get_int("textwidth", "tw") {

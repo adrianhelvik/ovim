@@ -114,8 +114,9 @@ impl Editor {
 
         self.set_lsp_status("Formatting document...".to_string());
 
-        let tab_size = self.options.tab_width as u32;
-        let insert_spaces = self.options.expand_tab;
+        let indent = self.indent_options();
+        let tab_size = indent.tab_width as u32;
+        let insert_spaces = indent.expand_tab;
         let file_path = ctx.file_path.clone();
         let buffer_version = self.buffer().version();
 

@@ -21,6 +21,15 @@ fn test_tab_expandtab_custom_shiftwidth() {
     assert_eq!(test.buffer_content(), "  hello\n");
 }
 
+#[test]
+fn test_tab_advances_to_next_soft_stop() {
+    let mut test = EditorTest::new("  hello");
+    test.editor.options.shift_width = 4;
+    test.editor.options.soft_tab_stop = -1;
+    test.keys("lli<Tab><Esc>");
+    assert_eq!(test.buffer_content(), "    hello\n");
+}
+
 // ============================================================================
 // Tab key — noexpandtab
 // ============================================================================
@@ -82,6 +91,35 @@ fn test_enter_after_bracket_expandtab() {
     assert_eq!(test.buffer_content(), "let a = [\n    x\n");
 }
 
+#[test]
+fn test_enter_splits_adjacent_braces_and_aligns_closer() {
+    let mut test = EditorTest::new("{}");
+
+    test.keys("a<CR>x<Esc>");
+
+    assert_eq!(test.buffer_content(), "{\n    x\n}\n");
+}
+
+#[test]
+fn test_enter_does_not_indent_after_delimiter_in_comment() {
+    let mut test = EditorTest::new("// {");
+    test.set_file_path("/tmp/indent.rs".to_string());
+
+    test.keys("A<CR>x<Esc>");
+
+    assert_eq!(test.buffer_content(), "// {\nx\n");
+}
+
+#[test]
+fn test_enter_indents_after_opener_before_trailing_comment() {
+    let mut test = EditorTest::new("fn main() { // body");
+    test.set_file_path("/tmp/indent.rs".to_string());
+
+    test.keys("A<CR>x<Esc>");
+
+    assert_eq!(test.buffer_content(), "fn main() { // body\n    x\n");
+}
+
 // ============================================================================
 // Enter after opening bracket — noexpandtab
 // ============================================================================
@@ -92,6 +130,16 @@ fn test_enter_after_brace_noexpandtab() {
     test.editor.options.expand_tab = false;
     test.keys("A<CR>x<Esc>");
     assert_eq!(test.buffer_content(), "fn main() {\n\tx\n");
+}
+
+#[test]
+fn test_enter_noexpandtab_does_not_overshoot_shiftwidth() {
+    let mut test = EditorTest::new("fn main() {");
+    test.editor.options.tab_width = 8;
+    test.editor.options.shift_width = 4;
+    test.editor.options.expand_tab = false;
+    test.keys("A<CR>x<Esc>");
+    assert_eq!(test.buffer_content(), "fn main() {\n    x\n");
 }
 
 // ============================================================================
@@ -137,6 +185,29 @@ fn test_shift_right_noexpandtab() {
     assert_eq!(test.buffer_content(), "\thello\n");
 }
 
+#[test]
+fn test_shift_right_noexpandtab_uses_exact_visual_width() {
+    let mut test = EditorTest::new("hello");
+    test.editor.options.tab_width = 8;
+    test.editor.options.shift_width = 4;
+    test.editor.options.expand_tab = false;
+
+    test.keys(">>");
+    assert_eq!(test.buffer_content(), "    hello\n");
+
+    test.keys(">>");
+    assert_eq!(test.buffer_content(), "\thello\n");
+}
+
+#[test]
+fn test_equals_uses_shiftwidth_not_tabstop() {
+    let mut test = EditorTest::new("fn main() {\nhello\n}");
+    test.editor.options.tab_width = 8;
+    test.editor.options.shift_width = 2;
+    test.keys("j==");
+    assert_eq!(test.buffer_content(), "fn main() {\n  hello\n}\n");
+}
+
 // ============================================================================
 // Ctrl-T with noexpandtab
 // ============================================================================
@@ -147,6 +218,38 @@ fn test_ctrl_t_noexpandtab() {
     test.editor.options.expand_tab = false;
     test.keys("i<C-t><Esc>");
     assert_eq!(test.buffer_content(), "\thello\n");
+}
+
+#[test]
+fn test_ctrl_t_noexpandtab_uses_shift_boundaries() {
+    let mut test = EditorTest::new("  hello");
+    test.editor.options.tab_width = 8;
+    test.editor.options.shift_width = 4;
+    test.editor.options.expand_tab = false;
+
+    test.keys("I<C-t><C-t><Esc>");
+    assert_eq!(test.buffer_content(), "\thello\n");
+}
+
+#[test]
+fn test_ctrl_d_noexpandtab_does_not_delete_eight_columns() {
+    let mut test = EditorTest::new("\thello");
+    test.editor.options.tab_width = 8;
+    test.editor.options.shift_width = 4;
+    test.editor.options.expand_tab = false;
+
+    test.keys("I<C-d><Esc>");
+    assert_eq!(test.buffer_content(), "    hello\n");
+}
+
+#[test]
+fn test_softtabstop_controls_tab_and_backspace() {
+    let mut test = EditorTest::new(" hello");
+    test.editor.options.shift_width = 4;
+    test.editor.options.soft_tab_stop = 2;
+
+    test.keys("I<Tab><Tab><BS><Esc>");
+    assert_eq!(test.buffer_content(), "  hello\n");
 }
 
 // ============================================================================

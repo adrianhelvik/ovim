@@ -606,7 +606,7 @@ fn set_cursor_position(
         let rope = editor.buffer().rope();
         let line_text = ovim_core::display::line_content(rope, cursor_line);
 
-        let tab_width = editor.options.tab_width;
+        let tab_width = editor.indent_options().tab_width;
 
         // Compute the cursor's flat display column: sum of display widths
         // (tab stops, caret-notation control chars, wide chars) before the

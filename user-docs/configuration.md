@@ -46,6 +46,41 @@ Examples:
 
 See [options.md](options.md) for details.
 
+## Project formatting (`.editorconfig`)
+
+ovim reads EditorConfig indentation settings when a file is opened. A minimal
+project policy looks like this:
+
+```ini
+root = true
+
+[*]
+indent_style = space
+indent_size = 4
+
+[*.{json,yaml,yml}]
+indent_size = 2
+```
+
+Use EditorConfig for cross-editor whitespace policy and keep language-native
+formatters (such as rustfmt) as the authority for syntax-aware layout. See the
+[indentation options](options.md#editorconfig) for supported properties and
+precedence.
+
+Inside ovim, use `=` for a fast structural reindent. It understands paired
+delimiters, ignores delimiters in comments and strings, and normalizes the
+selected indentation to the buffer's effective policy. Use `gq` or `:format`
+for full-document formatting through the active language server.
+
+For repositories, the complementary layers are:
+
+- `.editorconfig` for indentation and whitespace policy across editors.
+- `.gitattributes` for canonical line endings in Git.
+- A language formatter (`rustfmt`, Prettier, Black, and similar) for syntax
+  layout.
+- Formatter/linter checks in pre-commit and CI so policy is enforced, not only
+  suggested.
+
 ## Language Configuration (`languages.toml`)
 
 ovim ships with a default language configuration. Override or extend it in:

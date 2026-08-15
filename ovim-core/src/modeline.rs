@@ -84,6 +84,11 @@ impl Modeline {
     pub fn get_int(&self, long_name: &str, short_name: &str) -> Option<usize> {
         self.get(long_name, short_name).and_then(|v| v.parse().ok())
     }
+
+    /// Get a signed integer option value.
+    pub fn get_signed_int(&self, long_name: &str, short_name: &str) -> Option<isize> {
+        self.get(long_name, short_name).and_then(|v| v.parse().ok())
+    }
 }
 
 /// Extract modeline options from a single line
@@ -196,12 +201,14 @@ mod tests {
 
     #[test]
     fn test_parse_short_names() {
-        let content = "# vim: ts=2 sw=2 et:\n";
+        let content = "# vim: ts=2 sw=2 sts=-1 et noci:\n";
         let modeline = Modeline::parse(content).unwrap();
 
         assert_eq!(modeline.get_int("tabstop", "ts"), Some(2));
         assert_eq!(modeline.get_int("shiftwidth", "sw"), Some(2));
         assert_eq!(modeline.get_bool("expandtab", "et"), Some(true));
+        assert_eq!(modeline.get_signed_int("softtabstop", "sts"), Some(-1));
+        assert_eq!(modeline.get_bool("copyindent", "ci"), Some(false));
     }
 
     #[test]

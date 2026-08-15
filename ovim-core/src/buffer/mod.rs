@@ -109,6 +109,10 @@ pub struct Buffer {
     /// "[No Name]". Unlike `file_path` it carries no save target or LSP
     /// document identity.
     display_name: Option<String>,
+    /// Resolved indentation policy for this buffer. `None` means inherit the
+    /// editor defaults; file-backed buffers are pinned when they are added to
+    /// an editor so later changes cannot leak across already-open files.
+    indent_options: Option<crate::indentation::IndentOptions>,
 }
 
 impl Buffer {
@@ -141,6 +145,7 @@ impl Buffer {
             recording: None,
             edit_log: EditLog::new(),
             display_name: None,
+            indent_options: None,
         }
     }
 
@@ -246,7 +251,18 @@ impl Buffer {
             recording: None,
             edit_log: EditLog::new(),
             display_name: None,
+            indent_options: None,
         }
+    }
+
+    /// Buffer-local indentation policy, if this buffer has been initialized.
+    pub fn indent_options(&self) -> Option<crate::indentation::IndentOptions> {
+        self.indent_options
+    }
+
+    /// Pin this buffer to a complete indentation policy.
+    pub fn set_indent_options(&mut self, options: crate::indentation::IndentOptions) {
+        self.indent_options = Some(options.normalized());
     }
 
     /// Stable identity for this buffer.

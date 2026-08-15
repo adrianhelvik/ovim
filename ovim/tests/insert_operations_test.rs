@@ -206,7 +206,7 @@ fn test_o_with_spaces_indentation() {
 }
 
 #[test]
-fn test_o_with_tabs_indentation() {
+fn test_o_normalizes_tabs_to_expandtab_indentation() {
     let mut test = EditorTest::new("start\n\t\tindented\nend");
 
     test.press('j') // Move to indented line
@@ -216,9 +216,9 @@ fn test_o_with_tabs_indentation() {
 
     assert_eq!(
         test.buffer_content(),
-        "start\n\t\tindented\n\t\tsame indent\nend\n"
+        "start\n\t\tindented\n        same indent\nend\n"
     );
-    test.assert_cursor(2, 12);
+    test.assert_cursor(2, 18);
 }
 
 #[test]

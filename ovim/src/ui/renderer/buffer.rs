@@ -1326,7 +1326,7 @@ pub fn render_buffer(
     // Gutter lines are built inline to match wrap continuation rows
     let mut lines = Vec::new();
     let mut gutter_lines: Vec<Line<'static>> = Vec::new();
-    let tab_width = editor.options.tab_width;
+    let tab_width = editor.indent_options().tab_width;
     let cursorline = editor.options.cursorline;
     let cursor_line_idx = cursor.line();
     // `text_width` is the document code-box (fixed at the layout's setting,

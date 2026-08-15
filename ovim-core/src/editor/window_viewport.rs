@@ -210,7 +210,7 @@ impl Editor {
         let scrolloff = self.options.scrolloff.min(visible.saturating_sub(1) / 2);
         let cur_off = self.scroll_offset();
         let cur_sub = self.scroll_subrow();
-        let tab_width = self.options.tab_width;
+        let tab_width = self.indent_options().tab_width;
 
         // The cursor's flat display column, computed before borrowing the map.
         let (cur_line, cur_col) = {
@@ -477,7 +477,7 @@ impl Editor {
                 // can lag a structural edit until the next render rebuild).
                 if map.line_count() >= self.buffer().rope().len_lines() {
                     let wrap_width = map.wrap_width().max(1);
-                    let tab_width = self.options.tab_width;
+                    let tab_width = self.indent_options().tab_width;
                     let line_text = self.cursor_line_text(cursor_line);
                     let char_col = self.cursor_grapheme_to_char_col(cursor_line, cursor_col);
                     let rope = self.buffer().rope();
@@ -588,7 +588,7 @@ impl Editor {
         // Convert char column to display column for proper horizontal scrolling
         let cursor_col = self.buffer().cursor().col();
         let cursor_line = self.buffer().cursor().line();
-        let tab_width = self.options.tab_width;
+        let tab_width = self.indent_options().tab_width;
         let cursor_display_col = {
             let line_text = self.buffer().line_text(cursor_line).unwrap_or_default();
             let char_col = crate::unicode::grapheme_to_char_col(&line_text, cursor_col);
@@ -614,7 +614,7 @@ impl Editor {
         // Convert char column to display column for proper horizontal scrolling
         let cursor_col = self.buffer().cursor().col();
         let cursor_line = self.buffer().cursor().line();
-        let tab_width = self.options.tab_width;
+        let tab_width = self.indent_options().tab_width;
         let cursor_display_col = {
             let line_text = self.buffer().line_text(cursor_line).unwrap_or_default();
             let char_col = crate::unicode::grapheme_to_char_col(&line_text, cursor_col);

@@ -132,6 +132,7 @@ impl Buffer {
             recording: None,
             edit_log: crate::edit_log::EditLog::new(),
             display_name: None,
+            indent_options: None,
         };
 
         // Don't enable syntax highlighting immediately - defer for lazy loading

@@ -355,6 +355,11 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                     mlua::Value::Boolean(false) => "set noexpandtab".to_string(),
                     _ => return Err(mlua::Error::external("expandtab must be boolean")),
                 },
+                "copyindent" | "ci" => match value {
+                    mlua::Value::Boolean(true) => "set copyindent".to_string(),
+                    mlua::Value::Boolean(false) => "set nocopyindent".to_string(),
+                    _ => return Err(mlua::Error::external("copyindent must be boolean")),
+                },
                 "tabstop" | "ts" => match value {
                     mlua::Value::Integer(n) => format!("set tabstop={}", n),
                     mlua::Value::Number(n) => format!("set tabstop={}", n as i64),
@@ -364,6 +369,11 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                     mlua::Value::Integer(n) => format!("set shiftwidth={}", n),
                     mlua::Value::Number(n) => format!("set shiftwidth={}", n as i64),
                     _ => return Err(mlua::Error::external("shiftwidth must be number")),
+                },
+                "softtabstop" | "sts" => match value {
+                    mlua::Value::Integer(n) => format!("set softtabstop={}", n),
+                    mlua::Value::Number(n) => format!("set softtabstop={}", n as i64),
+                    _ => return Err(mlua::Error::external("softtabstop must be number")),
                 },
                 "scroll" => match value {
                     mlua::Value::Integer(n) => format!("set scroll={}", n),

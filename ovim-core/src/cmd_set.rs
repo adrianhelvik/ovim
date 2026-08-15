@@ -43,8 +43,22 @@ const BOOL_OPTIONS: &[BoolOption] = &[
     BoolOption {
         name: "expandtab",
         alias: "et",
-        get: |e| e.options.expand_tab,
-        set: |e, v| e.options.expand_tab = v,
+        get: |e| e.indent_options().expand_tab,
+        set: |e, v| {
+            let mut options = e.indent_options();
+            options.expand_tab = v;
+            e.set_indent_options(options);
+        },
+    },
+    BoolOption {
+        name: "copyindent",
+        alias: "ci",
+        get: |e| e.indent_options().copy_indent,
+        set: |e, v| {
+            let mut options = e.indent_options();
+            options.copy_indent = v;
+            e.set_indent_options(options);
+        },
     },
     BoolOption {
         name: "ignorecase",
@@ -143,9 +157,11 @@ fn query_option(name: &str, editor: &Editor) -> Option<CommandResult> {
 
     // Value options
     let opts = &editor.options;
+    let indent = editor.indent_options();
     let msg = match name {
-        "tabstop" | "ts" => format!("  tabstop={}", opts.tab_width),
-        "shiftwidth" | "sw" => format!("  shiftwidth={}", opts.shift_width),
+        "tabstop" | "ts" => format!("  tabstop={}", indent.tab_width),
+        "shiftwidth" | "sw" => format!("  shiftwidth={}", indent.shift_width),
+        "softtabstop" | "sts" => format!("  softtabstop={}", indent.soft_tab_stop),
         "scroll" => format!(
             "  scroll={}",
             opts.scroll
@@ -283,7 +299,9 @@ fn handle_value_option(name: &str, value: &str, editor: &mut Editor) -> Option<C
     let result = match name {
         "tabstop" | "ts" => match value.parse::<usize>() {
             Ok(n) if n > 0 && n <= 16 => {
-                editor.options.tab_width = n;
+                let mut options = editor.indent_options();
+                options.tab_width = n;
+                editor.set_indent_options(options);
                 ok(Some(format!("  tabstop={}", n)))
             }
             Ok(_) => err("tabstop must be between 1 and 16"),
@@ -291,10 +309,22 @@ fn handle_value_option(name: &str, value: &str, editor: &mut Editor) -> Option<C
         },
         "shiftwidth" | "sw" => match value.parse::<usize>() {
             Ok(n) if n > 0 && n <= 16 => {
-                editor.options.shift_width = n;
+                let mut options = editor.indent_options();
+                options.shift_width = n;
+                editor.set_indent_options(options);
                 ok(Some(format!("  shiftwidth={}", n)))
             }
             Ok(_) => err("shiftwidth must be between 1 and 16"),
+            Err(_) => err(format!("Invalid number: {}", value)),
+        },
+        "softtabstop" | "sts" => match value.parse::<isize>() {
+            Ok(n) if (-1..=16).contains(&n) => {
+                let mut options = editor.indent_options();
+                options.soft_tab_stop = n;
+                editor.set_indent_options(options);
+                ok(Some(format!("  softtabstop={}", n)))
+            }
+            Ok(_) => err("softtabstop must be between -1 and 16"),
             Err(_) => err(format!("Invalid number: {}", value)),
         },
         "scroll" => match value.parse::<usize>() {
@@ -426,13 +456,16 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> CommandResult {
     // Handle empty :set (show all options)
     if args.is_empty() {
         let opts = &editor.options;
+        let indent = editor.indent_options();
         let msg = format!(
-            "  {}number\n  {}relativenumber\n  {}expandtab\n  tabstop={}\n  shiftwidth={}\n  scroll={}\n  scrolloff={}\n  sidescroll={}\n  sidescrolloff={}",
+            "  {}number\n  {}relativenumber\n  {}expandtab\n  {}copyindent\n  tabstop={}\n  shiftwidth={}\n  softtabstop={}\n  scroll={}\n  scrolloff={}\n  sidescroll={}\n  sidescrolloff={}",
             if opts.number { "" } else { "no" },
             if opts.relative_number { "" } else { "no" },
-            if opts.expand_tab { "" } else { "no" },
-            opts.tab_width,
-            opts.shift_width,
+            if indent.expand_tab { "" } else { "no" },
+            if indent.copy_indent { "" } else { "no" },
+            indent.tab_width,
+            indent.shift_width,
+            indent.soft_tab_stop,
             opts.scroll
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "auto".to_string()),
@@ -579,6 +612,47 @@ mod tests {
         let result = handle_set_command(&mut ed, "ts=2");
         assert!(matches!(result, CommandResult::Success(_)));
         assert_eq!(ed.options.tab_width, 2);
+    }
+
+    #[test]
+    fn set_and_query_softtabstop() {
+        let mut ed = make_editor();
+        let result = handle_set_command(&mut ed, "sts=-1");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert_eq!(ed.options.soft_tab_stop, -1);
+
+        let result = handle_set_command(&mut ed, "softtabstop?");
+        match result {
+            CommandResult::Success(s) => {
+                assert_eq!(s.message.as_deref(), Some("  softtabstop=-1"));
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_softtabstop() {
+        let mut ed = make_editor();
+        let result = handle_set_command(&mut ed, "sts=-2");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn set_copyindent_by_name_and_alias() {
+        let mut ed = make_editor();
+        assert!(!ed.options.copy_indent);
+
+        assert!(matches!(
+            handle_set_command(&mut ed, "copyindent"),
+            CommandResult::Success(_)
+        ));
+        assert!(ed.options.copy_indent);
+
+        assert!(matches!(
+            handle_set_command(&mut ed, "noci"),
+            CommandResult::Success(_)
+        ));
+        assert!(!ed.options.copy_indent);
     }
 
     #[test]

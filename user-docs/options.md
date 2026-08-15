@@ -59,11 +59,41 @@ Add extra columns of normal (unshaded) background between the text edge and the 
 :set shiftwidth=4    " Indent width for >> and << (1-16)
 :set sw=4
 
+:set softtabstop=-1  " Tab/Backspace follow shiftwidth (default)
+:set sts=2           " Or use an explicit insert-mode soft stop
+:set sts=0           " Use hard tabstop behavior
+
 :set expandtab       " Insert spaces instead of tabs
 :set et
 :set noexpandtab     " Insert actual tab characters
 :set noet
+
+:set copyindent      " Preserve an existing mixed whitespace prefix
+:set nocopyindent    " Rebuild indentation canonically (default)
 ```
+
+Indentation widths are terminal columns, not whitespace character counts. A
+hard tab advances to the next `tabstop`; `shiftwidth` independently controls
+`>>`, `<<`, `=`, auto-indent, and Ctrl-T/Ctrl-D. Tab and Backspace use
+`softtabstop`, with `-1` following `shiftwidth`.
+
+These options are buffer-local. `:set` updates the current buffer and the
+defaults inherited by files opened later; buffers that are already open keep
+their own policy.
+
+### EditorConfig
+
+When a file opens, ovim searches for `.editorconfig` files from its directory
+upward, stopping at `root = true`. It supports ordered section overrides,
+standard EditorConfig globs, `unset`, and these indentation properties:
+
+- `indent_style = space | tab`
+- `indent_size = <number> | tab`
+- `tab_width = <number>`
+
+The precedence order is editor defaults, outer-to-inner EditorConfig files,
+then a Vim modeline in the file. Modelines and EditorConfig settings affect
+only that buffer.
 
 ## Clipboard
 

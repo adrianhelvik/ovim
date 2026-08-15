@@ -1,5 +1,6 @@
 pub mod agent_runtime;
 pub mod ai;
+mod auto_indent;
 pub mod buffer;
 pub mod change;
 pub mod cmd_buffer;
@@ -15,8 +16,10 @@ pub mod display;
 pub mod edit;
 pub mod edit_log;
 pub mod editor;
+pub mod editorconfig;
 pub mod fold;
 pub mod git;
+pub mod indentation;
 pub mod key;
 pub mod language_catalog;
 pub mod language_config;

@@ -3,6 +3,9 @@
 //! These functions are used by various input handlers.
 
 use crate::editor::{ApplyPos, CursorPos, Editor, RegisterType};
+use crate::indentation::{
+    leading_char_count, leading_str, leading_width, visual_width, IndentOptions,
+};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::unicode::{grapheme_count, grapheme_to_char_col, CharCol, GraphemeCol};
@@ -22,6 +25,19 @@ fn calculate_end_position(start: ApplyPos, text: &str) -> ApplyPos {
         }
     }
     ApplyPos::new(line, CharCol(col))
+}
+
+fn inherited_indent(line: &str, extra_levels: usize, options: IndentOptions) -> String {
+    let options = options.normalized();
+    let current_width = leading_width(line, options.tab_width);
+    let target_width = current_width + extra_levels * options.shift_width;
+    if options.copy_indent {
+        let mut indent = leading_str(line).to_string();
+        indent.push_str(&options.gap_text(current_width, target_width));
+        indent
+    } else {
+        options.encode_indent(target_width)
+    }
 }
 
 // Helper methods for cursor movement and editing
@@ -143,6 +159,7 @@ pub fn insert_char(editor: &mut Editor, c: char) -> Result<()> {
 }
 
 pub fn insert_newline(editor: &mut Editor) -> Result<()> {
+    let options = editor.indent_options();
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
@@ -179,35 +196,55 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     // or inside leading whitespace — the remainder already carries that
     // whitespace and copying it again would produce extra spaces.
     let text_before: String = line_text.chars().take(char_col.0).collect();
-    let indent: String = text_before
-        .chars()
-        .take_while(|c| c.is_whitespace() && *c != '\n')
-        .collect();
+    let cursor_inside_indent = char_col.0 < leading_char_count(&line_text);
 
-    // Check if text before cursor ends with an opening bracket
-    // Use char_col (not grapheme_col) since we're iterating chars
     let text_before_cursor: String = line_text.chars().take(char_col.0).collect();
-    let trimmed_before = text_before_cursor.trim_end();
-    let extra_indent = if trimmed_before.ends_with('{')
-        || trimmed_before.ends_with('(')
-        || trimmed_before.ends_with('[')
-    {
-        if editor.options.expand_tab {
-            " ".repeat(editor.options.shift_width)
-        } else {
-            "\t".to_string()
-        }
+    let opening_delimiter = crate::auto_indent::opening_delimiter_at_end(
+        editor.buffer(),
+        line_idx,
+        &text_before_cursor,
+    );
+    let opens_block = opening_delimiter.is_some();
+
+    let indent = if cursor_inside_indent {
+        // The untouched suffix already contains the remainder of the current
+        // indentation. Copy only the prefix before the cursor so splitting in
+        // leading whitespace preserves the original visual indentation.
+        text_before
     } else {
-        String::new()
+        inherited_indent(&line_text, usize::from(opens_block), options)
     };
 
-    // Insert newline + indentation
-    let text_to_insert = format!("\n{}{}", indent, extra_indent);
+    let matching_close = match opening_delimiter {
+        Some('{') => Some('}'),
+        Some('(') => Some(')'),
+        Some('[') => Some(']'),
+        _ => None,
+    };
+    let text_after_cursor: String = line_text.chars().skip(char_col.0).collect();
+    let split_pair = !cursor_inside_indent
+        && matching_close.is_some_and(|close| text_after_cursor.starts_with(close));
+    let base_indent = split_pair.then(|| inherited_indent(&line_text, 0, options));
+
+    // When Enter splits an adjacent delimiter pair, keep the insertion point
+    // on an indented middle line and align the existing closer with the base.
+    let text_to_insert = if let Some(base_indent) = &base_indent {
+        format!("\n{indent}\n{base_indent}")
+    } else {
+        format!("\n{indent}")
+    };
     let inserted = editor.record_session_edit(|buf| {
         buf.insert_text_at_positioning_cursor(position.line, position.col, &text_to_insert)
     });
 
-    if needs_double_newline && inserted {
+    if inserted && split_pair {
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line_idx + 1, GraphemeCol(indent.chars().count()));
+    }
+
+    if needs_double_newline && inserted && !split_pair {
         let cur = editor.buffer().cursor();
         let cur_char_col = editor.buffer().cursor_char_col();
         let cursor_after_first = ApplyPos::new(cur.line(), cur_char_col);
@@ -251,37 +288,37 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
     } else {
         // Delete character before cursor on same line.
         // Convert grapheme col to char col for rope operations.
-        let char_col = {
-            let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
-            grapheme_to_char_col(&line_text, grapheme_col)
-        };
+        let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
+        let char_col = grapheme_to_char_col(&line_text, grapheme_col);
+        let before: String = line_text.chars().take(char_col.0).collect();
+        let options = editor.indent_options();
 
-        // Smart backspace (Vim softtabstop semantics): when the cursor sits
-        // in pure space-leading-whitespace and we're using `expand_tab`,
-        // collapse back to the previous `shift_width` boundary in one press.
-        // This makes `<CR>` auto-indent feel like a tab unit rather than N
-        // individual spaces, and is a no-op when tabs are in use (tabs are
-        // already one char per indent).
-        let smart_target = if editor.options.expand_tab {
-            let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
-            let before: String = line_text.chars().take(char_col.0).collect();
-            if !before.is_empty() && before.chars().all(|c| c == ' ') {
-                let sw = editor.options.shift_width.max(1);
-                Some((char_col.0 - 1) / sw * sw)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        // Soft-tab backspace is visual-column based and works for spaces,
+        // hard tabs, and mixed prefixes. Re-encoding the prefix avoids
+        // leaving a tab that overshoots the requested stop.
+        if options.soft_tab_stop != 0
+            && !before.is_empty()
+            && before.chars().all(|c| matches!(c, ' ' | '\t'))
+        {
+            let current_width = visual_width(&before, options.tab_width);
+            let target_width = options.previous_soft_tab_stop(current_width);
+            let replacement = options.encode_indent(target_width);
+            editor.record_session_edit(|buf| {
+                let deleted = buf
+                    .delete_range_positioning_cursor(line_idx, CharCol::ZERO, line_idx, char_col)
+                    .0;
+                let inserted = if replacement.is_empty() {
+                    false
+                } else {
+                    buf.insert_text_at_positioning_cursor(line_idx, CharCol::ZERO, &replacement)
+                };
+                deleted || inserted
+            });
+            return Ok(());
+        }
 
-        let prev_char_col = if let Some(target) = smart_target {
-            CharCol(target)
-        } else {
-            // Normal single-grapheme delete.
-            let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
-            grapheme_to_char_col(&line_text, GraphemeCol(grapheme_col.0 - 1))
-        };
+        // Normal single-grapheme delete.
+        let prev_char_col = grapheme_to_char_col(&line_text, GraphemeCol(grapheme_col.0 - 1));
         (
             ApplyPos::new(line_idx, prev_char_col),
             ApplyPos::new(line_idx, char_col),
@@ -419,27 +456,30 @@ pub fn indent_line_insert(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    // Use shift_width and expand_tab from options
-    let shift_width = editor.options.shift_width;
-    let expand_tab = editor.options.expand_tab;
+    let options = editor.indent_options();
+    let (current_width, old_indent_chars) = editor
+        .buffer()
+        .line_text(line_idx)
+        .map(|line| {
+            (
+                leading_width(&line, options.tab_width),
+                leading_char_count(&line),
+            )
+        })
+        .unwrap_or_default();
+    let target_width = options.next_indent_stop(current_width);
+    let new_indent_chars = options.encode_indent(target_width).chars().count();
+    editor.record_session_edit(|buf| {
+        let version = buf.version();
+        buf.set_indent_width_at(line_idx, target_width, options);
+        buf.version() != version
+    });
 
-    // Insert indent at beginning of line (char col 0 == grapheme col 0).
-    let indent_str = if expand_tab {
-        " ".repeat(shift_width)
-    } else {
-        "\t".to_string()
-    };
-    if !editor.record_session_edit(|buf| {
-        buf.insert_text_at_positioning_cursor(line_idx, CharCol::ZERO, &indent_str)
-    }) {
-        return Ok(());
-    }
-
-    // Update cursor position - move column right by indent width (all-ASCII indent,
-    // so grapheme == char movement here). Override the helper's post-insert cursor
-    // (which landed at end of inserted indent) to the original grapheme col + indent.
-    let indent_width = if expand_tab { shift_width } else { 1 };
-    let new_col = grapheme_col.0 + indent_width;
+    // Preserve the cursor's logical offset from the first non-blank.
+    let new_col = grapheme_col
+        .0
+        .saturating_sub(old_indent_chars)
+        .saturating_add(new_indent_chars);
     editor
         .buffer_mut()
         .cursor_mut()
@@ -452,8 +492,7 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    // Use shift_width from options
-    let shift_width = editor.options.shift_width;
+    let options = editor.indent_options();
 
     // Get current line
     let line_text = match editor.buffer().line_text(line_idx) {
@@ -461,43 +500,23 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
         None => return Ok(()),
     };
 
-    // Count leading whitespace to remove (up to shift_width)
-    let chars: Vec<char> = line_text.chars().collect();
-    let mut chars_to_remove = 0;
-
-    for &ch in chars.iter().take(shift_width) {
-        if ch == ' ' {
-            chars_to_remove += 1;
-        } else if ch == '\t' {
-            chars_to_remove += 1;
-            break;
-        } else {
-            break;
-        }
-    }
-
-    // If no leading whitespace, do nothing
-    if chars_to_remove == 0 {
+    let old_indent_chars = leading_char_count(&line_text);
+    let current_width = leading_width(&line_text, options.tab_width);
+    if current_width == 0 {
         return Ok(());
     }
+    let target_width = options.previous_indent_stop(current_width);
+    let new_indent_chars = options.encode_indent(target_width).chars().count();
+    editor.record_session_edit(|buf| {
+        let version = buf.version();
+        buf.set_indent_width_at(line_idx, target_width, options);
+        buf.version() != version
+    });
 
-    // Delete the leading whitespace (ASCII whitespace, so chars == graphemes).
-    if !editor.record_session_edit(|buf| {
-        buf.delete_range_positioning_cursor(
-            line_idx,
-            CharCol::ZERO,
-            line_idx,
-            CharCol(chars_to_remove),
-        )
+    let new_col = grapheme_col
         .0
-    }) {
-        return Ok(());
-    }
-
-    // Update cursor position - move column left by chars_to_remove (whitespace is ASCII,
-    // so grapheme == char for this adjustment). Override the helper's post-delete
-    // cursor (col 0) with the original cursor shifted left by the removed indent.
-    let new_col = grapheme_col.0.saturating_sub(chars_to_remove);
+        .saturating_sub(old_indent_chars)
+        .saturating_add(new_indent_chars);
     editor
         .buffer_mut()
         .cursor_mut()
@@ -543,27 +562,18 @@ pub fn electric_dedent_close_bracket(editor: &mut Editor, c: char) -> Result<()>
 pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
+    let options = editor.indent_options();
 
-    // Get indentation from current line
+    // Reconstruct indentation from visual width unless copyindent requests the
+    // source line's exact whitespace representation.
     let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
-    let indent: String = line_text
-        .chars()
-        .take_while(|c| c.is_whitespace() && *c != '\n')
-        .collect();
 
-    // Add extra indent after opening brackets
-    let trimmed = line_text.trim_end_matches(|c: char| c == '\n' || c.is_whitespace());
-    let extra_indent = if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[')
-    {
-        if editor.options.expand_tab {
-            " ".repeat(editor.options.shift_width)
-        } else {
-            "\t".to_string()
-        }
-    } else {
-        String::new()
-    };
-    let indent = format!("{}{}", indent, extra_indent);
+    // Add one level when the line ends in a structural opening delimiter.
+    // Comments and literals are filtered by the same lexer used by `=`.
+    let opens_block =
+        crate::auto_indent::opening_delimiter_at_end(editor.buffer(), line_idx, &line_text)
+            .is_some();
+    let indent = inherited_indent(&line_text, usize::from(opens_block), options);
 
     // Determine insert position (char-space) and text. `line_text` strips
     // the terminator by design, so use the raw vs content length asymmetry
@@ -608,13 +618,11 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
 pub fn insert_line_above(editor: &mut Editor) -> Result<bool> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
+    let options = editor.indent_options();
 
-    // Get indentation from current line
+    // Get indentation from current line in the configured representation.
     let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
-    let indent: String = line_text
-        .chars()
-        .take_while(|c| c.is_whitespace() && *c != '\n')
-        .collect();
+    let indent = inherited_indent(&line_text, 0, options);
 
     // Insert indented line above current line (col 0 char == col 0 grapheme)
     let text_to_insert = format!("{}\n", indent);
@@ -1306,15 +1314,13 @@ pub fn indent_lines_with_tracking(
     editor: &mut Editor,
     start_line: usize,
     end_line: usize,
-    _tab_width: usize,
     cursor_before: CursorPos,
 ) -> Result<()> {
-    let shift_width = editor.options.shift_width;
-    let expand_tab = editor.options.expand_tab;
+    let options = editor.indent_options();
     let actual_end = end_line.min(editor.buffer().line_count());
 
     let ((), edits) = editor.buffer_mut().record(|buf| {
-        buf.indent_lines_at(start_line, actual_end, shift_width, expand_tab);
+        buf.indent_lines_at(start_line, actual_end, options);
     });
     if !edits.is_empty() {
         // Position cursor on start line at first non-blank (Vim behavior)
@@ -1327,8 +1333,7 @@ pub fn indent_lines_with_tracking(
         let line_count = actual_end - start_line;
         editor.set_repeat_action(RepeatAction::IndentLines {
             line_count,
-            shift_width,
-            expand_tab,
+            options,
         });
         editor.mark_buffer_modified();
     }
@@ -1339,13 +1344,12 @@ pub fn dedent_lines_with_tracking(
     editor: &mut Editor,
     start_line: usize,
     end_line: usize,
-    _tab_width: usize,
     cursor_before: CursorPos,
 ) -> Result<()> {
-    let shift_width = editor.options.shift_width;
+    let options = editor.indent_options();
     let ((), edits) = editor.buffer_mut().record(|buf| {
         let actual_end = end_line.min(buf.line_count());
-        buf.dedent_lines_at(start_line, actual_end, shift_width);
+        buf.dedent_lines_at(start_line, actual_end, options);
     });
     if !edits.is_empty() {
         // Position cursor on start line at first non-blank (Vim behavior)
@@ -1358,7 +1362,7 @@ pub fn dedent_lines_with_tracking(
         let line_count = end_line.min(editor.buffer().line_count()) - start_line;
         editor.set_repeat_action(RepeatAction::DedentLines {
             line_count,
-            shift_width,
+            options,
         });
         editor.mark_buffer_modified();
     }
@@ -1798,76 +1802,10 @@ pub fn auto_indent_lines(
     buffer: &mut crate::buffer::Buffer,
     start_line: usize,
     end_line: usize,
-    tab_width: usize,
-    expand_tab: bool,
+    options: IndentOptions,
 ) -> anyhow::Result<usize> {
-    let end_line = end_line.min(buffer.line_count());
-    if start_line >= end_line {
-        return Ok(0);
-    }
-
-    // Determine base indent from the line before start_line (or 0 if first line)
-    let mut current_indent = if start_line > 0 {
-        if let Some(prev_line) = buffer.line_text(start_line - 1) {
-            let prev_text = prev_line;
-            count_leading_spaces(&prev_text, tab_width)
-                + if prev_text.trim_end().ends_with('{')
-                    || prev_text.trim_end().ends_with('(')
-                    || prev_text.trim_end().ends_with('[')
-                {
-                    tab_width
-                } else {
-                    0
-                }
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
-    let mut lines_indented = 0;
-
-    for line_idx in start_line..end_line {
-        // Owned String: drops the borrow on `buffer` so the loop body can mutate.
-        if let Some(line_text) = buffer.line_text(line_idx).map(|c| c.into_owned()) {
-            let trimmed = line_text.trim_start();
-
-            // Decrease indent if line starts with closing bracket
-            if trimmed.starts_with('}') || trimmed.starts_with(')') || trimmed.starts_with(']') {
-                current_indent = current_indent.saturating_sub(tab_width);
-            }
-
-            // Calculate current leading spaces
-            let current_spaces = count_leading_spaces(&line_text, tab_width);
-
-            // Apply new indentation if different
-            if current_spaces != current_indent && !trimmed.is_empty() {
-                // Remove existing indent (use char count, not byte length)
-                let leading_len = line_text.chars().count() - trimmed.chars().count();
-                if leading_len > 0 {
-                    buffer.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(leading_len));
-                }
-                // Add new indent
-                if current_indent > 0 {
-                    let indent_str = indent_string(current_indent, expand_tab, tab_width);
-                    buffer.insert_text_at(line_idx, CharCol::ZERO, &indent_str);
-                }
-                lines_indented += 1;
-            }
-
-            // Increase indent if line ends with opening bracket (ignore trailing whitespace)
-            let trimmed_end = trimmed.trim_end();
-            if trimmed_end.ends_with('{')
-                || trimmed_end.ends_with('(')
-                || trimmed_end.ends_with('[')
-            {
-                current_indent += tab_width;
-            }
-        }
-    }
-
-    Ok(lines_indented)
+    let plan = crate::auto_indent::plan(buffer, start_line, end_line, options);
+    Ok(apply_auto_indent_plan(buffer, &plan))
 }
 
 /// Auto-indents lines with undo tracking.
@@ -1878,101 +1816,21 @@ pub fn auto_indent_lines_with_tracking(
     editor: &mut Editor,
     start_line: usize,
     end_line: usize,
-    tab_width: usize,
-    expand_tab: bool,
+    options: IndentOptions,
 ) -> anyhow::Result<usize> {
-    let end_line = end_line.min(editor.buffer().line_count());
-    if start_line >= end_line {
+    let plan = crate::auto_indent::plan(editor.buffer(), start_line, end_line, options);
+    if plan.is_empty() {
         return Ok(0);
     }
 
     let cursor_before = editor.cursor_position();
-
-    // Compute bracket nesting depth by scanning all lines before start_line.
-    // This gives us the correct indent context regardless of how surrounding
-    // lines are currently indented.
-    let mut depth: isize = 0;
-    for line_idx in 0..start_line {
-        if let Some(line) = editor.buffer().line_text(line_idx) {
-            for ch in line.chars() {
-                match ch {
-                    '{' | '(' | '[' => depth += 1,
-                    '}' | ')' | ']' => depth -= 1,
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // Record all indent changes
-    let ((lines_indented, last_cursor_after), edits) = editor.buffer_mut().record(|buf| {
-        let mut lines_indented = 0usize;
-        let mut last_cursor_after = cursor_before;
-
-        for line_idx in start_line..end_line {
-            let Some(line_text) = buf.line_text(line_idx) else {
-                continue;
-            };
-            let trimmed = line_text.trim_start();
-
-            // Count leading close brackets — they reduce this line's indent
-            let leading_closers = trimmed
-                .chars()
-                .take_while(|c| matches!(c, '}' | ')' | ']'))
-                .count() as isize;
-
-            // This line's indent: depth minus leading closers
-            let effective_depth = (depth - leading_closers).max(0) as usize;
-            let line_indent = if trimmed.is_empty() {
-                0
-            } else {
-                effective_depth * tab_width
-            };
-
-            // Update depth for next line: count all brackets in this line
-            for ch in trimmed.chars() {
-                match ch {
-                    '{' | '(' | '[' => depth += 1,
-                    '}' | ')' | ']' => depth -= 1,
-                    _ => {}
-                }
-            }
-
-            // Calculate current leading spaces
-            let current_spaces = count_leading_spaces(&line_text, tab_width);
-
-            // Apply new indentation if different
-            if current_spaces != line_indent && !trimmed.is_empty() {
-                // Remove existing indent (tabs/spaces)
-                let leading_chars = line_text
-                    .chars()
-                    .take_while(|c| *c == ' ' || *c == '\t')
-                    .count();
-                if leading_chars > 0 {
-                    buf.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(leading_chars));
-                }
-
-                // Add new indent
-                if line_indent > 0 {
-                    let indent_str = indent_string(line_indent, expand_tab, tab_width);
-                    buf.insert_text_at(line_idx, CharCol::ZERO, &indent_str);
-                }
-
-                lines_indented += 1;
-            }
-
-            // Cursor column = char count of the indent string (not visual width).
-            // Indentation is ASCII, so char count == grapheme count here.
-            let cursor_col = if expand_tab || tab_width == 0 {
-                line_indent
-            } else {
-                line_indent / tab_width + line_indent % tab_width
-            };
-            last_cursor_after = CursorPos::new(line_idx, GraphemeCol(cursor_col));
-        }
-
-        (lines_indented, last_cursor_after)
-    });
+    let last_cursor_after = plan
+        .last()
+        .map(|line| CursorPos::new(line.line, GraphemeCol(line.cursor_col)))
+        .unwrap_or(cursor_before);
+    let (lines_indented, edits) = editor
+        .buffer_mut()
+        .record(|buf| apply_auto_indent_plan(buf, &plan));
 
     editor
         .buffer_mut()
@@ -1986,46 +1844,46 @@ pub fn auto_indent_lines_with_tracking(
     Ok(lines_indented)
 }
 
-/// Generate an indent string of `visual_width` columns, respecting expandtab.
-pub fn indent_string(visual_width: usize, expand_tab: bool, tab_width: usize) -> String {
-    if !expand_tab && tab_width > 0 {
-        let tabs = visual_width / tab_width;
-        let spaces = visual_width % tab_width;
-        "\t".repeat(tabs) + &" ".repeat(spaces)
-    } else {
-        " ".repeat(visual_width)
+fn apply_auto_indent_plan(
+    buffer: &mut crate::buffer::Buffer,
+    plan: &[crate::auto_indent::PlannedIndent],
+) -> usize {
+    let mut changed = 0usize;
+    for line in plan {
+        let Some(replacement) = &line.replacement else {
+            continue;
+        };
+        if line.leading_chars > 0 {
+            buffer.delete_range(
+                line.line,
+                CharCol::ZERO,
+                line.line,
+                CharCol(line.leading_chars),
+            );
+        }
+        if !replacement.is_empty() {
+            buffer.insert_text_at(line.line, CharCol::ZERO, replacement);
+        }
+        changed += 1;
     }
+    changed
 }
 
 /// Insert a tab character or equivalent spaces, respecting expandtab.
 pub fn insert_tab(editor: &mut Editor) -> Result<()> {
-    if editor.options.expand_tab {
-        let spaces = " ".repeat(editor.options.shift_width);
-        let cursor = editor.buffer().cursor();
-        let line_idx = cursor.line();
-        let grapheme_col = cursor.col();
-        let char_col = {
-            let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
-            grapheme_to_char_col(&line_text, grapheme_col)
-        };
-        editor.record_session_edit(|buf| {
-            buf.insert_text_at_positioning_cursor(line_idx, char_col, &spaces)
-        });
-    } else {
-        insert_char(editor, '\t')?;
-    }
+    let options = editor.indent_options();
+    let cursor = editor.buffer().cursor();
+    let line_idx = cursor.line();
+    let grapheme_col = cursor.col();
+    let (char_col, display_col) = {
+        let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
+        let char_col = grapheme_to_char_col(&line_text, grapheme_col);
+        let before: String = line_text.chars().take(char_col.0).collect();
+        (char_col, visual_width(&before, options.tab_width))
+    };
+    let text = options.tab_text(display_col);
+    editor.record_session_edit(|buf| {
+        buf.insert_text_at_positioning_cursor(line_idx, char_col, &text)
+    });
     Ok(())
-}
-
-/// Count leading spaces (tabs count as tab_width spaces)
-fn count_leading_spaces(line: &str, tab_width: usize) -> usize {
-    let mut count = 0;
-    for ch in line.chars() {
-        match ch {
-            ' ' => count += 1,
-            '\t' => count += tab_width,
-            _ => break,
-        }
-    }
-    count
 }

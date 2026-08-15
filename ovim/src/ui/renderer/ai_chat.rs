@@ -241,7 +241,7 @@ fn render_chat_panel_impl(
         editor.ai_chat_tree_panel_open(),
         editor.ai_chat_input(),
         editor.ai_chat_input_cursor(),
-        editor.options.tab_width,
+        editor.indent_options().tab_width,
         editor.render_cache.terminal_image_support,
         editor.ai_chat_pending_images().len(),
     ) else {
@@ -406,7 +406,7 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
         editor.ai_chat_tree_panel_open(),
         editor.ai_chat_input(),
         editor.ai_chat_input_cursor(),
-        editor.options.tab_width,
+        editor.indent_options().tab_width,
         editor.render_cache.terminal_image_support,
         editor.ai_chat_pending_images().len(),
     )?;
@@ -2182,7 +2182,8 @@ fn render_text_input(
         } else {
             input[row.visible_start..row.end].to_string()
         };
-        let display_width = crate::display::display_width(&display, editor.options.tab_width);
+        let display_width =
+            crate::display::display_width(&display, editor.indent_options().tab_width);
         let padding = content_width.saturating_sub(display_width);
 
         let absolute_row = visible_start + row_idx;

@@ -395,16 +395,16 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         KeyCode::Up => {
             let mut moved_to_history = false;
             let wrap_width = editor.render_cache.ai_chat_input_content_width;
+            let tab_width = editor.indent_options().tab_width;
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 if wrap_width > 0 {
-                    let rows =
-                        wrap_chat_input_rows(&chat.input, wrap_width, editor.options.tab_width);
+                    let rows = wrap_chat_input_rows(&chat.input, wrap_width, tab_width);
                     if let Some(target) = move_chat_input_cursor_vertical(
                         &chat.input,
                         chat.input_cursor,
                         &rows,
                         -1,
-                        editor.options.tab_width,
+                        tab_width,
                     ) {
                         chat.input_cursor = target;
                     } else {
@@ -446,16 +446,16 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 return Ok(());
             }
             let wrap_width = editor.render_cache.ai_chat_input_content_width;
+            let tab_width = editor.indent_options().tab_width;
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 if wrap_width > 0 {
-                    let rows =
-                        wrap_chat_input_rows(&chat.input, wrap_width, editor.options.tab_width);
+                    let rows = wrap_chat_input_rows(&chat.input, wrap_width, tab_width);
                     if let Some(target) = move_chat_input_cursor_vertical(
                         &chat.input,
                         chat.input_cursor,
                         &rows,
                         1,
-                        editor.options.tab_width,
+                        tab_width,
                     ) {
                         chat.input_cursor = target;
                     }

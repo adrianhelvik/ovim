@@ -523,8 +523,14 @@ impl Editor {
                 if new_tab {
                     self.new_tab();
                     match crate::buffer::Buffer::load_file(&path) {
-                        Ok(buffer) => {
+                        Ok(mut buffer) => {
+                            let modeline =
+                                crate::modeline::Modeline::parse(&buffer.rope().to_string());
+                            self.initialize_buffer_indent_options(&mut buffer);
                             self.buffers[self.current_buffer_index] = buffer;
+                            if let Some(modeline) = modeline.as_ref() {
+                                self.apply_modeline(modeline);
+                            }
                             // The replacement buffer has a fresh id; repoint
                             // the tab at it
                             self.sync_current_tab_buffer();

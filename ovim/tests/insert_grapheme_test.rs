@@ -133,8 +133,8 @@ fn test_tab_after_emoji() {
 
     let content = test.buffer_content();
     assert_eq!(
-        content, "a👨‍👩‍👧‍👦    b\n",
-        "4 spaces should be inserted between emoji and 'b'"
+        content, "a👨‍👩‍👧‍👦 b\n",
+        "Tab should advance from display column 3 to soft stop 4"
     );
 }
 

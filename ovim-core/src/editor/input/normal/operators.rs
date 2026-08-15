@@ -497,14 +497,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let cursor_before = CursorPos::new(cursor.line(), cursor.col());
             let start_line = cursor.line();
             let end_line = start_line + count;
-            let tab_width = editor.options.tab_width;
-            helpers::indent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line,
-                tab_width,
-                cursor_before,
-            )?;
+            helpers::indent_lines_with_tracking(editor, start_line, end_line, cursor_before)?;
             editor.clear_count();
             true
         }
@@ -513,14 +506,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let cursor_before = CursorPos::new(cursor.line(), cursor.col());
             let start_line = cursor.line();
             let end_line = start_line + count + 1;
-            let tab_width = editor.options.tab_width;
-            helpers::indent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line,
-                tab_width,
-                cursor_before,
-            )?;
+            helpers::indent_lines_with_tracking(editor, start_line, end_line, cursor_before)?;
             editor.clear_count();
             true
         }
@@ -530,14 +516,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let current_line = cursor.line();
             let start_line = current_line.saturating_sub(count);
             let end_line = current_line + 1;
-            let tab_width = editor.options.tab_width;
-            helpers::indent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line,
-                tab_width,
-                cursor_before,
-            )?;
+            helpers::indent_lines_with_tracking(editor, start_line, end_line, cursor_before)?;
             editor.clear_count();
             true
         }
@@ -549,14 +528,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let cursor = editor.buffer().cursor();
             let start_line = cursor.line();
             let end_line = start_line + count;
-            let tab_width = editor.options.tab_width;
-            helpers::auto_indent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line,
-                tab_width,
-                editor.options.expand_tab,
-            )?;
+            let options = editor.indent_options();
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, options)?;
             editor.clear_count();
             true
         }
@@ -564,14 +537,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let cursor = editor.buffer().cursor();
             let start_line = cursor.line();
             let end_line = start_line + count + 1;
-            let tab_width = editor.options.tab_width;
-            helpers::auto_indent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line,
-                tab_width,
-                editor.options.expand_tab,
-            )?;
+            let options = editor.indent_options();
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, options)?;
             editor.clear_count();
             true
         }
@@ -580,14 +547,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let current_line = cursor.line();
             let start_line = current_line.saturating_sub(count);
             let end_line = current_line + 1;
-            let tab_width = editor.options.tab_width;
-            helpers::auto_indent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line,
-                tab_width,
-                editor.options.expand_tab,
-            )?;
+            let options = editor.indent_options();
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, options)?;
             editor.clear_count();
             true
         }
@@ -600,14 +561,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let cursor_before = CursorPos::new(cursor.line(), cursor.col());
             let start_line = cursor.line();
             let end_line = start_line + count;
-            let tab_width = editor.options.tab_width;
-            helpers::dedent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line,
-                tab_width,
-                cursor_before,
-            )?;
+            helpers::dedent_lines_with_tracking(editor, start_line, end_line, cursor_before)?;
             editor.clear_count();
             true
         }
@@ -616,14 +570,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let cursor_before = CursorPos::new(cursor.line(), cursor.col());
             let start_line = cursor.line();
             let end_line = start_line + count + 1;
-            let tab_width = editor.options.tab_width;
-            helpers::dedent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line,
-                tab_width,
-                cursor_before,
-            )?;
+            helpers::dedent_lines_with_tracking(editor, start_line, end_line, cursor_before)?;
             editor.clear_count();
             true
         }
@@ -633,14 +580,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let current_line = cursor.line();
             let start_line = current_line.saturating_sub(count);
             let end_line = current_line + 1;
-            let tab_width = editor.options.tab_width;
-            helpers::dedent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line,
-                tab_width,
-                cursor_before,
-            )?;
+            helpers::dedent_lines_with_tracking(editor, start_line, end_line, cursor_before)?;
             editor.clear_count();
             true
         }
@@ -762,34 +702,14 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
 
     match operator {
         Operator::Indent => {
-            let tab_width = editor.options.tab_width;
-            helpers::indent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line + 1,
-                tab_width,
-                cursor_before,
-            )?;
+            helpers::indent_lines_with_tracking(editor, start_line, end_line + 1, cursor_before)?;
         }
         Operator::Dedent => {
-            let tab_width = editor.options.tab_width;
-            helpers::dedent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line + 1,
-                tab_width,
-                cursor_before,
-            )?;
+            helpers::dedent_lines_with_tracking(editor, start_line, end_line + 1, cursor_before)?;
         }
         Operator::AutoIndent => {
-            let tab_width = editor.options.tab_width;
-            helpers::auto_indent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line + 1,
-                tab_width,
-                editor.options.expand_tab,
-            )?;
+            let options = editor.indent_options();
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line + 1, options)?;
         }
         Operator::Delete => {
             let deleted = editor.record_operation(
@@ -916,34 +836,14 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
             // Cursor stays at original position for yank
         }
         Operator::Indent => {
-            let tab_width = editor.options.tab_width;
-            helpers::indent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line + 1,
-                tab_width,
-                cursor_before,
-            )?;
+            helpers::indent_lines_with_tracking(editor, start_line, end_line + 1, cursor_before)?;
         }
         Operator::Dedent => {
-            let tab_width = editor.options.tab_width;
-            helpers::dedent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line + 1,
-                tab_width,
-                cursor_before,
-            )?;
+            helpers::dedent_lines_with_tracking(editor, start_line, end_line + 1, cursor_before)?;
         }
         Operator::AutoIndent => {
-            let tab_width = editor.options.tab_width;
-            helpers::auto_indent_lines_with_tracking(
-                editor,
-                start_line,
-                end_line + 1,
-                tab_width,
-                editor.options.expand_tab,
-            )?;
+            let options = editor.indent_options();
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line + 1, options)?;
         }
         Operator::Fold => {
             editor
