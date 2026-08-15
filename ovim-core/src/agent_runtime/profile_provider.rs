@@ -27,7 +27,10 @@ pub const SUBMIT_HANDOFF_TOOL: &str = "submit_handoff";
 pub const MAX_DELEGATION_SYSTEM_PROMPT_BYTES: usize = 32 * 1024;
 const MAX_PROVIDER_CONTENT_BYTES: usize = 128 * 1024;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
-const MAX_ATTACHMENT_TOOL_ARGUMENT_BYTES: usize = MAX_HANDOFF_ATTACHMENT_BYTES + 4 * 1024;
+// JSON may encode each raw content byte as a six-byte `\u00XX` escape. Keep a
+// bounded transport envelope without making escaping reduce the documented raw
+// attachment capacity.
+const MAX_ATTACHMENT_TOOL_ARGUMENT_BYTES: usize = MAX_HANDOFF_ATTACHMENT_BYTES * 6 + 4 * 1024;
 
 /// One independently owned request to the shared streaming transport.
 ///
@@ -918,6 +921,15 @@ fn validate_tool_call_shape(
             "provider emitted non-object arguments for tool {name:?}"
         )));
     }
+    if name == crate::ai::tools::subagents::CREATE_HANDOFF_ATTACHMENT_TOOL {
+        if let Some(content) = arguments.get("content").and_then(Value::as_str) {
+            if content.len() > MAX_HANDOFF_ATTACHMENT_BYTES {
+                return Err(AgentProviderError::new(format!(
+                    "provider attachment content exceeded {MAX_HANDOFF_ATTACHMENT_BYTES} raw UTF-8 bytes"
+                )));
+            }
+        }
+    }
     let bytes = serde_json::to_vec(arguments)
         .map_err(|error| AgentProviderError::new(error.to_string()))?
         .len();
@@ -1274,18 +1286,25 @@ mod tests {
     }
 
     #[test]
-    fn attachment_tool_has_its_own_bounded_transport_ceiling() {
-        let at_limit = json!({
-            "name": "report.md",
-            "media_type": "text/markdown",
-            "content": "x".repeat(MAX_HANDOFF_ATTACHMENT_BYTES),
-        });
-        assert!(validate_tool_call_shape(
-            "attachment",
-            crate::ai::tools::subagents::CREATE_HANDOFF_ATTACHMENT_TOOL,
-            &at_limit,
-        )
-        .is_ok());
+    fn attachment_transport_limit_measures_raw_utf8_content() {
+        for content in [
+            "x".repeat(MAX_HANDOFF_ATTACHMENT_BYTES),
+            "\0".repeat(MAX_HANDOFF_ATTACHMENT_BYTES),
+            "\\\"".repeat(MAX_HANDOFF_ATTACHMENT_BYTES / 2),
+            "å".repeat(MAX_HANDOFF_ATTACHMENT_BYTES / 2),
+        ] {
+            let at_limit = json!({
+                "name": "report.md",
+                "media_type": "text/markdown",
+                "content": content,
+            });
+            assert!(validate_tool_call_shape(
+                "attachment",
+                crate::ai::tools::subagents::CREATE_HANDOFF_ATTACHMENT_TOOL,
+                &at_limit,
+            )
+            .is_ok());
+        }
 
         let ordinary = json!({ "content": "x".repeat(MAX_TOOL_ARGUMENT_BYTES) });
         assert!(validate_tool_call_shape("ordinary", "read_snapshot", &ordinary).is_err());
@@ -1293,7 +1312,7 @@ mod tests {
         let too_large = json!({
             "name": "report.md",
             "media_type": "text/markdown",
-            "content": "x".repeat(MAX_ATTACHMENT_TOOL_ARGUMENT_BYTES),
+            "content": "å".repeat(MAX_HANDOFF_ATTACHMENT_BYTES / 2 + 1),
         });
         assert!(validate_tool_call_shape(
             "attachment",
