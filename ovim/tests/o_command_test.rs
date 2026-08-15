@@ -458,6 +458,28 @@ fn test_o_after_brace_with_trailing_spaces() {
 }
 
 #[test]
+fn test_o_does_not_indent_after_delimiter_in_comment() {
+    let mut editor = Editor::with_content("// {\nnext");
+    editor.set_file_path("/tmp/indent.rs".to_string());
+
+    press_char(&mut editor, 'o');
+
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "");
+}
+
+#[test]
+fn test_o_indents_after_opener_before_trailing_comment() {
+    let mut editor = Editor::with_content("fn main() { // body\n}");
+    editor.set_file_path("/tmp/indent.rs".to_string());
+
+    press_char(&mut editor, 'o');
+
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "    ");
+}
+
+#[test]
 fn test_o_no_extra_indent_on_normal_line() {
     let mut editor = Editor::with_content("    let x = 1;\n");
 

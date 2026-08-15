@@ -78,8 +78,8 @@ pub(crate) fn plan(
 
         for delimiter in scan.delimiters {
             match delimiter {
-                Delimiter::Open => depth += 1,
-                Delimiter::Close => depth = depth.saturating_sub(1),
+                Delimiter::Open(_) => depth += 1,
+                Delimiter::Close(_) => depth = depth.saturating_sub(1),
             }
         }
     }
@@ -87,10 +87,39 @@ pub(crate) fn plan(
     result
 }
 
+/// Return the last structural opening delimiter before an insertion point.
+///
+/// Earlier lines are scanned only to establish multiline comment/literal
+/// state. Delimiters inside those regions are therefore invisible here just
+/// as they are to [`plan`].
+pub(crate) fn opening_delimiter_at_end(
+    buffer: &Buffer,
+    line_idx: usize,
+    text_before_cursor: &str,
+) -> Option<char> {
+    let language = buffer
+        .file_path()
+        .and_then(LanguageRegistry::detect_from_path);
+    let profile = LexicalProfile::for_language(language);
+    let mut lexer = LexState::default();
+
+    for preceding_line in 0..line_idx.min(buffer.line_count()) {
+        if let Some(line) = buffer.line_text(preceding_line) {
+            scan_line(&line, profile, &mut lexer);
+        }
+    }
+
+    let scan = scan_line(text_before_cursor, profile, &mut lexer);
+    match scan.delimiters.last() {
+        Some(Delimiter::Open(opening)) => Some(*opening),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Delimiter {
-    Open,
-    Close,
+    Open(char),
+    Close(char),
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -363,14 +392,14 @@ fn scan_line(line: &str, profile: LexicalProfile, state: &mut LexState) -> LineS
         }
 
         match bytes[index] {
-            b'{' | b'(' | b'[' => {
+            byte @ (b'{' | b'(' | b'[') => {
                 scan.has_code = true;
-                scan.delimiters.push(Delimiter::Open);
+                scan.delimiters.push(Delimiter::Open(char::from(byte)));
                 leading = false;
             }
-            b'}' | b')' | b']' => {
+            byte @ (b'}' | b')' | b']') => {
                 scan.has_code = true;
-                scan.delimiters.push(Delimiter::Close);
+                scan.delimiters.push(Delimiter::Close(char::from(byte)));
                 if leading {
                     scan.leading_closers += 1;
                 }
@@ -465,11 +494,15 @@ mod tests {
 
         assert_eq!(
             result[0].delimiters,
-            vec![Delimiter::Open, Delimiter::Close, Delimiter::Open]
+            vec![
+                Delimiter::Open('('),
+                Delimiter::Close(')'),
+                Delimiter::Open('{')
+            ]
         );
         assert!(result[1].delimiters.is_empty());
         assert!(result[2].delimiters.is_empty());
-        assert_eq!(result[3].delimiters, vec![Delimiter::Close]);
+        assert_eq!(result[3].delimiters, vec![Delimiter::Close('}')]);
     }
 
     #[test]
@@ -491,7 +524,7 @@ mod tests {
         assert!(result[..3].iter().all(|line| line.delimiters.is_empty()));
         assert_eq!(
             result[3].delimiters,
-            vec![Delimiter::Open, Delimiter::Close]
+            vec![Delimiter::Open('('), Delimiter::Close(')')]
         );
     }
 
@@ -501,7 +534,7 @@ mod tests {
         let rust = scans(&["# {"], Some(Language::Rust));
 
         assert!(python[0].delimiters.is_empty());
-        assert_eq!(rust[0].delimiters, vec![Delimiter::Open]);
+        assert_eq!(rust[0].delimiters, vec![Delimiter::Open('{')]);
     }
 
     #[test]
@@ -510,7 +543,30 @@ mod tests {
 
         assert_eq!(
             result[0].delimiters,
-            vec![Delimiter::Open, Delimiter::Close, Delimiter::Open]
+            vec![
+                Delimiter::Open('('),
+                Delimiter::Close(')'),
+                Delimiter::Open('{')
+            ]
         );
+    }
+
+    #[test]
+    fn finds_opening_delimiter_before_a_trailing_comment() {
+        let mut buffer = Buffer::new_from_str("fn main() { // reason\n");
+        buffer.set_file_path("/tmp/main.rs".to_string());
+
+        assert_eq!(
+            opening_delimiter_at_end(&buffer, 0, "fn main() { // reason"),
+            Some('{')
+        );
+    }
+
+    #[test]
+    fn ignores_opening_delimiter_in_a_comment() {
+        let mut buffer = Buffer::new_from_str("// {\n");
+        buffer.set_file_path("/tmp/main.rs".to_string());
+
+        assert_eq!(opening_delimiter_at_end(&buffer, 0, "// {"), None);
     }
 }

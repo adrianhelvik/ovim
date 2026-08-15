@@ -91,6 +91,35 @@ fn test_enter_after_bracket_expandtab() {
     assert_eq!(test.buffer_content(), "let a = [\n    x\n");
 }
 
+#[test]
+fn test_enter_splits_adjacent_braces_and_aligns_closer() {
+    let mut test = EditorTest::new("{}");
+
+    test.keys("a<CR>x<Esc>");
+
+    assert_eq!(test.buffer_content(), "{\n    x\n}\n");
+}
+
+#[test]
+fn test_enter_does_not_indent_after_delimiter_in_comment() {
+    let mut test = EditorTest::new("// {");
+    test.set_file_path("/tmp/indent.rs".to_string());
+
+    test.keys("A<CR>x<Esc>");
+
+    assert_eq!(test.buffer_content(), "// {\nx\n");
+}
+
+#[test]
+fn test_enter_indents_after_opener_before_trailing_comment() {
+    let mut test = EditorTest::new("fn main() { // body");
+    test.set_file_path("/tmp/indent.rs".to_string());
+
+    test.keys("A<CR>x<Esc>");
+
+    assert_eq!(test.buffer_content(), "fn main() { // body\n    x\n");
+}
+
 // ============================================================================
 // Enter after opening bracket — noexpandtab
 // ============================================================================

@@ -198,13 +198,13 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     let text_before: String = line_text.chars().take(char_col.0).collect();
     let cursor_inside_indent = char_col.0 < leading_char_count(&line_text);
 
-    // Check if text before cursor ends with an opening bracket
-    // Use char_col (not grapheme_col) since we're iterating chars
     let text_before_cursor: String = line_text.chars().take(char_col.0).collect();
-    let trimmed_before = text_before_cursor.trim_end();
-    let opens_block = trimmed_before.ends_with('{')
-        || trimmed_before.ends_with('(')
-        || trimmed_before.ends_with('[');
+    let opening_delimiter = crate::auto_indent::opening_delimiter_at_end(
+        editor.buffer(),
+        line_idx,
+        &text_before_cursor,
+    );
+    let opens_block = opening_delimiter.is_some();
 
     let indent = if cursor_inside_indent {
         // The untouched suffix already contains the remainder of the current
@@ -215,13 +215,36 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
         inherited_indent(&line_text, usize::from(opens_block), options)
     };
 
-    // Insert newline + indentation
-    let text_to_insert = format!("\n{}", indent);
+    let matching_close = match opening_delimiter {
+        Some('{') => Some('}'),
+        Some('(') => Some(')'),
+        Some('[') => Some(']'),
+        _ => None,
+    };
+    let text_after_cursor: String = line_text.chars().skip(char_col.0).collect();
+    let split_pair = !cursor_inside_indent
+        && matching_close.is_some_and(|close| text_after_cursor.starts_with(close));
+    let base_indent = split_pair.then(|| inherited_indent(&line_text, 0, options));
+
+    // When Enter splits an adjacent delimiter pair, keep the insertion point
+    // on an indented middle line and align the existing closer with the base.
+    let text_to_insert = if let Some(base_indent) = &base_indent {
+        format!("\n{indent}\n{base_indent}")
+    } else {
+        format!("\n{indent}")
+    };
     let inserted = editor.record_session_edit(|buf| {
         buf.insert_text_at_positioning_cursor(position.line, position.col, &text_to_insert)
     });
 
-    if needs_double_newline && inserted {
+    if inserted && split_pair {
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line_idx + 1, GraphemeCol(indent.chars().count()));
+    }
+
+    if needs_double_newline && inserted && !split_pair {
         let cur = editor.buffer().cursor();
         let cur_char_col = editor.buffer().cursor_char_col();
         let cursor_after_first = ApplyPos::new(cur.line(), cur_char_col);
@@ -545,9 +568,11 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
     // source line's exact whitespace representation.
     let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
 
-    // Add extra indent after opening brackets
-    let trimmed = line_text.trim_end_matches(|c: char| c == '\n' || c.is_whitespace());
-    let opens_block = trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[');
+    // Add one level when the line ends in a structural opening delimiter.
+    // Comments and literals are filtered by the same lexer used by `=`.
+    let opens_block =
+        crate::auto_indent::opening_delimiter_at_end(editor.buffer(), line_idx, &line_text)
+            .is_some();
     let indent = inherited_indent(&line_text, usize::from(opens_block), options);
 
     // Determine insert position (char-space) and text. `line_text` strips
