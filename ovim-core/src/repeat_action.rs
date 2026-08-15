@@ -1,6 +1,7 @@
 use crate::buffer::Buffer;
 use crate::change::{InsertEntryMode, TextObjectType};
 use crate::edit::Edit;
+use crate::indentation::{leading_str, leading_width, IndentOptions};
 use crate::textobjects::TextObjects;
 use crate::unicode::{CharCol, GraphemeCol};
 
@@ -48,13 +49,12 @@ pub enum RepeatAction {
     /// >> — indent lines
     IndentLines {
         line_count: usize,
-        shift_width: usize,
-        expand_tab: bool,
+        options: IndentOptions,
     },
     /// << — dedent lines
     DedentLines {
         line_count: usize,
-        shift_width: usize,
+        options: IndentOptions,
     },
     /// ~ — toggle case at cursor
     ToggleCase { count: usize },
@@ -141,8 +141,7 @@ pub enum RepeatAction {
     OpenLine {
         above: bool,
         inserted_text: String,
-        shift_width: usize,
-        expand_tab: bool,
+        options: IndentOptions,
     },
     /// Visual-mode character-wise delete (v...d/x)
     DeleteVisualChar {
@@ -195,21 +194,20 @@ impl RepeatAction {
             }
             Self::IndentLines {
                 line_count,
-                shift_width,
-                expand_tab,
+                options,
             } => {
                 let start = buffer.cursor().line();
                 let end = start + line_count;
-                buffer.indent_lines_at(start, end, *shift_width, *expand_tab);
+                buffer.indent_lines_at(start, end, *options);
                 buffer.set_cursor_char_col(start, buffer.first_non_blank_col(start));
             }
             Self::DedentLines {
                 line_count,
-                shift_width,
+                options,
             } => {
                 let start = buffer.cursor().line();
                 let end = start + line_count;
-                buffer.dedent_lines_at(start, end, *shift_width);
+                buffer.dedent_lines_at(start, end, *options);
                 buffer.set_cursor_char_col(start, buffer.first_non_blank_col(start));
             }
             Self::ToggleCase { count } => {
@@ -419,29 +417,30 @@ impl RepeatAction {
             Self::OpenLine {
                 above,
                 inserted_text,
-                shift_width,
-                expand_tab,
+                options,
             } => {
+                let options = options.normalized();
                 let line_idx = buffer.cursor().line();
                 let line_text = buffer.line_text(line_idx).unwrap_or_default();
 
-                let mut indent: String = line_text
-                    .chars()
-                    .take_while(|c| c.is_whitespace() && *c != '\n')
-                    .collect();
+                let existing_indent = leading_str(&line_text);
+                let mut indent_width = leading_width(&line_text, options.tab_width);
 
                 if !*above {
                     // Match `o` behavior: add one extra indent level after opening delimiters.
                     let trimmed =
                         line_text.trim_end_matches(|c: char| c == '\n' || c.is_whitespace());
                     if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
-                        if *expand_tab {
-                            indent.push_str(&" ".repeat(*shift_width));
-                        } else {
-                            indent.push('\t');
-                        }
+                        indent_width += options.shift_width;
                     }
                 }
+                let indent = if options.copy_indent
+                    && (*above || indent_width == leading_width(&line_text, options.tab_width))
+                {
+                    existing_indent.to_string()
+                } else {
+                    options.encode_indent(indent_width)
+                };
 
                 if *above {
                     let text = format!("{}\n", indent);

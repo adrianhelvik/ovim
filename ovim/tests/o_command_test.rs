@@ -245,8 +245,8 @@ fn test_o_multiple_times() {
 }
 
 #[test]
-fn test_o_preserves_tab_indentation() {
-    // Test: 'o' preserves tab indentation
+fn test_o_preserves_tab_indentation_width() {
+    // Default expandtab normalizes a hard tab while preserving its width.
     let mut editor = Editor::with_content("line 1\n\ttabbed\nline 3");
 
     // Move to tabbed line
@@ -255,14 +255,13 @@ fn test_o_preserves_tab_indentation() {
     // Press 'o'
     press_char(&mut editor, 'o');
 
-    // New line should have tab indentation
-    assert_eq!(editor.buffer().line_text(2).unwrap(), "\t");
-    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(1)); // After the tab
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "    ");
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
 }
 
 #[test]
 fn test_o_mixed_indentation() {
-    // Test: 'o' with mixed spaces and tabs (though not recommended in practice)
+    // Mixed indentation is normalized by default while preserving visual width.
     let mut editor = Editor::with_content("start\n  \tmixed\nend");
 
     // Move to mixed indentation line
@@ -271,13 +270,18 @@ fn test_o_mixed_indentation() {
     // Press 'o'
     press_char(&mut editor, 'o');
 
-    // New line should have the mixed indentation
-    let new_line = editor.buffer().line_text(2).unwrap();
-    assert!(
-        new_line.starts_with("  \t"),
-        "Line should start with '  \\t': {:?}",
-        new_line
-    );
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "    ");
+}
+
+#[test]
+fn test_o_copyindent_preserves_mixed_indentation() {
+    let mut editor = Editor::with_content("start\n  \tmixed\nend");
+    editor.options.copy_indent = true;
+
+    press_char(&mut editor, 'j');
+    press_char(&mut editor, 'o');
+
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "  \t");
 }
 
 // ============================================================================

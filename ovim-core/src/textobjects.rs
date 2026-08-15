@@ -959,17 +959,9 @@ impl TextObjects {
         })
     }
 
-    /// Gets the indentation level (number of leading spaces/tabs) of a line
+    /// Gets the indentation level in visual columns.
     fn get_indent_level(line: &str, tab_width: usize) -> usize {
-        let mut indent = 0;
-        for c in line.chars() {
-            match c {
-                ' ' => indent += 1,
-                '\t' => indent += tab_width,
-                _ => break,
-            }
-        }
-        indent
+        crate::indentation::leading_width(line, tab_width)
     }
 
     /// Gets the range for "inner indent" (ii) - lines with same or greater indentation

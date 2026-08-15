@@ -668,8 +668,7 @@ fn test_dedent_mixed_tabs_and_spaces() {
     let mut test = EditorTest::new("\t  content");
     test.keys("<<");
 
-    // Logic removes up to tab_width leading whitespace chars, breaking on first tab
-    // So: tab removed, 2 spaces remain
+    // Six visual columns move left by shiftwidth=4, then normalize to spaces.
     assert_eq!(test.buffer_content(), "  content\n");
 }
 
@@ -680,7 +679,7 @@ fn test_dedent_dot_repeat_with_tabs() {
     test.keys("j");
     test.press('.'); // Repeat: remove one tab from second line
 
-    assert_eq!(test.buffer_content(), "\tcontent\n\tother\n");
+    assert_eq!(test.buffer_content(), "    content\n    other\n");
 }
 
 #[test]
@@ -689,8 +688,7 @@ fn test_dedent_spaces_then_tab() {
     let mut test = EditorTest::new("  \tcontent");
     test.keys("<<");
 
-    // Logic: removes spaces then stops at tab (inclusive)
-    // 2 spaces + 1 tab = 3 chars removed
+    // The mixed prefix occupies four visual columns, so one dedent removes it.
     assert_eq!(test.buffer_content(), "content\n");
 }
 

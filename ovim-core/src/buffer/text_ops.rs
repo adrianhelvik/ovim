@@ -1,6 +1,7 @@
 use super::Buffer;
 use crate::change::TextObjectType;
 use crate::edit::Edit;
+use crate::indentation::{leading_char_count, leading_width, IndentOptions};
 use crate::number_ops::{find_number_at_or_after, format_number, parse_number};
 use crate::unicode::{
     char_to_grapheme_col, grapheme_at_index, grapheme_count, grapheme_to_char_col, CharCol,
@@ -421,27 +422,48 @@ impl Buffer {
         Ok(())
     }
 
-    /// Remove up to shift_width leading whitespace chars from lines [start, end).
-    pub fn dedent_lines_at(&mut self, start: usize, end: usize, shift_width: usize) {
+    /// Replace a line's leading indentation with the canonical representation
+    /// of `target_width` visual columns. Returns the new prefix's char count.
+    pub fn set_indent_width_at(
+        &mut self,
+        line_idx: usize,
+        target_width: usize,
+        options: IndentOptions,
+    ) -> usize {
+        let options = options.normalized();
+        let Some(line_text) = self.line_text(line_idx).map(|line| line.into_owned()) else {
+            return 0;
+        };
+        let old_chars = leading_char_count(&line_text);
+        let replacement = options.encode_indent(target_width);
+        if line_text.chars().take(old_chars).eq(replacement.chars()) {
+            return replacement.chars().count();
+        }
+
+        if old_chars > 0 {
+            self.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(old_chars));
+        }
+        if !replacement.is_empty() {
+            self.insert_text_at(line_idx, CharCol::ZERO, &replacement);
+        }
+        replacement.chars().count()
+    }
+
+    /// Shift lines [start, end) left by one indentation level, measured in
+    /// visual columns and canonically re-encoded according to `options`.
+    pub fn dedent_lines_at(&mut self, start: usize, end: usize, options: IndentOptions) {
+        let options = options.normalized();
         let actual_end = end.min(self.line_count());
         for line_idx in start..actual_end {
-            if let Some(line_text) = self.line_text(line_idx) {
-                let chars: Vec<char> = line_text.chars().collect();
-                let mut remove = 0;
-                for &ch in chars.iter().take(shift_width) {
-                    if ch == ' ' {
-                        remove += 1;
-                    } else if ch == '\t' {
-                        remove += 1;
-                        break;
-                    } else {
-                        break;
-                    }
-                }
-                if remove > 0 {
-                    self.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(remove));
-                }
-            }
+            let Some(line_text) = self.line_text(line_idx) else {
+                continue;
+            };
+            let current = leading_width(&line_text, options.tab_width);
+            self.set_indent_width_at(
+                line_idx,
+                current.saturating_sub(options.shift_width),
+                options,
+            );
         }
     }
 
@@ -458,30 +480,20 @@ impl Buffer {
         }
     }
 
-    /// Indent lines [start, end) by inserting shift_width spaces (or a tab) at column 0.
+    /// Shift lines [start, end) right by one indentation level in visual columns.
     /// Skips empty/whitespace-only lines.
-    pub fn indent_lines_at(
-        &mut self,
-        start: usize,
-        end: usize,
-        shift_width: usize,
-        expand_tab: bool,
-    ) {
+    pub fn indent_lines_at(&mut self, start: usize, end: usize, options: IndentOptions) {
+        let options = options.normalized();
         let actual_end = end.min(self.line_count());
-        let indent_str = if expand_tab {
-            " ".repeat(shift_width)
-        } else {
-            "\t".to_string()
-        };
         for line_idx in start..actual_end {
             // Skip empty/whitespace-only lines
             if let Some(line) = self.line_text(line_idx) {
-                let trimmed = line;
-                if trimmed.trim().is_empty() {
+                if line.trim().is_empty() {
                     continue;
                 }
+                let current = leading_width(&line, options.tab_width);
+                self.set_indent_width_at(line_idx, current + options.shift_width, options);
             }
-            self.insert_text_at(line_idx, CharCol::ZERO, &indent_str);
         }
     }
 

@@ -17,6 +17,7 @@ pub mod edit_log;
 pub mod editor;
 pub mod fold;
 pub mod git;
+pub mod indentation;
 pub mod key;
 pub mod language_catalog;
 pub mod language_config;

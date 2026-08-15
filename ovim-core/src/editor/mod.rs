@@ -197,6 +197,10 @@ pub struct EditorOptions {
     pub shift_width: usize,
     /// Use spaces instead of tabs (default: true)
     pub expand_tab: bool,
+    /// Insert-mode soft tab stop. -1 follows shiftwidth, 0 follows tabstop.
+    pub soft_tab_stop: isize,
+    /// Preserve the exact existing whitespace prefix when autoindenting.
+    pub copy_indent: bool,
     /// Show line numbers (default: false)
     pub number: bool,
     /// Show relative line numbers (default: false)
@@ -259,6 +263,8 @@ impl Default for EditorOptions {
             tab_width: 4,
             shift_width: 4,
             expand_tab: true,
+            soft_tab_stop: -1,
+            copy_indent: false,
             number: true,
             relative_number: false,
             scroll: None,
@@ -284,6 +290,20 @@ impl Default for EditorOptions {
             lsp_auto_install: AutoInstallMode::default(),
             inlay_hints: false,
         }
+    }
+}
+
+impl EditorOptions {
+    /// Snapshot the indentation-related options for one editing operation.
+    pub fn indent_options(&self) -> crate::indentation::IndentOptions {
+        crate::indentation::IndentOptions {
+            tab_width: self.tab_width,
+            shift_width: self.shift_width,
+            soft_tab_stop: self.soft_tab_stop,
+            expand_tab: self.expand_tab,
+            copy_indent: self.copy_indent,
+        }
+        .normalized()
     }
 }
 
@@ -1810,14 +1830,29 @@ impl Editor {
     /// Apply modeline options to editor settings
     fn apply_modeline(&mut self, modeline: &crate::modeline::Modeline) {
         // Indentation options
-        if let Some(ts) = modeline.get_int("tabstop", "ts") {
+        if let Some(ts) = modeline
+            .get_int("tabstop", "ts")
+            .filter(|value| (1..=16).contains(value))
+        {
             self.options.tab_width = ts;
         }
-        if let Some(sw) = modeline.get_int("shiftwidth", "sw") {
+        if let Some(sw) = modeline
+            .get_int("shiftwidth", "sw")
+            .filter(|value| (1..=16).contains(value))
+        {
             self.options.shift_width = sw;
+        }
+        if let Some(sts) = modeline
+            .get_signed_int("softtabstop", "sts")
+            .filter(|value| (-1..=16).contains(value))
+        {
+            self.options.soft_tab_stop = sts;
         }
         if let Some(et) = modeline.get_bool("expandtab", "et") {
             self.options.expand_tab = et;
+        }
+        if let Some(ci) = modeline.get_bool("copyindent", "ci") {
+            self.options.copy_indent = ci;
         }
 
         // Display options

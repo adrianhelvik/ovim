@@ -11,6 +11,7 @@
 use crate::editor::{
     CursorPos, Editor, Motions, PendingChangeRepeat, RegisterType, TextObjectRange, TextObjects,
 };
+use crate::indentation::leading_char_count;
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::unicode::{CharCol, GraphemeCol};
@@ -932,22 +933,33 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
                 let cursor = editor.buffer().cursor();
                 let cursor_before = CursorPos::new(cursor.line(), cursor.col());
-                let tab_width = editor.options.tab_width;
                 let is_visual_block = editor.mode() == Mode::VisualBlock;
                 let original_col = cursor_before.col.0;
+                let old_indent_chars = editor
+                    .buffer()
+                    .line_text(end_line)
+                    .map(|line| leading_char_count(&line))
+                    .unwrap_or(0);
 
                 helpers::indent_lines_with_tracking(
                     editor,
                     start_line,
                     end_line + 1,
-                    tab_width,
                     cursor_before,
                 )?;
 
                 // For visual block mode, move cursor to end line at adjusted column
                 if is_visual_block {
+                    let new_indent_chars = editor
+                        .buffer()
+                        .line_text(end_line)
+                        .map(|line| leading_char_count(&line))
+                        .unwrap_or(0);
+                    let adjusted_col = original_col
+                        .saturating_sub(old_indent_chars)
+                        .saturating_add(new_indent_chars);
                     let cursor = editor.buffer_mut().cursor_mut();
-                    cursor.set_position(end_line, GraphemeCol(original_col + tab_width));
+                    cursor.set_position(end_line, GraphemeCol(adjusted_col));
                 }
             }
             helpers::exit_visual_mode_to_normal(editor);
@@ -956,14 +968,12 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
                 let cursor = editor.buffer().cursor();
                 let cursor_before = CursorPos::new(cursor.line(), cursor.col());
-                let tab_width = editor.options.tab_width;
                 let is_visual_block = editor.mode() == Mode::VisualBlock;
 
                 helpers::dedent_lines_with_tracking(
                     editor,
                     start_line,
                     end_line + 1,
-                    tab_width,
                     cursor_before,
                 )?;
 
@@ -979,17 +989,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         KeyCode::Char('=') => {
             if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
-                let tab_width = editor.options.tab_width;
-                let expand_tab = editor.options.expand_tab;
+                let options = editor.options.indent_options();
                 let cursor_before = editor.cursor_position();
                 let ((), edits) = editor.buffer_mut().record(|buf| {
-                    let _ = helpers::auto_indent_lines(
-                        buf,
-                        start_line,
-                        end_line + 1,
-                        tab_width,
-                        expand_tab,
-                    );
+                    let _ = helpers::auto_indent_lines(buf, start_line, end_line + 1, options);
                 });
                 if !edits.is_empty() {
                     let cursor_after = editor.cursor_position();

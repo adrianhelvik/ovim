@@ -1,5 +1,6 @@
 use ropey::{Rope, RopeSlice};
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Returns true for control characters that should be displayed as caret notation.
 /// Covers 0x00–0x1F (excluding \t and \n) and 0x7F (DEL).
@@ -81,11 +82,15 @@ pub fn display_col_to_char_col(text: &str, display_col: usize, tab_width: usize)
 /// Calculates the display width of a string, accounting for tabs and wide characters.
 pub fn display_width(text: &str, tab_width: usize) -> usize {
     let mut width = 0;
-    for ch in text.chars() {
-        if ch == '\t' {
+    for grapheme in text.graphemes(true) {
+        if grapheme == "\t" {
             width += tab_width - (width % tab_width);
-        } else {
+        } else if let Some(ch) = grapheme.chars().next().filter(|_| grapheme.len() == 1) {
             width += char_display_width(ch);
+        } else {
+            // Emoji joined with ZWJ, combining marks, and flags occupy the
+            // width of one rendered grapheme, not the sum of their scalars.
+            width += UnicodeWidthStr::width(grapheme);
         }
     }
     width
@@ -183,6 +188,7 @@ mod tests {
     #[test]
     fn test_display_width_with_wide_chars() {
         assert_eq!(display_width("a世b", 4), 4); // 1 + 2 + 1
+        assert_eq!(display_width("a👨‍👩‍👧‍👦", 4), 3); // joined emoji is one glyph
         assert_eq!(display_width("hello", 4), 5);
         assert_eq!(display_width("\thello", 4), 9); // 4 + 5
         assert_eq!(display_width("", 4), 0);

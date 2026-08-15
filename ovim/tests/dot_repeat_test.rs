@@ -1847,11 +1847,13 @@ fn test_dot_repeat_o_uses_current_line_indent() {
     test.keys("j"); // on two_tabs line
     test.keys(".");
 
-    // The repeated line should use two_tabs indent, not four_spaces
+    // The repeated line should use the current line's visual indent, not the
+    // four-space indent from the original command. Default nocopyindent
+    // canonicalizes that width to spaces.
     let content = test.buffer_content();
     assert!(
-        content.contains("\t\tx\n"),
-        "Repeated o should use current line's tab indent, got: {:?}",
+        content.contains("        x\n"),
+        "Repeated o should use current line's visual indent, got: {:?}",
         content
     );
 }

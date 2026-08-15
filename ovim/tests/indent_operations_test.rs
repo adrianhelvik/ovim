@@ -646,8 +646,8 @@ fn test_indent_with_existing_tabs() {
 
     test.keys(">>"); // Indent tabbed line
 
-    assert_eq!(test.buffer_content(), "    \tline\n");
-    test.assert_cursor(0, 5);
+    assert_eq!(test.buffer_content(), "        line\n");
+    test.assert_cursor(0, 8);
 }
 
 #[test]
@@ -656,8 +656,8 @@ fn test_dedent_tabs() {
 
     test.keys("<<"); // Dedent tabs
 
-    assert_eq!(test.buffer_content(), "\tline\n");
-    test.assert_cursor(0, 1);
+    assert_eq!(test.buffer_content(), "    line\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
