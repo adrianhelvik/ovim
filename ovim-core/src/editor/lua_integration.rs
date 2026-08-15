@@ -314,10 +314,7 @@ impl Editor {
                     });
                 }
                 AiCommand::EditSelection { profile } => {
-                    if let Some(p) = profile {
-                        self.ai_state.active_profile = p;
-                    }
-                    let _ = self.start_ai_prompt_from_visual();
+                    let _ = self.start_ai_chat_from_visual_with_profile(profile);
                 }
             }
         }

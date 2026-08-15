@@ -131,9 +131,6 @@ impl Buffer {
             injection_cache: None,
             recording: None,
             edit_log: crate::edit_log::EditLog::new(),
-            ai_locks: Vec::new(),
-            ai_lock_blocked: false,
-            ai_lock_bypass_depth: 0,
             display_name: None,
         };
 

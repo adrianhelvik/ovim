@@ -41,7 +41,8 @@ Common causes:
 
 Ovim signs in to ChatGPT independently from Codex CLI. Open AI chat with
 `Space Space`, then press `Enter` in the Ovim sign-in dialog and complete the
-browser flow. The action is the same for a visual-selection edit.
+browser flow. A visual selection attached with `Space Space` uses the same chat
+and sign-in flow.
 
 Ovim refreshes expiring credentials automatically and retries one inference
 request after an unexpected `401 Unauthorized`. If the refresh token is

@@ -477,7 +477,7 @@ impl Editor {
             )
             .0;
 
-        // Store as active selection (same structure used by AI prompt mode)
+        // Store as the active selection used by chat tools and rendering.
         let selected_text = if end_char > start_char {
             rope.slice(start_char..end_char.min(rope.len_chars()))
                 .to_string()
@@ -495,7 +495,7 @@ impl Editor {
             end_char,
             anchor_line: start_line_0,
             selected_text: selected_text.clone(),
-            mode_before_prompt: self.mode(),
+            selection_mode: self.mode(),
         });
 
         // Move cursor to the midpoint and center
@@ -655,7 +655,6 @@ impl Editor {
             self.process_viewport_rehighlight();
         }
         self.request_diagnostics_refresh();
-        self.ai_state.last_observed_buffer_version = self.buffer().version();
         self.mark_dirty();
     }
 

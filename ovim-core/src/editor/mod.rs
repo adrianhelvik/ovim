@@ -1,4 +1,3 @@
-mod ai_agent;
 mod ai_base_manifest;
 mod ai_chat;
 mod ai_chat_code_attachment;
@@ -21,7 +20,6 @@ mod ai_code_explanation;
 mod ai_codex_auth;
 mod ai_compaction;
 mod ai_comprehension;
-mod ai_context;
 mod ai_durable_chat;
 pub(crate) mod ai_integration;
 mod ai_run_events;
@@ -110,7 +108,7 @@ pub use ai_chat_state::{
     QueuedChatInputKind,
 };
 pub use ai_shell_process::{ShellInspectorView, ShellProcessPhase};
-pub use ai_state::{AiEditRegion, AiRegionStatus, CodexAuthDialogPhase, CodexAuthDialogSummary};
+pub use ai_state::{CodexAuthDialogPhase, CodexAuthDialogSummary};
 pub use ai_subagents::PreparedHeadlessAgentControl;
 pub use build_state::PendingShellCommand;
 pub use code_explanation::{
@@ -365,7 +363,7 @@ pub struct Editor {
     pub ui_panels: UiPanels,
     /// DAP (Debug Adapter Protocol) manager for debug sessions
     dap_manager: crate::dap::DapManager,
-    /// AI prompt, pending jobs, and in-buffer agent logs
+    /// AI chat, selection, and in-buffer agent state
     pub ai_state: Box<ai_state::AiState>,
     /// API server port (set during startup, used by :session start/stop)
     api_port: Option<u16>,
@@ -492,7 +490,7 @@ impl Editor {
         let mut buffer = Buffer::new();
         buffer.set_language_catalog(language_catalog.clone());
         let (git_tx, git_rx) = tokio::sync::mpsc::channel(4);
-        let mut editor = Self {
+        Self {
             language_catalog,
             buffers: vec![buffer],
             current_buffer_index: 0,
@@ -533,9 +531,7 @@ impl Editor {
             decorations: decoration::DecorationMap::new(),
             git_refresh_rx: git_rx,
             git_refresh_tx: git_tx,
-        };
-        editor.ai_state.last_observed_buffer_version = editor.buffer().version();
-        editor
+        }
     }
 
     /// Creates an editor with initial content
@@ -544,7 +540,7 @@ impl Editor {
         let mut buffer = Buffer::new_from_str(content);
         buffer.set_language_catalog(language_catalog.clone());
         let (git_tx, git_rx) = tokio::sync::mpsc::channel(4);
-        let mut editor = Self {
+        Self {
             language_catalog,
             buffers: vec![buffer],
             current_buffer_index: 0,
@@ -585,9 +581,7 @@ impl Editor {
             decorations: decoration::DecorationMap::new(),
             git_refresh_rx: git_rx,
             git_refresh_tx: git_tx,
-        };
-        editor.ai_state.last_observed_buffer_version = editor.buffer().version();
-        editor
+        }
     }
 
     // ==================== Rename Input ====================
@@ -606,16 +600,6 @@ impl Editor {
 
     pub(crate) fn rename_input_mut(&mut self) -> &mut SingleLineInput {
         &mut self.editing.rename_input
-    }
-
-    // ==================== AI Prompt ====================
-
-    pub fn ai_prompt_input(&self) -> &str {
-        &self.ai_state.prompt.input
-    }
-
-    pub fn ai_prompt_cursor(&self) -> usize {
-        self.ai_state.prompt.cursor
     }
 
     // ==================== Core Editor Methods ====================
@@ -678,9 +662,6 @@ impl Editor {
         // Clear visual selection when leaving visual modes
         if !matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
             self.visual.visual_start = None;
-        }
-        if mode != Mode::AiPrompt {
-            self.ai_state.prompt.model_picker_open = false;
         }
     }
 

@@ -299,48 +299,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 
 /// Handle Ctrl+key combinations for motions and scrolling.
 fn try_handle_ctrl_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
-    // AI generated-region controls when cursor is inside a generated block:
-    // - Ctrl-E: show AI reasoning/details
-    // - Ctrl-Y: accept generated region (remove AI metadata)
-    // - Ctrl-N: revert generated region
-    // - Ctrl-Space: retry generation with same prompt
-    // - Ctrl-C: clear AI region selection / cancel running job
-    if editor.ai_selected_region_id().is_some() {
-        match key_event.code {
-            KeyCode::Char('e') => {
-                if editor.ai_show_reasoning_for_selected_region() {
-                    editor.clear_count();
-                    return Ok(true);
-                }
-            }
-            KeyCode::Char('y') => {
-                if editor.ai_accept_selected_region() {
-                    editor.clear_count();
-                    return Ok(true);
-                }
-            }
-            KeyCode::Char('n') => {
-                if editor.ai_revert_selected_region()? {
-                    editor.clear_count();
-                    return Ok(true);
-                }
-            }
-            KeyCode::Char(' ') | KeyCode::Null => {
-                if editor.ai_retry_selected_region()? {
-                    editor.clear_count();
-                    return Ok(true);
-                }
-            }
-            KeyCode::Char('c') => {
-                if editor.ai_cancel_selected_region() {
-                    editor.clear_count();
-                    return Ok(true);
-                }
-            }
-            _ => {}
-        }
-    }
-
     match key_event.code {
         // Scroll commands
         KeyCode::Char('d') => {
