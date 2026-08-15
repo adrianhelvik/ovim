@@ -63,12 +63,13 @@ bitflags::bitflags! {
 
 pub(crate) fn workspace_settings_for_language(language: &str) -> Option<serde_json::Value> {
     match language {
-        // Ovim exposes this Neovim-compatible host table to config/plugins.
+        // Ovim exposes these host tables to config/plugins: `vim` is the
+        // Neovim-compatible surface, `ovim` is the editor's own API.
         // Keep the declaration narrow so LuaLS still catches misspelled globals.
         "lua" => Some(json!({
             "Lua": {
                 "runtime": { "version": "Lua 5.4" },
-                "diagnostics": { "globals": ["vim"] }
+                "diagnostics": { "globals": ["vim", "ovim"] }
             }
         })),
         _ => None,

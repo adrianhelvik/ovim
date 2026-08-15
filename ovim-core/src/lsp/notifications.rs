@@ -2000,7 +2000,7 @@ mod workspace_configuration_tests {
     use super::workspace_configuration_values;
 
     #[test]
-    fn lua_configuration_declares_only_the_host_vim_global() {
+    fn lua_configuration_declares_only_the_host_globals() {
         let params = serde_json::json!({
             "items": [
                 {"section": "Lua"},
@@ -2013,9 +2013,9 @@ mod workspace_configuration_tests {
         assert_eq!(values[0]["runtime"]["version"], "Lua 5.4");
         assert_eq!(
             values[0]["diagnostics"]["globals"],
-            serde_json::json!(["vim"])
+            serde_json::json!(["vim", "ovim"])
         );
-        assert_eq!(values[1]["globals"], serde_json::json!(["vim"]));
+        assert_eq!(values[1]["globals"], serde_json::json!(["vim", "ovim"]));
         assert!(values[2].is_null());
     }
 
