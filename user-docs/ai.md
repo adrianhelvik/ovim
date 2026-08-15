@@ -9,8 +9,9 @@ This guide covers practical AI configuration in ovim:
 
 ## Recommendation
 
-Open AI chat with `Space Space`, or visually select text and press
-`Space Space`. When a direct Codex profile needs credentials, Ovim shows a
+Open AI chat with `Space Space`. Visually select text and press `Space Space`
+to open the same chat with that code attached to the composer. When a direct
+Codex profile needs credentials, Ovim shows a
 sign-in dialog at the point of use:
 
 1. Press `Enter` to open ChatGPT sign-in in your browser.
@@ -559,7 +560,7 @@ Built-in AI keybindings:
 
 - Normal mode `Space Space`: chat
 - Normal mode `Space ?`: read-only query
-- Visual mode `Space Space`: single-shot selection edit
+- Visual mode `Space Space`: attach selected code to chat
 - AI chat `Ctrl-T`: delegated-agent and conversation-tree sidebar
 
 ## Legacy `ai.toml` (Still Supported)

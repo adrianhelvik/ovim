@@ -563,6 +563,28 @@ pub struct QueuedChatInput {
     pub kind: QueuedChatInputKind,
     pub content: String,
     pub images: Vec<ImageAttachment>,
+    pub code_attachment: Option<CodeAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeAttachment {
+    pub buffer_id: BufferId,
+    pub path: Option<String>,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub buffer_revision: usize,
+    pub text: String,
+}
+
+impl CodeAttachment {
+    pub fn label(&self) -> String {
+        let path = self.path.as_deref().unwrap_or("untitled");
+        if self.start_line == self.end_line {
+            format!("{path}:{}", self.start_line + 1)
+        } else {
+            format!("{path}:{}–{}", self.start_line + 1, self.end_line + 1)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -629,6 +651,8 @@ pub struct AiChatState {
     pub slash_completion_selected: usize,
     /// Images dropped into the current composer.
     pub pending_images: Vec<ImageAttachment>,
+    /// Visually selected code attached to the current composer.
+    pub pending_code_attachment: Option<CodeAttachment>,
     /// Image currently expanded over the chat panel.
     pub image_modal: Option<PathBuf>,
     /// First-run/recovery dialog for Ovim-owned Exa web search.
@@ -869,6 +893,7 @@ impl AiChatState {
             input_cursor: 0,
             slash_completion_selected: 0,
             pending_images: Vec::new(),
+            pending_code_attachment: None,
             image_modal: None,
             exa_setup: None,
             queued_inputs: VecDeque::new(),

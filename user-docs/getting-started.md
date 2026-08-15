@@ -42,7 +42,7 @@ and the explorer root cannot be renamed, moved, or deleted.
 ## AI Chat and Editing
 
 Press `Space Space` in normal mode to open AI chat. Select text visually and
-press `Space Space` to request an edit. The built-in Codex profiles use your
+press `Space Space` to open the same chat with that code attached. The built-in Codex profiles use your
 ChatGPT subscription.
 
 On first use, Ovim checks its credentials and opens a sign-in dialog. Press

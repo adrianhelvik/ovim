@@ -128,9 +128,9 @@ fn handle_visual_leader_input(
 
     if keys.is_empty() {
         match c {
-            // <Space><Space> in visual mode: edit the selection inline.
+            // <Space><Space> in visual mode: attach the selection to AI chat.
             ' ' => {
-                editor.start_ai_prompt_from_visual()?;
+                editor.start_ai_chat_from_visual()?;
                 editor.reset_input_state();
             }
             _ => {

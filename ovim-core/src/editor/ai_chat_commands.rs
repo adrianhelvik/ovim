@@ -307,6 +307,7 @@ impl Editor {
             chat.input.clear();
             chat.input_cursor = 0;
             chat.pending_images.clear();
+            chat.pending_code_attachment = None;
             chat.slash_completion_selected = 0;
         }
     }
@@ -336,6 +337,7 @@ impl Editor {
             chat.input.clear();
             chat.input_cursor = 0;
             chat.pending_images.clear();
+            chat.pending_code_attachment = None;
             chat.focus = ChatFocus::TextInput;
             chat.context_generation = chat.context_generation.saturating_add(1);
             chat.compaction_checkpoint = None;

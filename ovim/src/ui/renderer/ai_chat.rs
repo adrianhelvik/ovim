@@ -1752,6 +1752,29 @@ fn render_chat_bubble(
 
     let inner_width = card_text_width(panel_width, accent_glyph);
 
+    let (code_attachment_label, visible_content) = if message.role == ChatRole::User {
+        if let Some((label, content)) =
+            ovim_core::editor::split_code_attachment_message(&message.content)
+        {
+            (Some(label), content)
+        } else {
+            (None, message.content.as_str())
+        }
+    } else {
+        (None, message.content.as_str())
+    };
+
+    if let Some(label) = code_attachment_label {
+        lines.push(render_card_text_line(
+            panel_width,
+            accent_glyph,
+            row_style.accent,
+            row_style.body_bg,
+            &format!("📎 {label}"),
+            Style::default().fg(ACCENT_USER).add_modifier(Modifier::DIM),
+        ));
+    }
+
     if terminal_image_support && !message.images.is_empty() {
         let (image_lines, image_placements) = render_message_image_boxes(
             &message.images,
@@ -1815,7 +1838,7 @@ fn render_chat_bubble(
         let display_content = if message.role == ChatRole::Thinking {
             format!("\u{25be} {}", message.content)
         } else {
-            message.content.clone()
+            visible_content.to_string()
         };
         let wrapped = word_wrap(&display_content, inner_width);
         for row in &wrapped {
@@ -2081,16 +2104,28 @@ fn render_text_input(
         .iter()
         .map(|image| image.file_name())
         .collect::<Vec<_>>();
+    let code_attachment = editor.ai_chat_pending_code_attachment().map(|attachment| {
+        let suffix = if editor.ai_chat_pending_code_attachment_modified() {
+            " · modified"
+        } else {
+            ""
+        };
+        format!("{}{suffix}", attachment.label())
+    });
     let composer_title = editor.ai_agent_composer_title();
     let top = if let Some(title) = composer_title {
         let title = truncate_with_ellipsis(&title, w.saturating_sub(4));
         let fill = w.saturating_sub(2 + text_display_width(&title));
         format!("╭{title}{}╮", "─".repeat(fill))
-    } else if image_names.is_empty() {
+    } else if image_names.is_empty() && code_attachment.is_none() {
         format!("╭{}╮", "─".repeat(w.saturating_sub(2)))
     } else {
+        let mut attachments = image_names;
+        if let Some(label) = code_attachment {
+            attachments.push(label);
+        }
         let title = truncate_with_ellipsis(
-            &format!(" 📎 {} ", image_names.join(", ")),
+            &format!(" 📎 {} ", attachments.join(", ")),
             w.saturating_sub(4),
         );
         let fill = w.saturating_sub(2 + text_display_width(&title));

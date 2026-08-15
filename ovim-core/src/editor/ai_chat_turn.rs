@@ -15,14 +15,15 @@ impl Editor {
     }
 
     fn submit_ai_chat_message_inner(&mut self, dispatch_slash_commands: bool) -> Result<()> {
-        let (input, has_pending_images) = match self.ai_state.chat.as_ref() {
+        let (input, has_pending_images, has_code_attachment) = match self.ai_state.chat.as_ref() {
             Some(chat) => (
                 chat.input.trim().to_string(),
                 !chat.pending_images.is_empty(),
+                chat.pending_code_attachment.is_some(),
             ),
             None => return Ok(()),
         };
-        if input.is_empty() && !has_pending_images {
+        if input.is_empty() && !has_pending_images && !has_code_attachment {
             return Ok(());
         }
 
@@ -45,6 +46,7 @@ impl Editor {
 
         if dispatch_slash_commands
             && !has_pending_images
+            && !has_code_attachment
             && self.try_execute_ai_chat_slash_command(&input)?
         {
             return Ok(());
@@ -54,10 +56,19 @@ impl Editor {
             return Ok(());
         }
 
-        let runtime_input = if input.is_empty() {
+        let message_input = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_code_attachment.as_ref())
+            .map(|attachment| {
+                super::ai_chat_code_attachment::compose_code_attachment_message(attachment, &input)
+            })
+            .unwrap_or_else(|| input.clone());
+        let runtime_input = if message_input.is_empty() {
             "[Image attachment]".to_string()
         } else {
-            input.clone()
+            message_input.clone()
         };
 
         // Queue, approval, and slash-command notices describe the previous
@@ -92,7 +103,7 @@ impl Editor {
             .unwrap_or_default();
         let user_node = self
             .conversation_mut()
-            .map(|conv| conv.append_user_message_with_images(input.clone(), images));
+            .map(|conv| conv.append_user_message_with_images(message_input, images));
         if let (Some(node_id), Some(event_id)) = (user_node, user_event_id) {
             self.record_ai_chat_node(node_id, event_id);
         }
@@ -101,6 +112,7 @@ impl Editor {
         let chat = self.ai_state.chat.as_mut().unwrap();
         chat.input.clear();
         chat.input_cursor = 0;
+        chat.pending_code_attachment = None;
         chat.waiting = true;
         chat.viewport.row_scroll_from_bottom = 0;
         chat.viewport.follow_latest = true;
