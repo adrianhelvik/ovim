@@ -137,6 +137,7 @@ mod tests {
                 syntax: None,
                 lsp: None,
                 dap: None,
+                test: None,
             },
             lsp_language_id: "exttest".into(),
             syntax: Some(SyntaxDefinition {
@@ -563,6 +564,7 @@ impl LanguageCatalog {
                 syntax: None,
                 lsp,
                 dap: None,
+                test: None,
             },
             lsp_language_id,
             syntax,

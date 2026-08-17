@@ -349,6 +349,7 @@ const x = 42;
                 syntax: None,
                 lsp: None,
                 dap: None,
+                test: None,
             },
             lsp_language_id: "nulatest".into(),
             syntax: Some(SyntaxDefinition {

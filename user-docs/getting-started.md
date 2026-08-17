@@ -53,6 +53,33 @@ automatically; installing or signing in to Codex CLI is not required.
 See [AI Setup](ai.md) for profiles, tools, approval behavior, and alternative
 providers.
 
+## Running Tests
+
+vim-test style bindings, prefixed with `Space t` in normal mode:
+
+| Keys | Command | Runs |
+|------|---------|------|
+| `Space t n` | `:TestNearest` | the test at/near the cursor |
+| `Space t f` | `:TestFile` | the current file's tests |
+| `Space t a` / `Space t s` | `:TestSuite` | the whole suite |
+| `Space t l` | `:TestLast` | the previous test command again |
+| `Space t v` | `:TestVisit` | nothing — jumps back to the last-tested spot |
+
+Commands run in the background in the file's own project root (nearest
+`Cargo.toml`, `package.json`, `go.mod`, or pytest marker — resolved per
+file, so monorepos just work). Failures populate the quickfix list;
+`:TestOutput` shows the raw log.
+
+Built-in runners: `cargo test` (Rust, workspace-aware, with `--test`/`--bin`
+target selection), vitest/jest/bun (detected from dependencies, config files,
+and lockfiles), pytest (with uv/poetry/pipenv/pdm prefixes), and `go test`
+(with subtest and table-entry `-run` patterns). The nearest test is found via
+tree-sitter, so Rust `mod` nesting, nested `describe` blocks, Python classes,
+and Go `t.Run` subtests all resolve to correct filters.
+
+Other languages can be wired up with `[language.test]` in `languages.toml` —
+see [configuration.md](configuration.md).
+
 ## Headless Mode (for automation)
 
 Headless mode runs ovim without the TUI and exposes a local REST API for driving the editor.

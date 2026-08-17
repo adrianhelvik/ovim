@@ -505,13 +505,17 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             editor.run_test_nearest();
             ok("Running nearest test...")
         }
-        "TestAll" | "TA" => {
+        "TestAll" | "TA" | "TestSuite" | "TS" => {
             editor.run_test_all();
             ok("Running all tests...")
         }
         "TestLast" | "TL" => {
             editor.run_test_last();
             ok("Re-running last test...")
+        }
+        "TestVisit" | "TV" => {
+            editor.test_visit();
+            ok("Visiting last-tested position...")
         }
         "TestOutput" | "MakeOutput" => {
             // Show raw output from last :make / test run in a scratch buffer

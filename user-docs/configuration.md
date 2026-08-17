@@ -103,6 +103,34 @@ ovim lsp languages --verbose
 
 See [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md) for examples.
 
+### Test runners (`[language.test]`)
+
+Rust, JavaScript/TypeScript, Python, and Go have built-in test runners (see
+[getting-started.md](getting-started.md#running-tests)). For other languages,
+or to override a built-in, add a `test` section to the language:
+
+```toml
+[[language]]
+id = "elixir"
+
+[language.test]
+suite_command = "mix test"
+file_command = "mix test {file}"
+nearest_command = "mix test {file}:{line}"
+root_markers = ["mix.exs"]
+```
+
+Placeholders:
+
+- `{file}` — the test file, relative to the project root
+- `{line}` — 1-indexed cursor line
+- `{name}` — the nearest test's full name (namespaces joined with spaces),
+  escaped for single quotes: `nearest_command = "runner -t '{name}' {file}"`
+
+Commands run with the resolved project root (first `root_markers` hit walking
+up from the file) as working directory. Omitted commands fall back to the
+built-in runner if the language has one.
+
 ## User Language Plugins
 
 A language plugin adds support for a new language — file detection, a native

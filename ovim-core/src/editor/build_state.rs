@@ -10,8 +10,9 @@ pub struct PendingShellCommand {
 pub(crate) struct BuildState {
     /// Pending `:make` result from background thread
     pub(crate) pending_make: Option<super::PendingMake>,
-    /// Last test command run via `<Space>t` keybindings (for `<Space>tl` repeat)
-    pub(crate) last_test_command: Option<String>,
+    /// Last test run via `<Space>t` keybindings (for `<Space>tl` repeat and
+    /// `<Space>tv` visit)
+    pub(crate) last_test: Option<super::test_runner::LastTest>,
     /// Raw output from last `:make` / test run
     pub(crate) last_make_output: Option<String>,
     /// Shell command waiting for the event loop to execute with terminal access

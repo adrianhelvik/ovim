@@ -97,7 +97,7 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
             editor.set_input_state(InputState::Leader { keys: vec!['l'] });
         }
         't' => {
-            // <Space>t... - Type hierarchy prefix
+            // <Space>t... - Tests (tn/tf/ta/ts/tl/tv) + type hierarchy (th)
             editor.set_input_state(InputState::Leader { keys: vec!['t'] });
         }
         'c' => {
@@ -231,14 +231,19 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
             editor.run_test_nearest();
             editor.reset_input_state();
         }
-        (&['t'], 'a') => {
-            // <Space>ta - Test all (run full test suite)
+        (&['t'], 'a') | (&['t'], 's') => {
+            // <Space>ta / <Space>ts - Test suite (run full test suite)
             editor.run_test_all();
             editor.reset_input_state();
         }
         (&['t'], 'l') => {
             // <Space>tl - Test last (re-run last test command)
             editor.run_test_last();
+            editor.reset_input_state();
+        }
+        (&['t'], 'v') => {
+            // <Space>tv - Test visit (jump to last-tested file/position)
+            editor.test_visit();
             editor.reset_input_state();
         }
 

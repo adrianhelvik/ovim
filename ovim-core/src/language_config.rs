@@ -48,6 +48,38 @@ pub struct LanguageConfig {
 
     /// DAP server configuration (optional)
     pub dap: Option<DapConfig>,
+
+    /// Test runner configuration (optional). Overrides the built-in
+    /// runner for this language when present.
+    pub test: Option<TestConfig>,
+}
+
+/// Test runner configuration.
+///
+/// Commands are shell templates with placeholders:
+/// - `{file}`    — test file path relative to the project root
+/// - `{name}`    — the resolved test filter (nearest test), already escaped
+///   for use inside single quotes
+/// - `{line}`    — 1-indexed cursor line
+///
+/// Any omitted command falls back to the built-in runner for the language
+/// (if one exists), so a config can override just `nearest_command`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TestConfig {
+    /// Command for running the whole suite (`:TestSuite` / `<Space>ta`)
+    pub suite_command: Option<String>,
+
+    /// Command for running the current file's tests (`:TestFile` / `<Space>tf`)
+    pub file_command: Option<String>,
+
+    /// Command for running the nearest test (`:TestNearest` / `<Space>tn`)
+    pub nearest_command: Option<String>,
+
+    /// Project root markers (searched upward from the file). The command
+    /// runs with the marker's directory as working directory. Falls back to
+    /// the built-in runner's root detection when empty.
+    #[serde(default)]
+    pub root_markers: Vec<String>,
 }
 
 /// Syntax highlighting configuration
@@ -827,6 +859,7 @@ mod tests {
                 syntax: None,
                 lsp: None,
                 dap: None,
+                test: None,
             },
             LanguageConfig {
                 id: "markdown".to_string(),
@@ -837,6 +870,7 @@ mod tests {
                 syntax: None,
                 lsp: None,
                 dap: None,
+                test: None,
             },
         ];
 
@@ -867,6 +901,7 @@ mod tests {
                 syntax: None,
                 lsp: None,
                 dap: None,
+                test: None,
             },
             LanguageConfig {
                 id: "markdown".to_string(),
@@ -877,6 +912,7 @@ mod tests {
                 syntax: None,
                 lsp: None,
                 dap: None,
+                test: None,
             },
         ];
 
@@ -1046,6 +1082,7 @@ mod tests {
             syntax: None,
             lsp: None,
             dap: None,
+            test: None,
         }];
 
         let registry = LanguageRegistry::build_indices(languages, vec![]);
@@ -1087,6 +1124,7 @@ mod tests {
                 syntax: None,
                 lsp: None,
                 dap: None,
+                test: None,
             },
             LanguageConfig {
                 id: "ghostty".to_string(),
@@ -1097,6 +1135,7 @@ mod tests {
                 syntax: None,
                 lsp: None,
                 dap: None,
+                test: None,
             },
         ];
 
