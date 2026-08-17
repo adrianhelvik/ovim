@@ -29,6 +29,11 @@ pub(super) fn spawn_picker_preview_loading(
     }
 }
 
+/// Monotonic id distinguishing file-discovery walks. The file channel
+/// outlives any single picker, so a batch can arrive after its picker was
+/// closed and a new one opened; ids let the drain side drop stale batches.
+static NEXT_WALK_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// Batch size for streaming discovered files to the UI. Small enough that
 /// the first screen of results appears immediately, large enough that a
 /// 100k-file repo needs hundreds of channel sends instead of 100k.
@@ -39,7 +44,8 @@ const FILE_BATCH_SIZE: usize = 512;
 /// final partial batch when the walker shuts a worker down.
 struct FileFinderVisitor {
     base_dir: std::path::PathBuf,
-    tx: tokio::sync::mpsc::Sender<Vec<editor::PickerResult>>,
+    walk_id: u64,
+    tx: tokio::sync::mpsc::Sender<(u64, Vec<editor::PickerResult>)>,
     collected: std::sync::Arc<std::sync::Mutex<Vec<editor::PickerResult>>>,
     batch: Vec<editor::PickerResult>,
     channel_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -54,7 +60,7 @@ impl FileFinderVisitor {
         self.collected.lock().unwrap().extend(batch.iter().cloned());
         // blocking_send is safe here: visitors run on the walker's own
         // threads, never on the tokio runtime.
-        if self.tx.blocking_send(batch).is_err() {
+        if self.tx.blocking_send((self.walk_id, batch)).is_err() {
             self.channel_closed
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -101,7 +107,8 @@ impl Drop for FileFinderVisitor {
 
 struct FileFinderVisitorBuilder {
     base_dir: std::path::PathBuf,
-    tx: tokio::sync::mpsc::Sender<Vec<editor::PickerResult>>,
+    walk_id: u64,
+    tx: tokio::sync::mpsc::Sender<(u64, Vec<editor::PickerResult>)>,
     collected: std::sync::Arc<std::sync::Mutex<Vec<editor::PickerResult>>>,
     channel_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -110,6 +117,7 @@ impl<'s> ignore::ParallelVisitorBuilder<'s> for FileFinderVisitorBuilder {
     fn build(&mut self) -> Box<dyn ignore::ParallelVisitor + 's> {
         Box::new(FileFinderVisitor {
             base_dir: self.base_dir.clone(),
+            walk_id: self.walk_id,
             tx: self.tx.clone(),
             collected: self.collected.clone(),
             batch: Vec::with_capacity(FILE_BATCH_SIZE),
@@ -123,7 +131,7 @@ impl<'s> ignore::ParallelVisitorBuilder<'s> for FileFinderVisitorBuilder {
 /// Uses cache when available to speed up repeated picker opens
 pub(super) fn spawn_file_finder_loading(
     editor: &mut Editor,
-    file_tx: &tokio::sync::mpsc::Sender<Vec<editor::PickerResult>>,
+    file_tx: &tokio::sync::mpsc::Sender<(u64, Vec<editor::PickerResult>)>,
     file_list_cache_tx: &tokio::sync::mpsc::Sender<(
         std::path::PathBuf,
         std::path::PathBuf,
@@ -146,10 +154,11 @@ pub(super) fn spawn_file_finder_loading(
             // Use cache! Send all files via channel immediately
             let cached_files: Vec<editor::PickerResult> = cached_files.to_vec();
             let tx = file_tx.clone();
+            let walk_id = NEXT_WALK_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             // Mark as spawned to avoid spawning multiple tasks
             if let Some(picker_mut) = editor.picker_mut() {
-                picker_mut.mark_loading_spawned();
+                picker_mut.mark_loading_spawned(walk_id);
             }
 
             // Spawn quick task to send cached results in chunks. Chunked so a
@@ -159,17 +168,21 @@ pub(super) fn spawn_file_finder_loading(
                 while !rest.is_empty() {
                     let take = rest.len().min(4096);
                     let batch: Vec<editor::PickerResult> = rest.drain(..take).collect();
-                    if tx.send(batch).await.is_err() {
-                        break;
+                    if tx.send((walk_id, batch)).await.is_err() {
+                        return;
                     }
                 }
+                // Empty batch = end-of-walk sentinel.
+                let _ = tx.send((walk_id, Vec::new())).await;
             });
             return;
         }
 
+        let walk_id = NEXT_WALK_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         // Mark as spawned to avoid spawning multiple tasks
         if let Some(picker_mut) = editor.picker_mut() {
-            picker_mut.mark_loading_spawned();
+            picker_mut.mark_loading_spawned(walk_id);
         }
 
         let tx = file_tx.clone();
@@ -205,6 +218,7 @@ pub(super) fn spawn_file_finder_loading(
                 // Use ignore crate's WalkBuilder which respects .gitignore
                 let mut builder = FileFinderVisitorBuilder {
                     base_dir: base_dir_clone.clone(),
+                    walk_id,
                     tx: tx.clone(),
                     collected: collected.clone(),
                     channel_closed: channel_closed.clone(),
@@ -238,6 +252,8 @@ pub(super) fn spawn_file_finder_loading(
             // inside this spawned task. Skip if the walk was aborted — a
             // partial list must not be cached as complete.
             if !channel_closed.load(std::sync::atomic::Ordering::Relaxed) {
+                // Empty batch = end-of-walk sentinel.
+                let _ = tx.blocking_send((walk_id, Vec::new()));
                 let collected = std::mem::take(&mut *collected.lock().unwrap());
                 let _ = cache_tx.blocking_send((base_dir_clone, preferred_dir_clone, collected));
             }
@@ -266,9 +282,17 @@ pub fn process_picker_results(editor: &mut Editor, channels: &mut FrontendChanne
             break;
         }
         match channels.file_rx.try_recv() {
-            Ok(batch) => {
+            Ok((walk_id, batch)) => {
                 if let Some(picker) = editor.picker_mut() {
-                    picker.add_file_results(batch);
+                    // Drop batches from a previous picker's walk.
+                    if picker.active_walk_id() != Some(walk_id) {
+                        continue;
+                    }
+                    if batch.is_empty() {
+                        picker.finish_loading();
+                    } else {
+                        picker.add_file_results(batch);
+                    }
                     files_added = true;
                 }
             }

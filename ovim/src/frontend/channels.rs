@@ -24,8 +24,8 @@ use crate::syntax::Language;
 pub struct FrontendChannels {
     pub(super) preview_tx: mpsc::Sender<(String, editor::PreviewCache)>,
     pub preview_rx: mpsc::Receiver<(String, editor::PreviewCache)>,
-    pub(super) file_tx: mpsc::Sender<Vec<editor::PickerResult>>,
-    pub file_rx: mpsc::Receiver<Vec<editor::PickerResult>>,
+    pub(super) file_tx: mpsc::Sender<(u64, Vec<editor::PickerResult>)>,
+    pub file_rx: mpsc::Receiver<(u64, Vec<editor::PickerResult>)>,
     pub(super) syntax_tx: mpsc::Sender<(BufferId, Language, Option<LineHighlights>, u64)>,
     pub(super) syntax_rx: mpsc::Receiver<(BufferId, Language, Option<LineHighlights>, u64)>,
     pub(super) file_list_cache_tx: mpsc::Sender<(PathBuf, PathBuf, Vec<editor::PickerResult>)>,

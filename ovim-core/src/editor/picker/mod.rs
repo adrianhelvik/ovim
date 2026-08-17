@@ -511,10 +511,20 @@ impl Picker {
         }
     }
 
-    /// Marks file loading as spawned
-    pub fn mark_loading_spawned(&mut self) {
+    /// Marks file loading as spawned, recording which walk feeds this picker
+    pub fn mark_loading_spawned(&mut self, walk_id: u64) {
         if let PickerBackend::Nucleo(ref mut s) = self.backend {
             s.loading_spawned = true;
+            s.walk_id = Some(walk_id);
+        }
+    }
+
+    /// The id of the file-discovery walk feeding this picker, if one was spawned
+    pub fn active_walk_id(&self) -> Option<u64> {
+        if let PickerBackend::Nucleo(ref s) = self.backend {
+            s.walk_id
+        } else {
+            None
         }
     }
 

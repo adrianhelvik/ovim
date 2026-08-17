@@ -369,7 +369,7 @@ fn add_file_result_during_loading() {
     assert!(picker.is_loading());
     assert!(picker.should_spawn_file_loading());
 
-    picker.mark_loading_spawned();
+    picker.mark_loading_spawned(1);
     assert!(!picker.should_spawn_file_loading());
 
     picker.add_file_result(file_result("a.rs"));

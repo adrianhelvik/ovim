@@ -85,15 +85,23 @@ pub async fn run_headless_loop(
                 editor.insert_preview(path, cache);
                 editor.mark_dirty();
             }
-            Some(batch) = channels.file_rx.recv() => {
+            Some(first) = channels.file_rx.recv() => {
                 let mut added = false;
                 if let Some(picker) = editor.picker_mut() {
-                    picker.add_file_results(batch);
-                    added = true;
                     // Headless has no frame budget to protect; drain whatever
                     // else is already queued instead of one batch per select.
-                    while let Ok(batch) = channels.file_rx.try_recv() {
-                        picker.add_file_results(batch);
+                    let mut next = Some(first);
+                    while let Some((walk_id, batch)) = next.take() {
+                        // Drop batches from a previous picker's walk.
+                        if picker.active_walk_id() == Some(walk_id) {
+                            if batch.is_empty() {
+                                picker.finish_loading();
+                            } else {
+                                picker.add_file_results(batch);
+                            }
+                            added = true;
+                        }
+                        next = channels.file_rx.try_recv().ok();
                     }
                 }
                 if added {
