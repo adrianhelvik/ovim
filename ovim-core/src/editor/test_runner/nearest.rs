@@ -55,10 +55,10 @@ pub fn discover_tests(lang: Language, source: &str) -> Vec<DiscoveredTest> {
     match lang {
         Language::Rust => collect_rust(root, source, &mut Vec::new(), &mut tests),
         Language::JavaScript | Language::TypeScript | Language::Tsx => {
-            collect_js(root, source, &mut Vec::new(), &mut tests)
+            collect_js(root, source, &mut Vec::new(), false, &mut tests)
         }
         Language::Python => collect_python(root, source, &mut Vec::new(), &mut tests),
-        Language::Go => collect_go(root, source, &mut Vec::new(), &mut tests),
+        Language::Go => collect_go(root, source, &mut Vec::new(), false, &mut tests),
         _ => {}
     }
     tests
@@ -189,23 +189,32 @@ fn collect_rust(
 // JavaScript / TypeScript
 // ---------------------------------------------------------------------------
 
-/// Peels a call callee down to its leftmost identifier:
-/// `it` → it, `it.only` → it, `it.each([...])` (call) → it.
-fn js_callee_base<'a>(node: Node, source: &'a str) -> Option<&'a str> {
+/// Peels a call callee down to its leftmost identifier, noting whether the
+/// chain goes through `.each` on the way:
+/// `it` → (it, false), `it.only` → (it, false),
+/// `it.each([...])` (call) → (it, true), `describe.each\`…\`` → (describe, true).
+fn js_callee_info<'a>(node: Node, source: &'a str) -> Option<(&'a str, bool)> {
     match node.kind() {
-        "identifier" => Some(node_text(node, source)),
-        "member_expression" => node
-            .child_by_field_name("object")
-            .and_then(|obj| js_callee_base(obj, source)),
+        "identifier" => Some((node_text(node, source), false)),
+        "member_expression" => {
+            let is_each = node
+                .child_by_field_name("property")
+                .is_some_and(|p| node_text(p, source) == "each");
+            let (base, inner_each) = node
+                .child_by_field_name("object")
+                .and_then(|obj| js_callee_info(obj, source))?;
+            Some((base, is_each || inner_each))
+        }
         "call_expression" => node
             .child_by_field_name("function")
-            .and_then(|f| js_callee_base(f, source)),
+            .and_then(|f| js_callee_info(f, source)),
         _ => None,
     }
 }
 
 /// Extracts the first string-ish argument of a call. Returns the string
-/// content and whether it's a template / printf-style parameterized name.
+/// content and whether it contains `${…}` interpolation (a name that is
+/// dynamic even without `.each`).
 fn js_first_string_arg(call: Node, source: &str) -> Option<(String, bool)> {
     let args = call.child_by_field_name("arguments")?;
     let mut cursor = args.walk();
@@ -222,15 +231,14 @@ fn js_first_string_arg(call: Node, source: &str) -> Option<(String, bool)> {
                     content.push_str(node_text(part, source));
                 }
             }
-            let parameterized = js_has_printf_token(&content);
-            Some((content, parameterized))
+            Some((content, false))
         }
         "template_string" => {
             let raw = node_text(arg, source);
             let content = raw.trim_matches('`').to_string();
             // `${expr}` interpolations make the runtime name dynamic.
-            let parameterized = content.contains("${") || js_has_printf_token(&content);
-            Some((content, parameterized))
+            let interpolated = content.contains("${");
+            Some((content, interpolated))
         }
         _ => None,
     }
@@ -257,26 +265,35 @@ fn collect_js(
     node: Node,
     source: &str,
     namespaces: &mut Vec<String>,
+    // True when any enclosing describe was `.each`-parameterized or had an
+    // interpolated name: every runtime test name under it carries generated
+    // segments, so filters must truncate/unanchor (an anchored filter with a
+    // literal `%s` placeholder would match zero tests).
+    dynamic_ancestor: bool,
     out: &mut Vec<DiscoveredTest>,
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "call_expression" {
-            if let Some(base) = child
+            if let Some((base, is_each)) = child
                 .child_by_field_name("function")
-                .and_then(|f| js_callee_base(f, source))
+                .and_then(|f| js_callee_info(f, source))
             {
                 let is_test = matches!(base, "it" | "test");
                 let is_namespace = matches!(base, "describe" | "suite" | "context");
                 if is_test || is_namespace {
-                    if let Some((name, parameterized)) = js_first_string_arg(child, source) {
+                    if let Some((name, interpolated)) = js_first_string_arg(child, source) {
+                        // A printf token only makes the name dynamic when the
+                        // call is actually `.each` — a plain it('uses %d')
+                        // has a literal percent in its runtime name.
+                        let dynamic = interpolated || (is_each && js_has_printf_token(&name));
                         if is_test {
                             out.push(DiscoveredTest {
                                 name,
                                 namespaces: namespaces.clone(),
                                 line: child.start_position().row,
                                 end_line: child.end_position().row,
-                                flavor: if parameterized {
+                                flavor: if dynamic || dynamic_ancestor {
                                     TestFlavor::Parameterized
                                 } else {
                                     TestFlavor::Exact
@@ -284,18 +301,18 @@ fn collect_js(
                             });
                             // Tests don't nest further; still recurse in case
                             // of unconventional nesting inside the callback.
-                            collect_js(child, source, namespaces, out);
+                            collect_js(child, source, namespaces, dynamic_ancestor, out);
                             continue;
                         }
                         namespaces.push(name);
-                        collect_js(child, source, namespaces, out);
+                        collect_js(child, source, namespaces, dynamic_ancestor || dynamic, out);
                         namespaces.pop();
                         continue;
                     }
                 }
             }
         }
-        collect_js(child, source, namespaces, out);
+        collect_js(child, source, namespaces, dynamic_ancestor, out);
     }
 }
 
@@ -371,6 +388,11 @@ fn collect_go(
     node: Node,
     source: &str,
     namespaces: &mut Vec<String>,
+    // True inside a test function that calls `t.Run` with a non-literal
+    // name (table-driven usage). Only then do `name: "..."` keyed elements
+    // become subtest entries — otherwise an unrelated struct literal like
+    // `Person{name: "Alice"}` would produce a phantom test.
+    table_mode: bool,
     out: &mut Vec<DiscoveredTest>,
 ) {
     let mut cursor = node.walk();
@@ -391,11 +413,12 @@ fn collect_go(
                         end_line: child.end_position().row,
                         flavor: TestFlavor::Exact,
                     });
+                    let fn_table_mode = go_has_dynamic_t_run(child, source);
                     namespaces.push(name);
-                    collect_go(child, source, namespaces, out);
+                    collect_go(child, source, namespaces, fn_table_mode, out);
                     namespaces.pop();
                 } else {
-                    collect_go(child, source, namespaces, out);
+                    collect_go(child, source, namespaces, false, out);
                 }
             }
             "call_expression" => {
@@ -412,19 +435,19 @@ fn collect_go(
                             flavor: TestFlavor::Exact,
                         });
                         namespaces.push(name);
-                        collect_go(child, source, namespaces, out);
+                        collect_go(child, source, namespaces, table_mode, out);
                         namespaces.pop();
                         continue;
                     }
                 }
-                collect_go(child, source, namespaces, out);
+                collect_go(child, source, namespaces, table_mode, out);
             }
             "keyed_element" => {
                 // Table-driven test entry: `{name: "adds two numbers", ...}`.
                 // The generated subtest name comes from t.Run(tc.name, …), so
                 // treat the entry as a parameterized leaf under the current
                 // test function.
-                if !namespaces.is_empty() {
+                if table_mode && !namespaces.is_empty() {
                     if let Some(name) = go_table_entry_name(child, source) {
                         out.push(DiscoveredTest {
                             name,
@@ -435,11 +458,56 @@ fn collect_go(
                         });
                     }
                 }
-                collect_go(child, source, namespaces, out);
+                collect_go(child, source, namespaces, table_mode, out);
             }
-            _ => collect_go(child, source, namespaces, out),
+            _ => collect_go(child, source, namespaces, table_mode, out),
         }
     }
+}
+
+/// True if the function contains a `t.Run(<expr>, …)` call whose first
+/// argument is not a string literal — the signature of table-driven tests
+/// (`t.Run(tc.name, …)`).
+fn go_has_dynamic_t_run(func: Node, source: &str) -> bool {
+    let mut cursor = func.walk();
+    let mut stack = vec![func];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "call_expression" && go_is_t_run(node, source) {
+            if let Some(args) = node.child_by_field_name("arguments") {
+                let mut c = args.walk();
+                if let Some(first) = args.named_children(&mut c).next() {
+                    if first.kind() != "interpreted_string_literal"
+                        && first.kind() != "raw_string_literal"
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    false
+}
+
+/// Is this call `t.Run(...)`?
+fn go_is_t_run(call: Node, source: &str) -> bool {
+    let Some(func) = call.child_by_field_name("function") else {
+        return false;
+    };
+    if func.kind() != "selector_expression" {
+        return false;
+    }
+    let (Some(operand), Some(field)) = (
+        func.child_by_field_name("operand"),
+        func.child_by_field_name("field"),
+    ) else {
+        return false;
+    };
+    operand.kind() == "identifier"
+        && node_text(operand, source) == "t"
+        && node_text(field, source) == "Run"
 }
 
 /// Matches `t.Run("name", …)` and returns the subtest name.

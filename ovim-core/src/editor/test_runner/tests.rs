@@ -480,7 +480,7 @@ fn go_subtest_run_pattern_with_underscores() {
     let inv = build_test_command(TestScope::Nearest, &ctx(&file, GO_SRC, 8, Language::Go)).unwrap();
     assert_eq!(
         inv.command,
-        "go test -run '^TestAdd$/^with_negative_numbers$' ./math"
+        "go test -run '^TestAdd$/^with_negative_numbers$' './math'"
     );
     assert_eq!(inv.cwd, p.root);
 }
@@ -495,7 +495,7 @@ fn go_table_entry_is_unanchored_and_escaped() {
         build_test_command(TestScope::Nearest, &ctx(&file, GO_SRC, 18, Language::Go)).unwrap();
     assert_eq!(
         inv.command,
-        r"go test -run '^TestTable$/handles_\(parens\)' ./math"
+        r"go test -run '^TestTable$/handles_\(parens\)' './math'"
     );
 }
 
@@ -506,7 +506,7 @@ fn go_file_scope_unions_top_level_tests() {
     let file = p.root.join("math/add_test.go");
     fs::write(&file, "").unwrap();
     let inv = build_test_command(TestScope::File, &ctx(&file, GO_SRC, 0, Language::Go)).unwrap();
-    assert_eq!(inv.command, "go test -run '^(TestAdd|TestTable)$' ./math");
+    assert_eq!(inv.command, "go test -run '^(TestAdd|TestTable)$' './math'");
 }
 
 #[test]
@@ -545,7 +545,7 @@ fn config_template_substitutes_placeholders() {
         config: Some(&cfg),
     };
     let inv = build_test_command(TestScope::Nearest, &ctx).unwrap();
-    assert_eq!(inv.command, "mix test test/demo_test.exs:42");
+    assert_eq!(inv.command, "mix test 'test/demo_test.exs':42");
     assert_eq!(inv.cwd, root);
 }
 
@@ -561,4 +561,90 @@ fn no_runner_yields_helpful_error() {
     };
     let err = build_test_command(TestScope::File, &ctx).unwrap_err();
     assert!(err.contains("[language.test]"));
+}
+
+// ---------------------------------------------------------------------------
+// Review regression tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn js_plain_test_with_printf_lookalike_stays_exact() {
+    // A literal %d in a plain (non-.each) title is part of the runtime name;
+    // it must stay anchored, not get truncated as if parameterized.
+    let src = "it('processes %d items successfully', () => {});\n";
+    let p = js_package(r#"{"devDependencies": {"vitest": "^2.0.0"}}"#);
+    let file = p.root.join("src/x.test.ts");
+    fs::write(&file, "").unwrap();
+    let inv = build_test_command(
+        TestScope::Nearest,
+        &ctx(&file, src, 0, Language::TypeScript),
+    )
+    .unwrap();
+    assert_eq!(
+        inv.command,
+        "npx vitest run -t '^processes %d items successfully$' 'src/x.test.ts'"
+    );
+}
+
+#[test]
+fn js_describe_each_makes_nested_tests_parameterized() {
+    // Tests under describe.each('group %s') have runtime names like
+    // "group a does something" — an anchored filter containing the literal
+    // %s would match zero tests.
+    let src =
+        "describe.each(['a', 'b'])('group %s', (l) => {\n  it('does something', () => {});\n});\n";
+    let p = js_package(r#"{"devDependencies": {"vitest": "^2.0.0"}}"#);
+    let file = p.root.join("src/x.test.ts");
+    fs::write(&file, "").unwrap();
+    let inv = build_test_command(
+        TestScope::Nearest,
+        &ctx(&file, src, 1, Language::TypeScript),
+    )
+    .unwrap();
+    assert_eq!(inv.command, "npx vitest run -t 'group' 'src/x.test.ts'");
+}
+
+#[test]
+fn go_struct_literal_name_field_is_not_a_test() {
+    // `Person{name: "Alice"}` inside a test without table-driven t.Run
+    // usage must not become a phantom subtest.
+    let src = "package x\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {\n    p := Person{name: \"Alice\"}\n    _ = p\n}\n";
+    let tests = discover_tests(Language::Go, src);
+    assert_eq!(tests.len(), 1);
+    assert_eq!(tests[0].name, "TestFoo");
+}
+
+#[test]
+fn go_package_dir_with_space_is_quoted() {
+    let p = go_module();
+    fs::create_dir_all(p.root.join("my pkg")).unwrap();
+    let file = p.root.join("my pkg/add_test.go");
+    fs::write(&file, "").unwrap();
+    let src = "package x\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {}\n";
+    let inv = build_test_command(TestScope::File, &ctx(&file, src, 0, Language::Go)).unwrap();
+    assert_eq!(inv.command, "go test -run '^(TestAdd)$' './my pkg'");
+}
+
+#[test]
+fn rust_workspace_detected_from_dotted_table_header() {
+    // A workspace root manifest that only writes [workspace.package] (valid
+    // TOML, implicit parent table) still marks a workspace.
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().canonicalize().unwrap();
+    fs::write(
+        ws.join("Cargo.toml"),
+        "[workspace.package]\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(ws.join("demo/src")).unwrap();
+    fs::write(
+        ws.join("demo/Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let file = ws.join("demo/src/lib.rs");
+    fs::write(&file, "").unwrap();
+    let inv = build_test_command(TestScope::Suite, &ctx(&file, "", 0, Language::Rust)).unwrap();
+    assert_eq!(inv.command, "cargo test --workspace");
+    assert_eq!(inv.cwd, ws);
 }

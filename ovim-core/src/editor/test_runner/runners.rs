@@ -173,7 +173,9 @@ fn build_from_template(
 
     let mut command = template.to_string();
     if command.contains("{file}") {
-        command = command.replace("{file}", &rel_path(ctx.file, &root));
+        // Placeholders substitute pre-quoted values, so templates stay
+        // clean (`mix test {file}:{line}`) and paths with spaces survive.
+        command = command.replace("{file}", &shell_quote(&rel_path(ctx.file, &root)));
     }
     if command.contains("{line}") {
         command = command.replace("{line}", &(ctx.cursor_line + 1).to_string());
@@ -186,9 +188,7 @@ fn build_from_template(
         let test = require_nearest(&tests, ctx)?;
         let mut parts = test.namespaces.clone();
         parts.push(test.name.clone());
-        // Escaped for single-quoted shell interpolation; the template
-        // decides how to quote (documented as `-t '{name}'`).
-        command = command.replace("{name}", &parts.join(" ").replace('\'', r"'\''"));
+        command = command.replace("{name}", &shell_quote(&parts.join(" ")));
     }
     Ok(TestInvocation { command, cwd: root })
 }
@@ -311,7 +311,7 @@ mod rust {
             let manifest = d.join("Cargo.toml");
             if manifest.exists() {
                 if let Ok(content) = std::fs::read_to_string(&manifest) {
-                    if content.contains("[workspace]") {
+                    if content.contains("[workspace") {
                         return (d.to_path_buf(), "cargo test --workspace".to_string());
                     }
                 }
@@ -325,7 +325,7 @@ mod rust {
         }
         // The package's own manifest may be the workspace root.
         if let Ok(content) = std::fs::read_to_string(package_root.join("Cargo.toml")) {
-            if content.contains("[workspace]") {
+            if content.contains("[workspace") {
                 return (
                     package_root.to_path_buf(),
                     "cargo test --workspace".to_string(),
@@ -702,12 +702,12 @@ mod go {
                     }
                 }
                 if names.is_empty() {
-                    format!("go test {}", pkg)
+                    format!("go test {}", shell_quote(&pkg))
                 } else {
                     format!(
                         "go test -run {} {}",
                         shell_quote(&format!("^({})$", names.join("|"))),
-                        pkg
+                        shell_quote(&pkg)
                     )
                 }
             }
@@ -725,7 +725,11 @@ mod go {
                     TestFlavor::Exact => elements.push(format!("^{}$", run_element(&test.name))),
                     TestFlavor::Parameterized => elements.push(run_element(&test.name)),
                 }
-                format!("go test -run {} {}", shell_quote(&elements.join("/")), pkg)
+                format!(
+                    "go test -run {} {}",
+                    shell_quote(&elements.join("/")),
+                    shell_quote(&pkg)
+                )
             }
         };
 
