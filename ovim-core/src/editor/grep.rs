@@ -8,14 +8,46 @@ use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::sinks::UTF8;
 use grep_searcher::Searcher;
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Maximum number of results to prevent OOM on broad queries.
 const MAX_RESULTS: usize = 5000;
+
+/// Flush partial batches to the UI once they reach this size, so a single
+/// file with thousands of matches still streams incrementally.
+const GREP_BATCH_SIZE: usize = 128;
+
+/// Grep match lines are stored for display only; cap them so a minified
+/// one-line bundle doesn't allocate megabytes per match.
+const MAX_CONTENT_LEN: usize = 500;
+
+/// Number of threads for parallel directory walks.
+///
+/// The `ignore` crate silently defaults to 2 when unset; mirror ripgrep and
+/// use available parallelism (capped, since walk throughput plateaus).
+pub fn walk_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+        .min(12)
+}
+
+/// Trims trailing whitespace and caps the stored line for display.
+fn display_content(line_content: &str) -> String {
+    let trimmed = line_content.trim_end();
+    if trimmed.len() <= MAX_CONTENT_LEN {
+        return trimmed.to_string();
+    }
+    let mut end = MAX_CONTENT_LEN;
+    while !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    trimmed[..end].to_string()
+}
 
 // -----------------------------------------------------------------
 // Shared search primitives
@@ -140,7 +172,12 @@ pub fn grep_search_sync(query: &str, base_dir: &Path, max_results: usize) -> Vec
 
 /// Spawns an in-process grep search in a blocking thread.
 ///
-/// Returns a channel receiver that streams `PickerResult`s as they're found.
+/// Returns a channel receiver that streams batches of `PickerResult`s as
+/// they're found. Files are walked and searched in parallel (like ripgrep),
+/// so result order within a pass is nondeterministic — but all matches from
+/// the preferred directory are sent before any match from the rest of the
+/// tree, preserving local-first ranking.
+///
 /// The search respects `.gitignore`, skips `.git` directories, and uses
 /// smart-case matching (case-insensitive when query is all lowercase).
 ///
@@ -150,8 +187,8 @@ pub fn spawn_grep_search(
     base_dir: PathBuf,
     preferred_dir: PathBuf,
     cancel: Arc<AtomicBool>,
-) -> mpsc::Receiver<PickerResult> {
-    let (tx, rx) = mpsc::channel(512);
+) -> mpsc::Receiver<Vec<PickerResult>> {
+    let (tx, rx) = mpsc::channel(256);
 
     tokio::task::spawn_blocking(move || {
         if query.is_empty() {
@@ -169,12 +206,20 @@ pub fn spawn_grep_search(
         }
         roots.push((base_dir.clone(), false));
 
-        let mut result_count = 0usize;
+        // Shared across worker threads; results pushed stays <= MAX_RESULTS
+        // even though the counter itself can briefly overshoot.
+        let result_count = Arc::new(AtomicUsize::new(0));
 
         for (root, is_preferred_root) in roots {
+            if cancel.load(Ordering::Relaxed) || result_count.load(Ordering::Relaxed) >= MAX_RESULTS
+            {
+                break;
+            }
+
             let preferred_for_filter = preferred_dir.clone();
             let base_for_filter = base_dir.clone();
-            let walker = build_walker(&root)
+            build_walker(&root)
+                .threads(walk_threads())
                 .filter_entry(move |entry| {
                     // For the base-dir pass, skip the preferred subtree to avoid duplicates.
                     if !is_preferred_root
@@ -185,70 +230,91 @@ pub fn spawn_grep_search(
                     }
                     true
                 })
-                .build();
+                .build_parallel()
+                .run(|| {
+                    let matcher = matcher.clone();
+                    let mut searcher = build_searcher();
+                    let tx = tx.clone();
+                    let cancel = cancel.clone();
+                    let result_count = result_count.clone();
+                    let base_dir = base_dir.clone();
 
-            for entry in walker {
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-
-                if entry.file_type().is_none_or(|ft| !ft.is_file()) {
-                    continue;
-                }
-
-                let file_path = entry.path().to_path_buf();
-                let result_count_ref = &mut result_count;
-
-                let _ = build_searcher().search_path(
-                    &matcher,
-                    &file_path,
-                    UTF8(|line_num, line_content| {
-                        if cancel.load(Ordering::Relaxed) {
-                            return Ok(false);
-                        }
-                        if *result_count_ref >= MAX_RESULTS {
-                            return Ok(false);
+                    Box::new(move |entry| {
+                        if cancel.load(Ordering::Relaxed)
+                            || result_count.load(Ordering::Relaxed) >= MAX_RESULTS
+                        {
+                            return WalkState::Quit;
                         }
 
-                        let rel_path = file_path
-                            .strip_prefix(&base_dir)
-                            .unwrap_or(&file_path)
-                            .to_string_lossy();
-                        let line = line_num as usize;
-                        let col = match_column(&matcher, line_content);
-
-                        let result = PickerResult {
-                            display: format!("{}:{}:{}", rel_path, line, col + 1),
-                            location: file_path.to_string_lossy().to_string(),
-                            line: line.saturating_sub(1), // 0-indexed
-                            col,
-                            match_positions: Vec::new(),
-                            content: Some(line_content.trim_end().to_string()),
+                        let entry = match entry {
+                            Ok(e) => e,
+                            Err(_) => return WalkState::Continue,
                         };
-
-                        *result_count_ref += 1;
-
-                        if tx.blocking_send(result).is_err() {
-                            return Ok(false);
+                        if entry.file_type().is_none_or(|ft| !ft.is_file()) {
+                            return WalkState::Continue;
                         }
 
-                        Ok(true)
-                    }),
-                );
+                        let file_path = entry.path();
+                        // Computed once per file with matches, not per match line.
+                        let mut location: Option<(String, String)> = None;
+                        let mut batch: Vec<PickerResult> = Vec::new();
+                        let mut send_failed = false;
 
-                if result_count >= MAX_RESULTS {
-                    break;
-                }
-            }
+                        let _ = searcher.search_path(
+                            &matcher,
+                            file_path,
+                            UTF8(|line_num, line_content| {
+                                if cancel.load(Ordering::Relaxed) {
+                                    return Ok(false);
+                                }
+                                if result_count.fetch_add(1, Ordering::Relaxed) >= MAX_RESULTS {
+                                    return Ok(false);
+                                }
 
-            if cancel.load(Ordering::Relaxed) || result_count >= MAX_RESULTS {
-                break;
-            }
+                                let (location, rel_path) = location.get_or_insert_with(|| {
+                                    (
+                                        file_path.to_string_lossy().to_string(),
+                                        file_path
+                                            .strip_prefix(&base_dir)
+                                            .unwrap_or(file_path)
+                                            .to_string_lossy()
+                                            .to_string(),
+                                    )
+                                });
+                                let line = line_num as usize;
+                                let col = match_column(&matcher, line_content);
+
+                                batch.push(PickerResult {
+                                    display: format!("{}:{}:{}", rel_path, line, col + 1),
+                                    location: location.clone(),
+                                    line: line.saturating_sub(1), // 0-indexed
+                                    col,
+                                    match_positions: Vec::new(),
+                                    content: Some(display_content(line_content)),
+                                });
+
+                                if batch.len() >= GREP_BATCH_SIZE {
+                                    if tx.blocking_send(std::mem::take(&mut batch)).is_err() {
+                                        send_failed = true;
+                                        return Ok(false);
+                                    }
+                                }
+
+                                Ok(true)
+                            }),
+                        );
+
+                        if !batch.is_empty() && tx.blocking_send(batch).is_err() {
+                            send_failed = true;
+                        }
+
+                        if send_failed {
+                            WalkState::Quit
+                        } else {
+                            WalkState::Continue
+                        }
+                    })
+                });
         }
     });
 
@@ -283,8 +349,10 @@ mod tests {
         );
 
         let mut displays = Vec::new();
-        while let Some(r) = rx.recv().await {
-            displays.push(r.display);
+        while let Some(batch) = rx.recv().await {
+            for r in batch {
+                displays.push(r.display);
+            }
         }
 
         assert!(!displays.is_empty());

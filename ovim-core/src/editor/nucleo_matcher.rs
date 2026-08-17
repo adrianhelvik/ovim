@@ -14,6 +14,9 @@ use std::sync::Arc;
 /// data stays on the `Picker`.
 pub struct NucleoMatcher {
     nucleo: Nucleo<u32>,
+    /// Cached injector — `Nucleo::injector()` clones internal state, so
+    /// grab it once instead of once per pushed item.
+    injector: nucleo::Injector<u32>,
     last_query: String,
 }
 
@@ -32,23 +35,23 @@ impl NucleoMatcher {
             None, // auto thread count
             1,    // single column: the display string
         );
+        let injector = nucleo.injector();
         Self {
             nucleo,
+            injector,
             last_query: String::new(),
         }
     }
 
     /// Returns a cloneable `Injector` for pushing items from any thread.
     pub fn injector(&self) -> nucleo::Injector<u32> {
-        self.nucleo.injector()
+        self.injector.clone()
     }
 
     /// Pushes an item with its index and display text.
     pub fn inject(&self, index: u32, display: &str) {
-        let injector = self.nucleo.injector();
-        let display_owned = display.to_string();
-        injector.push(index, |_data, cols| {
-            cols[0] = Utf32String::from(display_owned.as_str());
+        self.injector.push(index, |_data, cols| {
+            cols[0] = Utf32String::from(display);
         });
     }
 

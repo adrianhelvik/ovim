@@ -24,8 +24,8 @@ use crate::syntax::Language;
 pub struct FrontendChannels {
     pub(super) preview_tx: mpsc::Sender<(String, editor::PreviewCache)>,
     pub preview_rx: mpsc::Receiver<(String, editor::PreviewCache)>,
-    pub(super) file_tx: mpsc::Sender<editor::PickerResult>,
-    pub file_rx: mpsc::Receiver<editor::PickerResult>,
+    pub(super) file_tx: mpsc::Sender<Vec<editor::PickerResult>>,
+    pub file_rx: mpsc::Receiver<Vec<editor::PickerResult>>,
     pub(super) syntax_tx: mpsc::Sender<(BufferId, Language, Option<LineHighlights>, u64)>,
     pub(super) syntax_rx: mpsc::Receiver<(BufferId, Language, Option<LineHighlights>, u64)>,
     pub(super) file_list_cache_tx: mpsc::Sender<(PathBuf, PathBuf, Vec<editor::PickerResult>)>,
@@ -43,7 +43,9 @@ impl FrontendChannels {
     /// `ovim::lsp_init::init_java_status_sender` in `main.rs`.
     pub fn new(java_status_rx: mpsc::Receiver<String>) -> Self {
         let (preview_tx, preview_rx) = mpsc::channel(100);
-        let (file_tx, file_rx) = mpsc::channel(1000);
+        // Batches of files, not single files — capacity bounds memory while a
+        // parallel walker streams a large repo faster than the UI drains it.
+        let (file_tx, file_rx) = mpsc::channel(64);
         let (syntax_tx, syntax_rx) = mpsc::channel(16);
         let (file_list_cache_tx, file_list_cache_rx) = mpsc::channel(4);
         Self {

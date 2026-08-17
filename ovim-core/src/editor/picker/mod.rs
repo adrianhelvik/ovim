@@ -416,20 +416,47 @@ impl Picker {
 
     /// Adds a file result (for incremental loading)
     pub fn add_file_result(&mut self, result: PickerResult) {
-        let idx = self.all_results.len() as u32;
-        let match_text = self.nucleo_match_text_for(&result);
-        self.all_results.push(result.clone());
+        self.add_file_results(vec![result]);
+    }
 
-        if let PickerBackend::Nucleo(ref mut s) = self.backend {
-            s.nucleo.inject(idx, &match_text);
-            if s.nucleo.is_empty_pattern() {
-                s.push_empty_pattern_item(idx, &result, &self.preferred_dir);
+    /// Adds a batch of file results (for incremental loading).
+    ///
+    /// Batching matters: file discovery streams tens of thousands of results,
+    /// and per-item channel sends plus per-item bookkeeping dominated Find
+    /// Files load time before this existed (OV perf work, v1.2.6).
+    pub fn add_file_results(&mut self, results: Vec<PickerResult>) {
+        if results.is_empty() {
+            return;
+        }
+
+        match self.backend {
+            PickerBackend::Nucleo(ref mut s) => {
+                // The pattern can't change mid-batch; hoist the check.
+                let empty_pattern = s.nucleo.is_empty_pattern();
+                self.all_results.reserve(results.len());
+                for result in results {
+                    let idx = self.all_results.len() as u32;
+                    match nucleo_match_text_for(&self.base_dir, &self.preferred_dir, &result) {
+                        Some(match_text) => s.nucleo.inject(idx, &match_text),
+                        None => s.nucleo.inject(idx, &result.display),
+                    }
+                    if empty_pattern {
+                        s.push_empty_pattern_item(idx, &result, &self.preferred_dir);
+                    }
+                    self.all_results.push(result);
+                }
             }
-        } else if self.query.is_empty() {
-            self.filtered_results.push(result);
-        } else if fuzzy::fuzzy_score(self.query.text(), &result.display).is_some() {
-            self.filtered_results.push(result);
-            self.pending_filter = true;
+            _ => {
+                for result in results {
+                    self.all_results.push(result.clone());
+                    if self.query.is_empty() {
+                        self.filtered_results.push(result);
+                    } else if fuzzy::fuzzy_score(self.query.text(), &result.display).is_some() {
+                        self.filtered_results.push(result);
+                        self.pending_filter = true;
+                    }
+                }
+            }
         }
     }
 
@@ -469,29 +496,35 @@ impl Picker {
     pub fn truncate_path(path: &str, max_len: usize) -> String {
         filter::truncate_path(path, max_len)
     }
+}
 
-    fn nucleo_match_text_for(&self, result: &PickerResult) -> String {
-        let preferred_dir = self.preferred_dir.as_path();
-        let base_dir = self.base_dir.as_path();
-        if preferred_dir == base_dir {
-            return result.display.clone();
-        }
+/// Text nucleo should match against for `result`. Returns `None` when the
+/// plain display string should be used (avoids an allocation per file in the
+/// common single-root case).
+fn nucleo_match_text_for(
+    base_dir: &Path,
+    preferred_dir: &Path,
+    result: &PickerResult,
+) -> Option<String> {
+    if preferred_dir == base_dir {
+        return None;
+    }
 
-        let abs = std::path::Path::new(&result.location);
-        if let Ok(preferred_rel) = abs.strip_prefix(preferred_dir) {
-            // Prepend a preferred-dir-relative path to boost local results, but keep
-            // the base-relative display path searchable as well.
-            let preferred_rel = preferred_rel.to_string_lossy();
-            if preferred_rel.is_empty() {
-                result.display.clone()
-            } else {
-                format!("{} {}", preferred_rel, result.display)
-            }
-        } else if let Ok(base_rel) = abs.strip_prefix(base_dir) {
-            base_rel.to_string_lossy().to_string()
+    let abs = std::path::Path::new(&result.location);
+    if let Ok(preferred_rel) = abs.strip_prefix(preferred_dir) {
+        // Prepend a preferred-dir-relative path to boost local results, but keep
+        // the base-relative display path searchable as well.
+        let preferred_rel = preferred_rel.to_string_lossy();
+        if preferred_rel.is_empty() {
+            None
         } else {
-            result.display.clone()
+            Some(format!("{} {}", preferred_rel, result.display))
         }
+    } else if abs.strip_prefix(base_dir).is_ok() {
+        // Base-relative path is exactly the display string.
+        None
+    } else {
+        None
     }
 }
 

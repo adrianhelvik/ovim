@@ -29,12 +29,101 @@ pub(super) fn spawn_picker_preview_loading(
     }
 }
 
+/// Batch size for streaming discovered files to the UI. Small enough that
+/// the first screen of results appears immediately, large enough that a
+/// 100k-file repo needs hundreds of channel sends instead of 100k.
+const FILE_BATCH_SIZE: usize = 512;
+
+/// Parallel-walk visitor that batches discovered files to the UI channel and
+/// mirrors them into a shared vec for the file-list cache. `Drop` flushes the
+/// final partial batch when the walker shuts a worker down.
+struct FileFinderVisitor {
+    base_dir: std::path::PathBuf,
+    tx: tokio::sync::mpsc::Sender<Vec<editor::PickerResult>>,
+    collected: std::sync::Arc<std::sync::Mutex<Vec<editor::PickerResult>>>,
+    batch: Vec<editor::PickerResult>,
+    channel_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl FileFinderVisitor {
+    fn flush(&mut self) {
+        if self.batch.is_empty() {
+            return;
+        }
+        let batch = std::mem::take(&mut self.batch);
+        self.collected.lock().unwrap().extend(batch.iter().cloned());
+        // blocking_send is safe here: visitors run on the walker's own
+        // threads, never on the tokio runtime.
+        if self.tx.blocking_send(batch).is_err() {
+            self.channel_closed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+impl ignore::ParallelVisitor for FileFinderVisitor {
+    fn visit(&mut self, entry: Result<ignore::DirEntry, ignore::Error>) -> ignore::WalkState {
+        if self
+            .channel_closed
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return ignore::WalkState::Quit;
+        }
+        let Ok(entry) = entry else {
+            return ignore::WalkState::Continue;
+        };
+        if entry.file_type().is_none_or(|ft| !ft.is_file()) {
+            return ignore::WalkState::Continue;
+        }
+        let path = entry.path();
+        if let Ok(relative_path) = path.strip_prefix(&self.base_dir) {
+            self.batch.push(editor::PickerResult {
+                display: relative_path.to_string_lossy().to_string(),
+                location: path.to_string_lossy().to_string(),
+                line: 0,
+                col: 0,
+                match_positions: Vec::new(),
+                content: None,
+            });
+            if self.batch.len() >= FILE_BATCH_SIZE {
+                self.flush();
+            }
+        }
+        ignore::WalkState::Continue
+    }
+}
+
+impl Drop for FileFinderVisitor {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
+struct FileFinderVisitorBuilder {
+    base_dir: std::path::PathBuf,
+    tx: tokio::sync::mpsc::Sender<Vec<editor::PickerResult>>,
+    collected: std::sync::Arc<std::sync::Mutex<Vec<editor::PickerResult>>>,
+    channel_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<'s> ignore::ParallelVisitorBuilder<'s> for FileFinderVisitorBuilder {
+    fn build(&mut self) -> Box<dyn ignore::ParallelVisitor + 's> {
+        Box::new(FileFinderVisitor {
+            base_dir: self.base_dir.clone(),
+            tx: self.tx.clone(),
+            collected: self.collected.clone(),
+            batch: Vec::with_capacity(FILE_BATCH_SIZE),
+            channel_closed: self.channel_closed.clone(),
+        })
+    }
+}
+
 /// Spawns a background task to load files for file finder picker
 /// Returns immediately without blocking - files are sent via channel as they're discovered
 /// Uses cache when available to speed up repeated picker opens
 pub(super) fn spawn_file_finder_loading(
     editor: &mut Editor,
-    file_tx: &tokio::sync::mpsc::Sender<editor::PickerResult>,
+    file_tx: &tokio::sync::mpsc::Sender<Vec<editor::PickerResult>>,
     file_list_cache_tx: &tokio::sync::mpsc::Sender<(
         std::path::PathBuf,
         std::path::PathBuf,
@@ -63,10 +152,14 @@ pub(super) fn spawn_file_finder_loading(
                 picker_mut.mark_loading_spawned();
             }
 
-            // Spawn quick task to send cached results
+            // Spawn quick task to send cached results in chunks. Chunked so a
+            // huge cached list doesn't process as one frame-stalling batch.
             tokio::spawn(async move {
-                for result in cached_files {
-                    if tx.send(result).await.is_err() {
+                let mut rest = cached_files;
+                while !rest.is_empty() {
+                    let take = rest.len().min(4096);
+                    let batch: Vec<editor::PickerResult> = rest.drain(..take).collect();
+                    if tx.send(batch).await.is_err() {
                         break;
                     }
                 }
@@ -84,12 +177,14 @@ pub(super) fn spawn_file_finder_loading(
         let base_dir_clone = base_dir.clone();
         let preferred_dir_clone = preferred_dir.clone();
 
-        // Spawn background task - doesn't block!
-        // Also collects results for cache update
-        tokio::spawn(async move {
+        // Walk on a blocking thread: the parallel walker spawns its own
+        // worker pool and joins it, which must not run on the async runtime.
+        // Results stream to the UI in batches; a mirror copy feeds the cache.
+        tokio::task::spawn_blocking(move || {
             use ignore::WalkBuilder;
 
-            let mut collected_files = Vec::new();
+            let collected = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let channel_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
             let mut roots: Vec<(std::path::PathBuf, bool)> = Vec::new();
             if preferred_dir_clone != base_dir_clone
@@ -101,15 +196,25 @@ pub(super) fn spawn_file_finder_loading(
 
             // Walk preferred subtree first, then base (excluding preferred) for local-first ordering.
             for (root, is_preferred_root) in roots {
+                if channel_closed.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
                 let base_dir_for_strip = base_dir_clone.clone();
                 let preferred_for_filter = preferred_dir_clone.clone();
 
                 // Use ignore crate's WalkBuilder which respects .gitignore
-                let walker = WalkBuilder::new(&root)
+                let mut builder = FileFinderVisitorBuilder {
+                    base_dir: base_dir_clone.clone(),
+                    tx: tx.clone(),
+                    collected: collected.clone(),
+                    channel_closed: channel_closed.clone(),
+                };
+                WalkBuilder::new(&root)
                     .hidden(false) // Don't automatically skip hidden files (keep .env, .eslintrc, etc.)
                     .git_ignore(true) // Respect .gitignore files
                     .git_global(true) // Respect global gitignore
                     .git_exclude(true) // Respect .git/info/exclude
+                    .threads(editor::grep::walk_threads())
                     .filter_entry(move |entry| {
                         // Skip .git directory (not in .gitignore but shouldn't be shown)
                         if entry.file_name() == ".git" {
@@ -124,43 +229,18 @@ pub(super) fn spawn_file_finder_loading(
                         }
                         true
                     })
-                    .build();
-
-                // Walk the directory tree and send files as we find them
-                for entry in walker.filter_map(|e| e.ok()) {
-                    let path = entry.path();
-
-                    if path.is_file() {
-                        if let Ok(relative_path) = path.strip_prefix(&base_dir_clone) {
-                            let display_path = relative_path.to_string_lossy().to_string();
-                            let result = editor::PickerResult {
-                                display: display_path,
-                                location: path.to_string_lossy().to_string(),
-                                line: 0,
-                                col: 0,
-                                match_positions: Vec::new(),
-                                content: None,
-                            };
-
-                            // Collect for cache
-                            collected_files.push(result.clone());
-
-                            // Send result back (non-blocking)
-                            // If channel is closed (picker was closed), task will exit
-                            if tx.send(result).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
+                    .build_parallel()
+                    .visit(&mut builder);
             }
 
             // Hand collected files back through the channel so the owning
             // Editor's cache is updated from the frontend's tick, not from
-            // inside this spawned task.
-            let _ = cache_tx
-                .send((base_dir_clone, preferred_dir_clone, collected_files))
-                .await;
+            // inside this spawned task. Skip if the walk was aborted — a
+            // partial list must not be cached as complete.
+            if !channel_closed.load(std::sync::atomic::Ordering::Relaxed) {
+                let collected = std::mem::take(&mut *collected.lock().unwrap());
+                let _ = cache_tx.blocking_send((base_dir_clone, preferred_dir_clone, collected));
+            }
         });
     }
 }
@@ -176,18 +256,19 @@ pub fn process_picker_results(editor: &mut Editor, channels: &mut FrontendChanne
     if previews_loaded {
         editor.mark_dirty();
     }
-    // Drain pending file results with a time budget to avoid stalling input
+    // Drain pending file result batches with a time budget (checked per
+    // batch) to avoid stalling input while tens of thousands of files stream in
     let mut files_added = false;
     let drain_start = std::time::Instant::now();
-    let drain_budget = std::time::Duration::from_millis(2);
+    let drain_budget = std::time::Duration::from_millis(4);
     loop {
         if drain_start.elapsed() >= drain_budget {
             break;
         }
         match channels.file_rx.try_recv() {
-            Ok(result) => {
+            Ok(batch) => {
                 if let Some(picker) = editor.picker_mut() {
-                    picker.add_file_result(result);
+                    picker.add_file_results(batch);
                     files_added = true;
                 }
             }

@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 /// State for the LiveGrep picker mode.
 pub struct GrepState {
-    pub grep_rx: Option<mpsc::Receiver<PickerResult>>,
+    pub grep_rx: Option<mpsc::Receiver<Vec<PickerResult>>>,
     pub grep_cancel: Option<Arc<AtomicBool>>,
     pub last_grep_query: String,
     pub grep_stale: bool,
@@ -62,8 +62,8 @@ impl GrepState {
         self.grep_stale = true;
     }
 
-    /// Drains grep results from the channel with a 2ms budget.
-    /// Returns true if any new results were added.
+    /// Drains grep result batches from the channel with a time budget
+    /// (checked per batch). Returns true if any new results were added.
     pub fn drain_results(
         &mut self,
         file_filter: &str,
@@ -77,7 +77,7 @@ impl GrepState {
         };
 
         let start = std::time::Instant::now();
-        let budget = std::time::Duration::from_millis(2);
+        let budget = std::time::Duration::from_millis(3);
         let mut added = false;
 
         loop {
@@ -86,18 +86,20 @@ impl GrepState {
             }
 
             match rx.try_recv() {
-                Ok(result) => {
+                Ok(batch) => {
                     if self.grep_stale {
                         all_results.clear();
                         filtered_results.clear();
                         *selected_index = 0;
                         self.grep_stale = false;
                     }
-                    all_results.push(result.clone());
-                    if filter::matches_file_filter(file_filter, &result.display) {
-                        filtered_results.push(result);
+                    for result in batch {
+                        if filter::matches_file_filter(file_filter, &result.display) {
+                            filtered_results.push(result.clone());
+                        }
+                        all_results.push(result);
+                        added = true;
                     }
-                    added = true;
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
