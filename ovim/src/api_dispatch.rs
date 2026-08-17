@@ -979,8 +979,9 @@ pub(crate) fn create_snapshot_with_dimensions(
             editor::PickerMode::LspLocations => "LspLocations".to_string(),
         },
         query: p.query().to_string(),
-        results: (0..p.filtered_result_count())
-            .filter_map(|i| p.filtered_result(i))
+        results: p
+            .collect_filtered_results(usize::MAX)
+            .into_iter()
             .map(|r| PickerResultInfo {
                 display: r.display.clone(),
                 location: r.location.clone(),
@@ -989,6 +990,8 @@ pub(crate) fn create_snapshot_with_dimensions(
             })
             .collect(),
         selected_index: p.selected_index(),
+        total_results: p.filtered_result_count(),
+        loading: p.is_loading(),
     });
 
     // Project decorations into the snapshot. Phase-05 Step F: each stored

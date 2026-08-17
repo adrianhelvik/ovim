@@ -394,6 +394,12 @@ pub struct PickerInfo {
     pub query: String,
     pub results: Vec<PickerResultInfo>,
     pub selected_index: usize,
+    /// Number of results matching the current query (may exceed `results.len()`).
+    #[serde(default)]
+    pub total_results: usize,
+    /// True while file discovery / grep search is still streaming results.
+    #[serde(default)]
+    pub loading: bool,
 }
 
 /// Picker result information

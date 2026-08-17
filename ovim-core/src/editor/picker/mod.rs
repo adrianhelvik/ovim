@@ -126,6 +126,32 @@ impl Picker {
         }
     }
 
+    /// Collects up to `max` rank-ordered filtered results.
+    ///
+    /// Unlike calling [`Self::filtered_result`] per rank — which takes a fresh
+    /// nucleo snapshot per call — this resolves the whole range against a
+    /// single snapshot, so serializing large result sets (headless API) stays
+    /// linear.
+    pub fn collect_filtered_results(&self, max: usize) -> Vec<&PickerResult> {
+        let count = self.filtered_result_count().min(max);
+        if count == 0 {
+            return Vec::new();
+        }
+        if let PickerBackend::Nucleo(ref s) = self.backend {
+            let indices = if s.nucleo.is_empty_pattern() {
+                s.get_empty_pattern_items_in_range(0, count)
+            } else {
+                s.nucleo.get_items_in_range(0, count as u32)
+            };
+            indices
+                .into_iter()
+                .filter_map(|idx| self.all_results.get(idx as usize))
+                .collect()
+        } else {
+            self.filtered_results.iter().take(count).collect()
+        }
+    }
+
     /// Drives the nucleo matcher forward and updates matched count.
     pub fn tick(&mut self) -> bool {
         if let PickerBackend::Nucleo(ref mut s) = self.backend {
