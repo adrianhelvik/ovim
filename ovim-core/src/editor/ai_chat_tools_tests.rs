@@ -726,6 +726,17 @@ fn edit_range_with_path_updates_target_file() {
 
         let content = fs::read_to_string(&target).expect("read target");
         assert!(content.starts_with("updated\n"));
+        let sync_state = editor
+            .lsp
+            .state
+            .document_sync
+            .values()
+            .next()
+            .expect("AI mutation should register document sync state");
+        assert!(
+            sync_state.should_send_save(),
+            "auto-saving an AI mutation must queue textDocument/didSave"
+        );
     });
 }
 
@@ -784,6 +795,17 @@ fn apply_patch_at_path_updates_target_file() {
         let content = fs::read_to_string(&target).expect("read target");
         assert!(content.contains("new_call();"));
         assert!(!content.contains("old_call();"));
+        let sync_state = editor
+            .lsp
+            .state
+            .document_sync
+            .values()
+            .next()
+            .expect("AI mutation should register document sync state");
+        assert!(
+            sync_state.should_send_save(),
+            "saving an AI mutation must queue textDocument/didSave"
+        );
     });
 }
 

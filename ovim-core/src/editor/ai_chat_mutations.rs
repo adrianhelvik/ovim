@@ -687,6 +687,7 @@ impl Editor {
         match self.buffer_mut().save() {
             Ok(()) => {
                 self.mark_saved();
+                self.mark_buffer_saved();
                 self.record_ai_chat_save_outcome("auto-saved".to_string())
             }
             Err(e) => self.record_ai_chat_save_outcome(format!("auto-save failed: {e}")),
@@ -722,6 +723,7 @@ impl Editor {
             )));
         }
         self.mark_saved();
+        self.mark_buffer_saved();
         Ok(self.record_ai_chat_save_outcome("saved to disk"))
     }
 
