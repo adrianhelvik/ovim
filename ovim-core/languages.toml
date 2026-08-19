@@ -347,6 +347,28 @@ install_hint = "Install with: npm install -g vscode-langservers-extracted"
 method = { type = "npm", package = "vscode-langservers-extracted" }
 
 # ============================================================================
+# XML
+# ============================================================================
+
+[[language]]
+id = "xml"
+name = "XML"
+extensions = ["xml", "xsd", "xsl", "xslt", "svg", "plist"]
+
+[language.syntax]
+grammar = "tree-sitter-xml"
+official = { crate = "tree_sitter_xml", constant = "XML_HIGHLIGHT_QUERY" }
+
+[language.lsp]
+# Eclipse LemMinX is the established XML language server. It is intentionally
+# manual-install only because the upstream distribution has no package-manager
+# install suitable for ovim's sandboxed auto-installer.
+command = "lemminx"
+fallback_commands = ["~/.local/bin/lemminx"]
+root_markers = [".git", "pom.xml", "build.gradle", "settings.gradle"]
+install_hint = "Install Eclipse LemMinX and place the lemminx executable on PATH"
+
+# ============================================================================
 # Astro
 # ============================================================================
 

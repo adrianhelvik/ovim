@@ -96,7 +96,7 @@ When you open a file and its language server isn't installed, ovim asks once:
 | Lua | lua-language-server |
 | Elixir | elixir-ls |
 | Terraform | terraform-ls |
-| Bash, SQL, JSON, YAML, HTML, CSS, TOML | various |
+| Bash, SQL, JSON, YAML, HTML, XML, CSS, TOML | various |
 | Markdown, HCL, WGSL | syntax highlighting only |
 
 Run `ovim lsp languages` for the full list. See [Language Support](user-docs/LANGUAGE_SUPPORT.md) for details.

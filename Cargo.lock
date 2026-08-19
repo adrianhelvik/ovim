@@ -3174,6 +3174,7 @@ dependencies = [
  "tree-sitter-sequel",
  "tree-sitter-typescript",
  "tree-sitter-wgsl-bevy",
+ "tree-sitter-xml",
  "tree-sitter-yaml",
  "tree-sitter-zig",
  "unicode-segmentation",
@@ -5332,6 +5333,16 @@ name = "tree-sitter-wgsl-bevy"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c96503dc3a7f1d17d954d2569c65143a9af03d40c6ad83f7ba5241a3965c60d0"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-xml"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e670041f591d994f54d597ddcd8f4ebc930e282c4c76a42268743b71f0c8b6b3"
 dependencies = [
  "cc",
  "tree-sitter-language",

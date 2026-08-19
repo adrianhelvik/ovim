@@ -22,6 +22,7 @@ pub enum Language {
     Json,
     Yaml,
     Html,
+    Xml,
     Astro,
     Css,
     Toml,
@@ -62,6 +63,7 @@ impl LanguageRegistry {
             "json" => Language::Json,
             "yaml" => Language::Yaml,
             "html" => Language::Html,
+            "xml" => Language::Xml,
             "astro" => Language::Astro,
             "css" => Language::Css,
             "toml" => Language::Toml,
@@ -154,6 +156,9 @@ impl LanguageRegistry {
 
             // HTML
             "html" | "htm" | "xhtml" => Some(Language::Html),
+
+            // XML
+            "xml" | "xsd" | "xsl" | "xslt" | "svg" | "plist" => Some(Language::Xml),
 
             // Astro
             "astro" => Some(Language::Astro),
@@ -298,6 +303,7 @@ impl LanguageRegistry {
             Language::Json => tree_sitter_json::LANGUAGE.into(),
             Language::Yaml => tree_sitter_yaml::language(),
             Language::Html => tree_sitter_html::LANGUAGE.into(),
+            Language::Xml => tree_sitter_xml::LANGUAGE_XML.into(),
             Language::Astro => tree_sitter_astro_next::LANGUAGE.into(),
             Language::Css => tree_sitter_css::LANGUAGE.into(),
             // TOML: tree-sitter-toml depends on tree-sitter 0.20, incompatible with our 0.23
@@ -343,6 +349,7 @@ impl LanguageRegistry {
             Language::Dockerfile => tree_sitter_bash::HIGHLIGHT_QUERY, // Use Bash syntax for now
             Language::Json => tree_sitter_json::HIGHLIGHTS_QUERY,
             Language::Html => tree_sitter_html::HIGHLIGHTS_QUERY,
+            Language::Xml => tree_sitter_xml::XML_HIGHLIGHT_QUERY,
             Language::Astro => tree_sitter_astro_next::HIGHLIGHTS_QUERY,
             Language::Css => tree_sitter_css::HIGHLIGHTS_QUERY,
             // TOML uses JSON highlighting as fallback (similar key-value structure)
@@ -413,6 +420,7 @@ impl LanguageRegistry {
             Language::Json => Some("json"),
             Language::Yaml => Some("yaml"),
             Language::Html => Some("html"),
+            Language::Xml => Some("xml"),
             Language::Astro => Some("astro"),
             Language::Css => Some("css"),
             Language::Toml => Some("toml"),
@@ -492,6 +500,9 @@ impl LanguageRegistry {
 
             // HTML
             "html" | "htm" | "xhtml" => Some(Language::Html),
+
+            // XML
+            "xml" | "xsd" | "xsl" | "xslt" | "svg" | "plist" => Some(Language::Xml),
 
             // Astro
             "astro" => Some(Language::Astro),
@@ -574,5 +585,40 @@ mod tests {
             Some(Language::Wgsl)
         );
         assert_eq!(LanguageRegistry::get_lsp_language_id("shader.wgsl"), None);
+    }
+
+    #[test]
+    fn detects_xml_files_and_markdown_fences() {
+        for path in ["document.xml", "schema.xsd", "transform.xslt", "icon.svg"] {
+            assert_eq!(
+                LanguageRegistry::detect_from_path(path),
+                Some(Language::Xml)
+            );
+        }
+        assert_eq!(
+            LanguageRegistry::from_info_string("xml"),
+            Some(Language::Xml)
+        );
+        assert_eq!(
+            LanguageRegistry::get_lsp_language_id("document.xml"),
+            Some("xml")
+        );
+
+        let language = LanguageRegistry::get_tree_sitter_language(Language::Xml);
+        tree_sitter::Query::new(
+            &language,
+            LanguageRegistry::get_highlight_query(Language::Xml),
+        )
+        .expect("XML highlight query should compile");
+
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser
+            .parse(
+                "<?xml version=\"1.0\"?><root id=\"1\"><child /></root>",
+                None,
+            )
+            .unwrap();
+        assert!(!tree.root_node().has_error());
     }
 }

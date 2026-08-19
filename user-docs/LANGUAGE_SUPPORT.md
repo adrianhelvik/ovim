@@ -40,6 +40,7 @@ These languages have full LSP support and will auto-install the language server 
 |----------|------------|------------|-----------------|
 | C | `.c`, `.h` | clangd | `brew install llvm` / `pacman -S clang` |
 | C++ | `.cpp`, `.hpp` | clangd | `brew install llvm` / `pacman -S clang` |
+| XML | `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, `.plist` | Eclipse LemMinX | Install `lemminx` on `PATH` |
 
 ### Syntax Highlighting Only
 
