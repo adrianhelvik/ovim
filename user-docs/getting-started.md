@@ -71,8 +71,9 @@ file, so monorepos just work). Failures populate the quickfix list;
 `:TestOutput` shows the raw log.
 
 Built-in runners: `cargo test` (Rust, workspace-aware, with `--test`/`--bin`
-target selection), vitest/jest/bun (detected from dependencies, config files,
-and lockfiles), pytest (with uv/poetry/pipenv/pdm prefixes), and `go test`
+target selection), vitest/jest/bun/Node test (detected from dependencies,
+config files, lockfiles, and `node:test` imports), pytest (with
+uv/poetry/pipenv/pdm prefixes), and `go test`
 (with subtest and table-entry `-run` patterns). The nearest test is found via
 tree-sitter, so Rust `mod` nesting, nested `describe` blocks, Python classes,
 and Go `t.Run` subtests all resolve to correct filters.

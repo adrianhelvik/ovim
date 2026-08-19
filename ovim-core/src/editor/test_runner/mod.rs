@@ -11,7 +11,7 @@
 //! file, so monorepos work without configuring anything). Output lands in
 //! the quickfix list; `:TestOutput` shows the raw log.
 //!
-//! Built-in runners: cargo (rust), vitest/jest/bun/npm (js/ts), pytest
+//! Built-in runners: cargo (rust), vitest/jest/bun/node:test/npm (js/ts), pytest
 //! (python), go test (go). Other languages configure `[language.test]` in
 //! languages.toml. Nearest-test discovery is tree-sitter based (see
 //! `nearest.rs`).

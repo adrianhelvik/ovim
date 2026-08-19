@@ -407,13 +407,14 @@ mod js {
         Vitest,
         Jest,
         Bun,
+        NodeTest { npm_script: bool, use_tsx: bool },
         NpmTest,
     }
 
     pub(super) fn build(scope: TestScope, ctx: &TestContext) -> Result<TestInvocation, String> {
         let pkg_root = find_up(ctx.file, &["package.json"])
             .ok_or_else(|| "No package.json found above this file".to_string())?;
-        let runner = detect_runner(&pkg_root);
+        let runner = detect_runner(&pkg_root, ctx.file, ctx.source);
         let rel = rel_path(ctx.file, &pkg_root);
 
         let command = match (&runner, scope) {
@@ -465,6 +466,35 @@ mod js {
                     shell_quote(&pattern),
                     shell_quote(&rel)
                 )
+            }
+            (
+                Runner::NodeTest {
+                    npm_script,
+                    use_tsx,
+                },
+                scope,
+            ) => {
+                let base = if *npm_script {
+                    "npm test --".to_string()
+                } else if *use_tsx {
+                    format!("{} --test", executable(&pkg_root, "tsx"))
+                } else {
+                    "node --test".to_string()
+                };
+                match scope {
+                    TestScope::Suite if *npm_script => "npm test".to_string(),
+                    TestScope::Suite => base,
+                    TestScope::File => format!("{} {}", base, shell_quote(&rel)),
+                    TestScope::Nearest => {
+                        let pattern = name_pattern(ctx, true)?;
+                        format!(
+                            "{} --test-name-pattern {} {}",
+                            base,
+                            shell_quote(&pattern),
+                            shell_quote(&rel)
+                        )
+                    }
+                }
             }
         };
 
@@ -520,11 +550,31 @@ mod js {
         name
     }
 
-    /// Detects which runner owns this package: dependencies and config files
-    /// at the package root first, then ancestor packages (covers hoisted
-    /// monorepo setups where vitest/jest live in the workspace root), then
-    /// lockfile hints, then the test script, then plain `npm test`.
-    fn detect_runner(pkg_root: &Path) -> Runner {
+    /// Detects which runner owns this file. An actual `node:test` import or a
+    /// Node test package script is definitive; otherwise package/ancestor
+    /// dependencies, config files and lockfiles select vitest/jest/bun before
+    /// falling back to the package script.
+    fn detect_runner(pkg_root: &Path, file: &Path, source: &str) -> Runner {
+        let test_script = read_test_script(pkg_root);
+        let node_test_script = test_script.as_deref().is_some_and(script_uses_node_test);
+        if source_uses_node_test(source) || node_test_script {
+            let is_typescript = file
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| matches!(ext, "ts" | "tsx" | "mts" | "cts"));
+            return Runner::NodeTest {
+                // Keep the package's script so loaders and other project
+                // setup (for example `--import tsx`) remain in effect.
+                npm_script: node_test_script,
+                // Plain Node type-stripping does not implement TypeScript's
+                // extensionless module resolution. Prefer an installed or
+                // declared tsx runner when the project provides one.
+                use_tsx: !node_test_script
+                    && is_typescript
+                    && package_mentions_dependency(pkg_root, "tsx"),
+            };
+        }
+
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let mut dir = Some(pkg_root);
         while let Some(d) = dir {
@@ -536,7 +586,7 @@ mod js {
             }
             dir = d.parent();
         }
-        if let Some(script) = read_test_script(pkg_root) {
+        if let Some(script) = test_script {
             if script.contains("vitest") {
                 return Runner::Vitest;
             }
@@ -548,6 +598,46 @@ mod js {
             }
         }
         Runner::NpmTest
+    }
+
+    fn source_uses_node_test(source: &str) -> bool {
+        [
+            "from 'node:test'",
+            "from \"node:test\"",
+            "import 'node:test'",
+            "import \"node:test\"",
+            "require('node:test')",
+            "require(\"node:test\")",
+            "import('node:test')",
+            "import(\"node:test\")",
+        ]
+        .iter()
+        .any(|needle| source.contains(needle))
+    }
+
+    fn script_uses_node_test(script: &str) -> bool {
+        script.contains("--test")
+            && ["node", "tsx", "ts-node"]
+                .iter()
+                .any(|runner| script.split_whitespace().any(|word| word == *runner))
+    }
+
+    fn package_mentions_dependency(pkg_root: &Path, dependency: &str) -> bool {
+        let needle = format!("\"{dependency}\"");
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut dir = Some(pkg_root);
+        while let Some(current) = dir {
+            if std::fs::read_to_string(current.join("package.json"))
+                .is_ok_and(|content| content.contains(&needle))
+            {
+                return true;
+            }
+            if home.as_deref() == Some(current) {
+                break;
+            }
+            dir = current.parent();
+        }
+        false
     }
 
     fn detect_in_dir(dir: &Path) -> Option<Runner> {

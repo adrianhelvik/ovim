@@ -359,6 +359,114 @@ fn js_bun_detected_from_lockfile() {
 }
 
 #[test]
+fn js_node_test_nearest_runs_directly_without_a_test_script() {
+    let p = js_package(r#"{"name": "demo"}"#);
+    let file = p.root.join("src/clock.test.ts");
+    fs::write(&file, "").unwrap();
+    let src = r#"
+import { describe, it } from 'node:test';
+describe('FakeClock', () => {
+  it('fires exactly', () => {});
+});
+"#;
+
+    let inv = build_test_command(
+        TestScope::Nearest,
+        &ctx(&file, src, 3, Language::TypeScript),
+    )
+    .unwrap();
+    assert_eq!(
+        inv.command,
+        "node --test --test-name-pattern '^FakeClock fires exactly$' 'src/clock.test.ts'"
+    );
+
+    let file_scope =
+        build_test_command(TestScope::File, &ctx(&file, src, 3, Language::TypeScript)).unwrap();
+    assert_eq!(file_scope.command, "node --test 'src/clock.test.ts'");
+
+    let suite =
+        build_test_command(TestScope::Suite, &ctx(&file, src, 3, Language::TypeScript)).unwrap();
+    assert_eq!(suite.command, "node --test");
+}
+
+#[test]
+fn js_node_test_typescript_prefers_declared_tsx_runner() {
+    let p = js_package(r#"{"devDependencies": {"tsx": "^4.0.0"}}"#);
+    let file = p.root.join("src/clock.test.ts");
+    fs::write(&file, "").unwrap();
+    let src = "import { it } from 'node:test';\nit('ticks', () => {});\n";
+
+    let inv = build_test_command(
+        TestScope::Nearest,
+        &ctx(&file, src, 1, Language::TypeScript),
+    )
+    .unwrap();
+    assert_eq!(
+        inv.command,
+        "npx tsx --test --test-name-pattern '^ticks$' 'src/clock.test.ts'"
+    );
+}
+
+#[test]
+fn js_node_test_preserves_the_package_test_script() {
+    let p = js_package(r#"{"name": "demo", "scripts": {"test": "node --import tsx --test"}}"#);
+    let file = p.root.join("src/clock.test.ts");
+    fs::write(&file, "").unwrap();
+    let src = "import { it } from 'node:test';\nit('ticks', () => {});\n";
+
+    let nearest = build_test_command(
+        TestScope::Nearest,
+        &ctx(&file, src, 1, Language::TypeScript),
+    )
+    .unwrap();
+    assert_eq!(
+        nearest.command,
+        "npm test -- --test-name-pattern '^ticks$' 'src/clock.test.ts'"
+    );
+
+    let file_scope =
+        build_test_command(TestScope::File, &ctx(&file, src, 1, Language::TypeScript)).unwrap();
+    assert_eq!(file_scope.command, "npm test -- 'src/clock.test.ts'");
+
+    let suite =
+        build_test_command(TestScope::Suite, &ctx(&file, src, 1, Language::TypeScript)).unwrap();
+    assert_eq!(suite.command, "npm test");
+}
+
+#[test]
+fn js_node_test_does_not_forward_args_to_an_unrelated_test_script() {
+    let p = js_package(r#"{"name": "demo", "scripts": {"test": "./custom-runner.sh"}}"#);
+    let file = p.root.join("src/clock.test.ts");
+    fs::write(&file, "").unwrap();
+    let src = "import { it } from 'node:test';\nit('ticks', () => {});\n";
+
+    let inv = build_test_command(
+        TestScope::Nearest,
+        &ctx(&file, src, 1, Language::TypeScript),
+    )
+    .unwrap();
+    assert_eq!(
+        inv.command,
+        "node --test --test-name-pattern '^ticks$' 'src/clock.test.ts'"
+    );
+}
+
+#[test]
+fn js_node_test_is_not_selected_from_a_comment() {
+    let p = js_package(r#"{"devDependencies": {"vitest": "^2.0.0"}}"#);
+    let file = p.root.join("src/x.test.ts");
+    fs::write(&file, "").unwrap();
+    let src = "// node:test is used elsewhere\nit('works', () => {});\n";
+
+    let inv = build_test_command(
+        TestScope::Nearest,
+        &ctx(&file, src, 1, Language::TypeScript),
+    )
+    .unwrap();
+    assert_eq!(inv.command, "npx vitest run -t '^works$' 'src/x.test.ts'");
+}
+
+#[test]
 fn js_npm_fallback_when_no_runner_found() {
     let p = js_package(r#"{"name": "demo", "scripts": {"test": "./custom-runner.sh"}}"#);
     let file = p.root.join("src/x.test.ts");
