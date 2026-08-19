@@ -459,39 +459,16 @@ fn render_code_line_with_highlights(
     theme: &Theme,
     max_width: usize,
 ) -> Line<'static> {
+    use unicode_segmentation::UnicodeSegmentation;
+
     let mut spans = Vec::new();
     spans.push(Span::styled(
         " ",
         Style::default().bg(colors::CODE_BLOCK_BG),
     )); // Leading padding
 
-    let chars: Vec<char> = line.chars().collect();
-    let display_width = max_width.saturating_sub(2);
-
-    let mut col = 0;
-    while col < chars.len() && col < display_width {
-        // Find highlight group for current position
-        let group = highlights
-            .iter()
-            .find(|(range, _)| range.contains(&col))
-            .map(|(_, g)| *g);
-
-        // Find consecutive chars with same highlight
-        let mut end_col = col + 1;
-        while end_col < chars.len() && end_col < display_width {
-            let next_group = highlights
-                .iter()
-                .find(|(range, _)| range.contains(&end_col))
-                .map(|(_, g)| *g);
-            if next_group != group {
-                break;
-            }
-            end_col += 1;
-        }
-
-        // Build styled span
-        let text: String = chars[col..end_col].iter().collect();
-        let style = if let Some(g) = group {
+    let style_for = |group: Option<HighlightGroup>| {
+        if let Some(g) = group {
             Style::default()
                 .fg(crate::key_convert::convert_core_color(theme.get_color(g)))
                 .bg(colors::CODE_BLOCK_BG)
@@ -499,12 +476,45 @@ fn render_code_line_with_highlights(
             Style::default()
                 .fg(colors::CODE_BLOCK_FG)
                 .bg(colors::CODE_BLOCK_BG)
-        };
-        spans.push(Span::styled(text, style));
-        col = end_col;
+        }
+    };
+
+    // Highlight ranges are BYTE offsets relative to the line start (see
+    // `highlights_for_all_lines`), so group lookups use grapheme byte
+    // positions, and truncation counts display columns (wide glyphs = 2).
+    let budget = max_width.saturating_sub(2);
+    let mut used = 0usize;
+    let mut truncated = false;
+    let mut run_group: Option<HighlightGroup> = None;
+    let mut run_text = String::new();
+    let mut run_started = false;
+
+    for (byte_idx, grapheme) in line.grapheme_indices(true) {
+        let width = crate::display::grapheme_display_width(grapheme);
+        if used + width > budget {
+            truncated = true;
+            break;
+        }
+        let group = highlights
+            .iter()
+            .find(|(range, _)| range.contains(&byte_idx))
+            .map(|(_, g)| *g);
+        if run_started && group != run_group {
+            spans.push(Span::styled(
+                std::mem::take(&mut run_text),
+                style_for(run_group),
+            ));
+        }
+        run_started = true;
+        run_group = group;
+        run_text.push_str(grapheme);
+        used += width;
+    }
+    if !run_text.is_empty() {
+        spans.push(Span::styled(run_text, style_for(run_group)));
     }
 
-    if chars.len() > display_width {
+    if truncated {
         spans.push(Span::styled(
             "...",
             Style::default()
@@ -775,11 +785,11 @@ pub fn render_markdown(
 
                     // Fallback: plain green style
                     let available = max_width.saturating_sub(2);
-                    let truncated = if code_line.chars().count() > available {
-                        let prefix: String = code_line
-                            .chars()
-                            .take(max_width.saturating_sub(5))
-                            .collect();
+                    let truncated = if UnicodeWidthStr::width(code_line) > available {
+                        let prefix = crate::ui::renderer::helpers::truncate_to_width(
+                            code_line,
+                            max_width.saturating_sub(5),
+                        );
                         format!(" {prefix}... ")
                     } else {
                         format!(" {} ", code_line)

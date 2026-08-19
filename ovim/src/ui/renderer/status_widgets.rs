@@ -421,15 +421,22 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
         ));
     }
 
-    // Calculate padding
+    // Calculate padding (display columns, not bytes: unicode filenames,
+    // branches, and status messages must not shift the right-side spans)
     let recording_len = if !recording_indicator.is_empty() {
-        recording_indicator.len() + 1
+        UnicodeWidthStr::width(recording_indicator.as_str()) + 1
     } else {
         1
     };
-    let left_used =
-        mode_indicator.len() + recording_len + file.len() + modified.len() + branch_display.len();
-    let right_used: usize = right_spans.iter().map(|s| s.content.len()).sum();
+    let left_used = UnicodeWidthStr::width(mode_indicator.as_str())
+        + recording_len
+        + UnicodeWidthStr::width(file)
+        + UnicodeWidthStr::width(modified)
+        + UnicodeWidthStr::width(branch_display.as_str());
+    let right_used: usize = right_spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
     let padding_len = (area.width as usize).saturating_sub(left_used + right_used);
 
     spans.push(Span::raw(" ".repeat(padding_len)));
@@ -1022,8 +1029,16 @@ pub fn render_margin_widgets(
         if let Some(branch) = editor.git_branch() {
             // Truncate branch name to fit margin (leave room for change stats)
             let max_branch = left_margin_width.saturating_sub(3); // 1 gap + some padding
-            let display = if branch.len() > max_branch {
-                format!("{}~", &branch[..max_branch.saturating_sub(1)])
+                                                                  // Truncate by display columns at grapheme boundaries: byte
+                                                                  // slicing panics mid-char on non-ascii branch names.
+            let display = if unicode_width::UnicodeWidthStr::width(branch) > max_branch {
+                format!(
+                    "{}~",
+                    crate::ui::renderer::helpers::truncate_to_width(
+                        branch,
+                        max_branch.saturating_sub(1)
+                    )
+                )
             } else {
                 branch.to_string()
             };
@@ -1111,8 +1126,14 @@ pub fn render_margin_widgets(
             // Truncate if too long for margin
             let max_len = right_margin_width
                 .saturating_sub(spans.iter().map(|s| s.width()).sum::<usize>() + 1);
-            let display = if status_text.len() > max_len {
-                format!("{}~", &status_text[..max_len.saturating_sub(1)])
+            let display = if unicode_width::UnicodeWidthStr::width(status_text.as_str()) > max_len {
+                format!(
+                    "{}~",
+                    crate::ui::renderer::helpers::truncate_to_width(
+                        &status_text,
+                        max_len.saturating_sub(1)
+                    )
+                )
             } else {
                 status_text
             };
@@ -1179,10 +1200,10 @@ fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, 
         " \u{2190}/\u{2192} edits  Enter accept  Ctrl-r chat  Esc close "
     };
     let w = area.width as usize;
-    let mode_width = " REVIEW ".chars().count();
+    let mode_width = UnicodeWidthStr::width(" REVIEW ");
     let max_hint_width = w.saturating_sub(mode_width + 12).min(44);
     let hints = truncate_tail(hints, max_hint_width);
-    let max_info_width = w.saturating_sub(mode_width + hints.chars().count());
+    let max_info_width = w.saturating_sub(mode_width + UnicodeWidthStr::width(hints.as_str()));
     let info = truncate_middle(&info, max_info_width);
 
     let info_span = Span::styled(info, Style::default().fg(status_fg).bg(status_bg));
@@ -1193,7 +1214,9 @@ fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, 
             .bg(status_bg)
             .add_modifier(Modifier::DIM),
     );
-    let used = mode_width + info_span.content.chars().count() + hints_span.content.chars().count();
+    let used = mode_width
+        + UnicodeWidthStr::width(info_span.content.as_ref())
+        + UnicodeWidthStr::width(hints_span.content.as_ref());
     let gap = w.saturating_sub(used);
     let gap_span = Span::styled(" ".repeat(gap), Style::default().bg(status_bg));
 
@@ -1237,45 +1260,51 @@ fn compact_path_hint(path: &str, max_chars: usize) -> String {
     }
 }
 
-fn truncate_tail(text: &str, max_chars: usize) -> String {
-    let count = text.chars().count();
-    if count <= max_chars {
+fn truncate_tail(text: &str, max_cols: usize) -> String {
+    if UnicodeWidthStr::width(text) <= max_cols {
         return text.to_string();
     }
-    if max_chars == 0 {
+    if max_cols == 0 {
         return String::new();
     }
-    if max_chars == 1 {
+    if max_cols == 1 {
         return "\u{2026}".to_string();
     }
-    let mut out: String = text.chars().take(max_chars - 1).collect();
+    let mut out = crate::ui::renderer::helpers::truncate_to_width(text, max_cols - 1);
     out.push('\u{2026}');
     out
 }
 
-fn truncate_middle(text: &str, max_chars: usize) -> String {
-    let count = text.chars().count();
-    if count <= max_chars {
+fn truncate_middle(text: &str, max_cols: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    if UnicodeWidthStr::width(text) <= max_cols {
         return text.to_string();
     }
-    if max_chars == 0 {
+    if max_cols == 0 {
         return String::new();
     }
-    if max_chars <= 3 {
-        return truncate_tail(text, max_chars);
+    if max_cols <= 3 {
+        return truncate_tail(text, max_cols);
     }
 
-    let head = (max_chars - 1) / 2;
-    let tail = max_chars - head - 1;
-    let start: String = text.chars().take(head).collect();
-    let end: String = text
-        .chars()
-        .rev()
-        .take(tail)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
+    // Head and tail budgets in display columns; graphemes stay whole so
+    // emoji sequences and wide chars never get split by the ellipsis.
+    let head_budget = (max_cols - 1) / 2;
+    let tail_budget = max_cols - head_budget - 1;
+    let start = crate::ui::renderer::helpers::truncate_to_width(text, head_budget);
+
+    let mut tail_graphemes: Vec<&str> = Vec::new();
+    let mut tail_width = 0;
+    for grapheme in text.graphemes(true).rev() {
+        let width = crate::display::grapheme_display_width(grapheme);
+        if tail_width + width > tail_budget {
+            break;
+        }
+        tail_graphemes.push(grapheme);
+        tail_width += width;
+    }
+    let end: String = tail_graphemes.into_iter().rev().collect();
     format!("{}\u{2026}{}", start, end)
 }
 

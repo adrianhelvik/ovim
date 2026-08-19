@@ -1,5 +1,4 @@
 use crate::ai::chat_types::ChatRole;
-use crate::display::char_display_width;
 
 use super::Editor;
 
@@ -238,14 +237,15 @@ fn ordered_chat_selection(
 }
 
 fn slice_display_columns(text: &str, start: usize, end: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
     let mut column = 0usize;
-    text.chars()
-        .filter(|character| {
-            let width = char_display_width(*character).max(1);
-            let character_start = column;
-            let character_end = column.saturating_add(width);
-            column = character_end;
-            character_end > start && character_start < end
+    text.graphemes(true)
+        .filter(|grapheme| {
+            let width = crate::display::grapheme_display_width(grapheme).max(1);
+            let grapheme_start = column;
+            let grapheme_end = column.saturating_add(width);
+            column = grapheme_end;
+            grapheme_end > start && grapheme_start < end
         })
         .collect()
 }

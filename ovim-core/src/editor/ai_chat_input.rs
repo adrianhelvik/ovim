@@ -1,4 +1,5 @@
-use crate::display::{char_display_width, display_width};
+use crate::display::{display_width, grapheme_display_width};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WordClass {
@@ -138,21 +139,24 @@ pub fn wrap_chat_input_rows_with_widths(
         let mut last_word_boundary = None;
         let mut newline_at = None;
 
-        for (relative, character) in text[visible_start..].char_indices() {
+        // Grapheme walk: emoji sequences (VS16/ZWJ) are one rendered cell
+        // pair and must wrap atomically with their rendered width.
+        for (relative, grapheme) in text[visible_start..].grapheme_indices(true) {
             let byte_index = visible_start + relative;
-            if character == '\n' {
+            if grapheme == "\n" {
                 newline_at = Some(byte_index);
                 row_end = byte_index;
                 break;
             }
 
-            let character_width = if character == '\t' {
+            let grapheme_width = if grapheme == "\t" {
                 tab_width - (row_width % tab_width)
             } else {
-                char_display_width(character)
+                grapheme_display_width(grapheme)
             };
-            if row_end > visible_start && row_width.saturating_add(character_width) > width_limit {
-                if !character.is_whitespace() {
+            let is_whitespace = grapheme.chars().all(char::is_whitespace);
+            if row_end > visible_start && row_width.saturating_add(grapheme_width) > width_limit {
+                if !is_whitespace {
                     if let Some(boundary) = last_word_boundary {
                         row_end = boundary;
                     }
@@ -160,16 +164,16 @@ pub fn wrap_chat_input_rows_with_widths(
                 break;
             }
 
-            row_width = row_width.saturating_add(character_width);
-            row_end = byte_index + character.len_utf8();
-            if character.is_whitespace() && row_end > visible_start {
+            row_width = row_width.saturating_add(grapheme_width);
+            row_end = byte_index + grapheme.len();
+            if is_whitespace && row_end > visible_start {
                 last_word_boundary = Some(row_end);
             }
         }
 
         if row_end == visible_start {
-            match text[visible_start..].chars().next() {
-                Some('\n') => {
+            match text[visible_start..].graphemes(true).next() {
+                Some("\n") => {
                     rows.push(ChatInputRow {
                         start: row_start,
                         visible_start,
@@ -178,7 +182,9 @@ pub fn wrap_chat_input_rows_with_widths(
                     row_start = visible_start + 1;
                     continue;
                 }
-                Some(character) => row_end = visible_start + character.len_utf8(),
+                // Force progress with a whole grapheme so a too-narrow row
+                // never splits an emoji sequence mid-cluster.
+                Some(grapheme) => row_end = visible_start + grapheme.len(),
                 None if visible_start > row_start => row_end = visible_start,
                 None => break,
             }
@@ -253,17 +259,17 @@ pub fn chat_input_byte_for_display_column(
     tab_width: usize,
 ) -> usize {
     let mut column = 0usize;
-    for (relative, character) in text[row.visible_start..row.end].char_indices() {
-        let character_width = if character == '\t' {
+    for (relative, grapheme) in text[row.visible_start..row.end].grapheme_indices(true) {
+        let grapheme_width = if grapheme == "\t" {
             let tab_width = tab_width.max(1);
             tab_width - (column % tab_width)
         } else {
-            char_display_width(character)
+            grapheme_display_width(grapheme)
         };
-        if column.saturating_add(character_width) > target_column {
+        if column.saturating_add(grapheme_width) > target_column {
             return row.visible_start + relative;
         }
-        column = column.saturating_add(character_width);
+        column = column.saturating_add(grapheme_width);
     }
     row.end
 }

@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::display::{char_display_width, grapheme_display_width};
+use crate::display::grapheme_display_width;
 use crate::ui::renderer::markdown_conceal::scan_markdown_conceal;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -42,39 +42,17 @@ pub struct WindowRenderContext {
 
 /// Converts an expanded char index to a display column.
 ///
-/// Grapheme-based: multi-scalar emoji (VS16/ZWJ sequences) count their
-/// rendered width, matching ratatui's cell layout. A `char_idx` mid-grapheme
-/// resolves to the grapheme's starting column.
+/// Thin wrapper over the shared grapheme-aware conversion: the input is
+/// already tab-expanded, so the tab width is irrelevant (any value works).
 fn expanded_char_to_display_col(text: &str, char_idx: usize) -> usize {
-    let mut display_col = 0;
-    let mut chars_seen = 0;
-    for grapheme in text.graphemes(true) {
-        if chars_seen >= char_idx {
-            break;
-        }
-        display_col += grapheme_display_width(grapheme);
-        chars_seen += grapheme.chars().count();
-    }
-    display_col
+    crate::display::char_col_to_display_col(text, char_idx, 1)
 }
 
 /// Converts a display column to a char index within a string.
 /// If the display column falls in the middle of a wide grapheme, returns the
-/// char index of that grapheme's first char.
+/// char index of that grapheme's first char. Input is already tab-expanded.
 fn display_col_to_char_idx(text: &str, target_display_col: usize) -> usize {
-    let mut display_col = 0;
-    let mut chars_seen = 0;
-    for grapheme in text.graphemes(true) {
-        if display_col >= target_display_col {
-            return chars_seen;
-        }
-        display_col += grapheme_display_width(grapheme);
-        if display_col > target_display_col {
-            return chars_seen;
-        }
-        chars_seen += grapheme.chars().count();
-    }
-    chars_seen
+    crate::display::display_col_to_char_col(text, target_display_col, 1)
 }
 
 /// Converts a UTF-16 offset to a char index within a line of text.
@@ -927,13 +905,13 @@ const EOL_DIAG_GAP: usize = 2;
 /// can render up to 2x the budget. Pre-existing behavior; sharpening this
 /// is a separate concern.
 fn fit_with_ellipsis(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
+    if text.graphemes(true).count() <= max_chars {
         return text.to_string();
     }
     if max_chars < 3 {
-        return text.chars().take(max_chars).collect();
+        return text.graphemes(true).take(max_chars).collect();
     }
-    let prefix: String = text.chars().take(max_chars - 3).collect();
+    let prefix: String = text.graphemes(true).take(max_chars - 3).collect();
     format!("{prefix}...")
 }
 
@@ -1154,7 +1132,11 @@ fn overlay_eol_decoration_at_edge(
 
     // Budget: gap + message at the right edge, message capped at 1/3 of viewport.
     let msg = fit_with_ellipsis(&dec.text, text_width / 3);
-    let overlay_width = EOL_DIAG_GAP + msg.chars().map(char_display_width).sum::<usize>();
+    let overlay_width = EOL_DIAG_GAP
+        + msg
+            .graphemes(true)
+            .map(grapheme_display_width)
+            .sum::<usize>();
 
     // Truncate code to make room, pad up to the truncation point, then push
     // gap + styled message + final padding.
@@ -2609,7 +2591,10 @@ mod tests {
         }
         assert!(rendered.contains("uh oh"));
 
-        let display_width: usize = rendered.chars().map(char_display_width).sum();
+        let display_width: usize = rendered
+            .chars()
+            .map(crate::display::char_display_width)
+            .sum();
         assert_eq!(display_width, 30);
     }
 
@@ -2645,7 +2630,10 @@ mod tests {
             rendered.starts_with("let x = 1;  unused variable: `x`"),
             "diagnostic must sit {EOL_DIAG_GAP} columns after the code, not at the far edge; got {rendered:?}"
         );
-        let display_width: usize = rendered.chars().map(char_display_width).sum();
+        let display_width: usize = rendered
+            .chars()
+            .map(crate::display::char_display_width)
+            .sum();
         assert_eq!(display_width, text_width, "row is re-padded to full width");
     }
 
@@ -2676,7 +2664,10 @@ mod tests {
             rendered.ends_with("too long"),
             "overlay should place the message at the right edge; got {rendered:?}"
         );
-        let display_width: usize = rendered.chars().map(char_display_width).sum();
+        let display_width: usize = rendered
+            .chars()
+            .map(crate::display::char_display_width)
+            .sum();
         assert_eq!(display_width, text_width);
     }
 

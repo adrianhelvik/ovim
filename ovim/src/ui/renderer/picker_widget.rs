@@ -9,6 +9,7 @@ use ratatui::{
     Frame,
 };
 use std::ops::Range;
+use unicode_width::UnicodeWidthStr;
 
 use super::helpers::{expand_tabs, expand_tabs_with_mapping, truncate_to_width};
 use super::styles::remap_highlights;
@@ -288,7 +289,7 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
         // Single field mode — same as before
         let prompt_icon = " ";
         let query_line_width = area.width as usize;
-        let content_len = 2 + query_text.len();
+        let content_len = 2 + UnicodeWidthStr::width(query_text);
         let padding = query_line_width.saturating_sub(content_len);
 
         let mut spans = vec![
@@ -347,7 +348,7 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
     };
 
     let search_icon = " ";
-    let search_content_len = 2 + query_text.len(); // icon + space + text
+    let search_content_len = 2 + UnicodeWidthStr::width(query_text); // icon + space + text
     let search_padding = search_width.saturating_sub(search_content_len);
 
     let mut spans = vec![
@@ -407,7 +408,7 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
         } else {
             "C-\u{2192} file filter"
         };
-        let hint_len = 2 + hint.chars().count(); // icon + space + hint
+        let hint_len = 2 + UnicodeWidthStr::width(hint); // icon + space + hint
         let hint_padding = filter_width.saturating_sub(hint_len);
         spans.push(Span::styled(
             hint.to_string(),
@@ -422,7 +423,7 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
             ));
         }
     } else {
-        let filter_content_len = 2 + filter_text.len(); // icon + space + text
+        let filter_content_len = 2 + UnicodeWidthStr::width(filter_text); // icon + space + text
         let filter_padding = filter_width.saturating_sub(filter_content_len);
         spans.push(Span::styled(filter_text.to_string(), filter_text_style));
         if filter_padding > 0 {
@@ -693,10 +694,14 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
                     spans.push(Span::styled("  ", Style::default().bg(bg_color)));
 
                     // Truncate content to fit remaining width
-                    let location_len = display_name.chars().count() + line_num.chars().count();
-                    let used = icon.chars().count() + prefix.chars().count() + location_len + 2;
+                    let location_len = UnicodeWidthStr::width(display_name.as_str())
+                        + UnicodeWidthStr::width(line_num.as_str());
+                    let used = UnicodeWidthStr::width(icon)
+                        + UnicodeWidthStr::width(prefix)
+                        + location_len
+                        + 2;
                     let content_max = result_width.saturating_sub(used);
-                    let truncated_content: String = content.chars().take(content_max).collect();
+                    let truncated_content = truncate_to_width(content, content_max);
 
                     // Match highlights on the content (user searches content, not filenames)
                     let positions = rematch_positions(query, &truncated_content);
@@ -708,7 +713,7 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
                         is_selected,
                     ));
 
-                    let total_len = used + truncated_content.chars().count();
+                    let total_len = used + UnicodeWidthStr::width(truncated_content.as_str());
                     let padding = result_width.saturating_sub(total_len);
                     if padding > 0 {
                         spans.push(Span::styled(
@@ -726,8 +731,9 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
                         bg_color,
                         is_selected,
                     ));
-                    let content_len =
-                        icon.chars().count() + prefix.chars().count() + display.chars().count();
+                    let content_len = UnicodeWidthStr::width(icon)
+                        + UnicodeWidthStr::width(prefix)
+                        + UnicodeWidthStr::width(display.as_str());
                     let padding = result_width.saturating_sub(content_len);
                     if padding > 0 {
                         spans.push(Span::styled(
@@ -747,8 +753,9 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
                     is_selected,
                 ));
 
-                let content_len =
-                    icon.chars().count() + prefix.chars().count() + display.chars().count();
+                let content_len = UnicodeWidthStr::width(icon)
+                    + UnicodeWidthStr::width(prefix)
+                    + UnicodeWidthStr::width(display.as_str());
                 let padding = result_width.saturating_sub(content_len);
                 if padding > 0 {
                     spans.push(Span::styled(
@@ -766,7 +773,7 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
 
     if total == 0 {
         let text = "  \u{f0349} No matches found";
-        let padding = result_width.saturating_sub(text.chars().count());
+        let padding = result_width.saturating_sub(UnicodeWidthStr::width(text));
         all_lines.push(Line::from(vec![
             Span::styled(
                 text,

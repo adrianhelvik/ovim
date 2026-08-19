@@ -203,11 +203,13 @@ fn render_tree_line(node: &FlatNode, width: usize, is_cursor: bool) -> Line<'sta
     };
 
     let prefix = format!("{} {} {}: ", connector, marker, role_str);
-    let prefix_chars = prefix.chars().count();
-    let preview_space = usable.saturating_sub(prefix_chars);
-    let truncated_preview: String = node.preview.chars().take(preview_space).collect();
-    let total_chars = prefix_chars + truncated_preview.chars().count();
-    let padding = usable.saturating_sub(total_chars);
+    let prefix_width = unicode_width::UnicodeWidthStr::width(prefix.as_str());
+    let preview_space = usable.saturating_sub(prefix_width);
+    let truncated_preview =
+        crate::ui::renderer::helpers::truncate_to_width(&node.preview, preview_space);
+    let total_width =
+        prefix_width + unicode_width::UnicodeWidthStr::width(truncated_preview.as_str());
+    let padding = usable.saturating_sub(total_width);
 
     let role_color = match node.role {
         ChatRole::User => Color::Cyan,

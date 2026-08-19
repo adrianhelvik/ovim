@@ -12,7 +12,7 @@ use ratatui::{
 };
 use std::hash::{Hash, Hasher};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 pub use super::ai_chat_layout::compute_chat_split;
 use super::ai_chat_layout::ChatPanelLayout;
@@ -1098,12 +1098,12 @@ fn highlight_chat_selection(
     for span in &line.spans {
         let mut segment = String::new();
         let mut segment_selected = None;
-        for character in span.content.chars() {
-            let width = character.width().unwrap_or(1).max(1);
-            let character_start = display_column;
-            let character_end = display_column.saturating_add(width);
-            display_column = character_end;
-            let selected = character_end > selection_start && character_start < selection_end;
+        for grapheme in span.content.graphemes(true) {
+            let width = crate::display::grapheme_display_width(grapheme).max(1);
+            let grapheme_start = display_column;
+            let grapheme_end = display_column.saturating_add(width);
+            display_column = grapheme_end;
+            let selected = grapheme_end > selection_start && grapheme_start < selection_end;
             if segment_selected.is_some_and(|current| current != selected) {
                 let style = if segment_selected == Some(true) {
                     span.style.bg(Color::Rgb(74, 96, 145)).fg(Color::White)
@@ -1113,7 +1113,7 @@ fn highlight_chat_selection(
                 output.push(Span::styled(std::mem::take(&mut segment), style));
             }
             segment_selected = Some(selected);
-            segment.push(character);
+            segment.push_str(grapheme);
         }
         if !segment.is_empty() {
             let style = if segment_selected == Some(true) {
