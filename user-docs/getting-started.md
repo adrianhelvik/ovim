@@ -64,11 +64,20 @@ vim-test style bindings, prefixed with `Space t` in normal mode:
 | `Space t a` / `Space t s` | `:TestSuite` | the whole suite |
 | `Space t l` | `:TestLast` | the previous test command again |
 | `Space t v` | `:TestVisit` | nothing — jumps back to the last-tested spot |
+| `Space t t` | `:TestPanel` | nothing — toggles the test panel |
+| `Space t o` | `:TestOutput` | nothing — opens the raw log in a buffer |
+
+Running a test opens the **test panel** on the right side of the editor:
+output streams in live, the header shows a spinner while the run is in
+flight, then flips to a pass/fail verdict with a parsed summary
+("12 passed, 1 failed") and duration. The panel keeps a short history of
+recent runs. Close it with `Space t t`; open it before any run to see the
+keybinding cheat sheet.
 
 Commands run in the background in the file's own project root (nearest
 `Cargo.toml`, `package.json`, `go.mod`, or pytest marker — resolved per
-file, so monorepos just work). Failures populate the quickfix list;
-`:TestOutput` shows the raw log.
+file, so monorepos just work). Failures also populate the quickfix list
+(`:cn` to hop between them); `:TestOutput` shows the raw log.
 
 Built-in runners: `cargo test` (Rust, workspace-aware, with `--test`/`--bin`
 target selection), vitest/jest/bun/Node test (detected from dependencies,

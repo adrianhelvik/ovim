@@ -13,7 +13,7 @@ ovim gives you what Neovim distros give you. LSP, tree-sitter highlighting, AI c
 - **AI chat and editing** — `Space Space` to chat or edit a visual selection
 - **Vim keybindings** — operators + motions, text objects, visual mode, macros, marks, registers
 - **File explorer** — open a folder directly; filter, create, rename, copy, move, and delete safely
-- **Test runner** — `Space t n` runs the test under the cursor (cargo, vitest/jest/bun/node:test, pytest, go test), monorepo-aware
+- **Test runner** — `Space t n` runs the test under the cursor (cargo, vitest/jest/bun/node:test, pytest, go test), monorepo-aware, with live-streaming results panel
 - **Lua config** — `vim.opt.number = true` just works. Configure when you want to, not because you have to.
 - **Headless mode** — run without a terminal, control via REST API
 

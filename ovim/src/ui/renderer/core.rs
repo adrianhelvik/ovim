@@ -42,6 +42,7 @@ struct FrameAreas {
     command_chunk: Rect,
     progress_chunk: Option<Rect>,
     chat_area: Option<Rect>,
+    test_panel_area: Option<Rect>,
     debug_side_area: Option<Rect>,
     debug_output_area: Option<Rect>,
 }
@@ -93,6 +94,21 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
         (Some(horizontal_chunks[0]), horizontal_chunks[1])
     } else {
         (None, remaining_area)
+    };
+
+    // Test panel (right) — split from content area. Sits at the far right;
+    // the debug side panel (rarely open at the same time) splits what's left.
+    let (content_area, test_panel_area) = if editor.is_test_panel_open() {
+        let width = (u32::from(content_area.width) * 2 / 5)
+            .clamp(28, 60)
+            .min(u32::from(content_area.width / 2)) as u16;
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(1), Constraint::Length(width)])
+            .split(content_area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (content_area, None)
     };
 
     // Debug panels (if visible and session active)
@@ -188,6 +204,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
         command_chunk,
         progress_chunk,
         chat_area,
+        test_panel_area,
         debug_side_area,
         debug_output_area,
     })
@@ -964,6 +981,11 @@ impl Renderer {
             editor.render_cache.ai_chat_separator_area = None;
             editor.render_cache.ai_chat_split_area = None;
             editor.render_cache.ai_chat_separator_dragging = false;
+        }
+
+        // Render test panel (if open)
+        if let Some(test_area) = areas.test_panel_area {
+            super::test_panel::render_test_panel(frame, editor, test_area);
         }
 
         // Render debug panels (if visible)

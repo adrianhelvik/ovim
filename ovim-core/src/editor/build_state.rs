@@ -10,6 +10,10 @@ pub struct PendingShellCommand {
 pub(crate) struct BuildState {
     /// Pending `:make` result from background thread
     pub(crate) pending_make: Option<super::PendingMake>,
+    /// Streaming output from a `<Space>t` test run
+    pub(crate) pending_test: Option<super::test_panel::PendingTest>,
+    /// Right-side test panel (run history + open state)
+    pub(crate) test_panel: super::test_panel::TestPanelState,
     /// Last test run via `<Space>t` keybindings (for `<Space>tl` repeat and
     /// `<Space>tv` visit)
     pub(crate) last_test: Option<super::test_runner::LastTest>,

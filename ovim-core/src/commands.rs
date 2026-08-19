@@ -517,12 +517,18 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             editor.test_visit();
             ok("Visiting last-tested position...")
         }
+        "TestPanel" | "TestToggle" | "TP" => {
+            editor.toggle_test_panel();
+            if editor.is_test_panel_open() {
+                ok("Test panel opened")
+            } else {
+                ok("Test panel closed")
+            }
+        }
         "TestOutput" | "MakeOutput" => {
             // Show raw output from last :make / test run in a scratch buffer
-            if let Some(output) = editor.last_make_output().map(|s| s.to_string()) {
-                let buf = crate::buffer::Buffer::new_from_str(&output);
-                let idx = editor.push_buffer(buf);
-                editor.switch_to_buffer(idx);
+            if editor.last_make_output().is_some() {
+                editor.open_test_output_buffer();
                 ok("Make/test output")
             } else {
                 err("No make/test output available")

@@ -26,3 +26,4 @@ mod picker_widget;
 mod status_widgets;
 mod styles;
 mod terminal_images;
+mod test_panel;

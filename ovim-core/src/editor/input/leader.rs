@@ -97,7 +97,7 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
             editor.set_input_state(InputState::Leader { keys: vec!['l'] });
         }
         't' => {
-            // <Space>t... - Tests (tn/tf/ta/ts/tl/tv) + type hierarchy (th)
+            // <Space>t... - Tests (tn/tf/ta/ts/tl/tv/tt/to) + type hierarchy (th)
             editor.set_input_state(InputState::Leader { keys: vec!['t'] });
         }
         'c' => {
@@ -244,6 +244,16 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
         (&['t'], 'v') => {
             // <Space>tv - Test visit (jump to last-tested file/position)
             editor.test_visit();
+            editor.reset_input_state();
+        }
+        (&['t'], 't') => {
+            // <Space>tt - Toggle the test panel
+            editor.toggle_test_panel();
+            editor.reset_input_state();
+        }
+        (&['t'], 'o') => {
+            // <Space>to - Open raw test/make output in a scratch buffer
+            editor.open_test_output_buffer();
             editor.reset_input_state();
         }
 
