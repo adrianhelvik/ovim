@@ -1,5 +1,6 @@
 [workspace]
 members = ["ovim-core", "ovim"]
+exclude = ["vendor/tree-sitter-groovy"]
 resolver = "2"
 
 # locally patched grammar, see vendor/tree-sitter-groovy/grammar.js (OV-00307)

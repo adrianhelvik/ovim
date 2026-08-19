@@ -1,4 +1,6 @@
 /target
+/vendor/tree-sitter-groovy/Cargo.lock
+/vendor/tree-sitter-groovy/target
 /ovim/target
 /ovim/src/target
 /example-project-spond
