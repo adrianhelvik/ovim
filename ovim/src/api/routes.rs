@@ -36,15 +36,15 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/trace", get(get_trace))
         .route("/diagnostics", get(get_diagnostics))
         .route("/agents", get(get_agents))
-        .route("/agents/:agent_id", get(get_agent))
-        .route("/agents/:agent_id/events", get(get_agent_events))
-        .route("/agents/:agent_id/artifacts", get(get_agent_artifacts))
-        .route("/agents/:agent_id/wait", post(wait_agent))
-        .route("/agents/:agent_id/interrupt", post(interrupt_agent))
-        .route("/agents/:agent_id/messages", post(send_agent_message))
-        .route("/agents/:agent_id/followup", post(followup_agent))
+        .route("/agents/{agent_id}", get(get_agent))
+        .route("/agents/{agent_id}/events", get(get_agent_events))
+        .route("/agents/{agent_id}/artifacts", get(get_agent_artifacts))
+        .route("/agents/{agent_id}/wait", post(wait_agent))
+        .route("/agents/{agent_id}/interrupt", post(interrupt_agent))
+        .route("/agents/{agent_id}/messages", post(send_agent_message))
+        .route("/agents/{agent_id}/followup", post(followup_agent))
         .route(
-            "/agents/:agent_id/approvals/decision",
+            "/agents/{agent_id}/approvals/decision",
             post(decide_agent_approval),
         )
         .route("/edit", post(edit_line))

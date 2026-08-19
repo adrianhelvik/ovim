@@ -177,14 +177,11 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
 
     let vertical_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Length(1), // Query row (full width)
-                Constraint::Length(1), // Separator
-                Constraint::Min(1),    // Body (results + optional preview)
-            ]
-            .as_ref(),
-        )
+        .constraints([
+            Constraint::Length(1), // Query row (full width)
+            Constraint::Length(1), // Separator
+            Constraint::Min(1),    // Body (results + optional preview)
+        ])
         .split(inner_area);
 
     let query_row = vertical_chunks[0];
@@ -198,12 +195,12 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
     let body_chunks = if show_preview {
         Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(body_area)
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(100)].as_ref())
+            .constraints([Constraint::Percentage(100)])
             .split(body_area)
     };
 

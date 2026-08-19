@@ -1451,9 +1451,13 @@ pub fn render_ai_chat_exa_setup_dialog(frame: &mut Frame, editor: &mut Editor) {
 
     let field_y = inner.y + 6;
     let field_width = inner.width.saturating_sub(2).max(1);
-    let masked = "•".repeat(input.chars().count());
+    // One bullet per grapheme, not per char: a multi-scalar grapheme in the
+    // key (combining mark, emoji) must mask as one perceived character so
+    // the bullet count and cursor column match what the user typed.
+    use unicode_segmentation::UnicodeSegmentation;
+    let masked = "•".repeat(input.graphemes(true).count());
     let visible_capacity = field_width.saturating_sub(1) as usize;
-    let cursor_chars = input[..cursor.min(input.len())].chars().count();
+    let cursor_chars = input[..cursor.min(input.len())].graphemes(true).count();
     let scroll = cursor_chars.saturating_sub(visible_capacity);
     let visible = masked
         .chars()

@@ -10,16 +10,16 @@ workspace = true
 [dependencies]
 ovim-core = { path = "../ovim-core" }
 chrono = "0.4"
-ratatui = "0.29"
-ratatui-image = { version = "9.0.0", default-features = false, features = ["crossterm"] }
+ratatui = "0.30"
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 mathjax-svg-rs = "0.4"
 resvg = { version = "0.47", default-features = false }
-crossterm = { version = "0.28", features = ["event-stream"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
 futures = "0.3"
 anyhow = "1.0"
 unicode-width = "0.2"
-axum = "0.7"
+axum = "0.8"
 tokio = { version = "1.35", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

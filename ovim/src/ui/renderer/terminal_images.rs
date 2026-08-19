@@ -184,7 +184,10 @@ impl TerminalImageRenderer {
             let Ok(image) = reader.decode() else {
                 return false;
             };
-            let size = Rect::new(0, 0, area.width, area.height);
+            let size = ratatui::layout::Size {
+                width: area.width,
+                height: area.height,
+            };
             let protocol = match picker.new_protocol(image.clone(), size, Resize::Fit(None)) {
                 Ok(protocol) => protocol,
                 Err(_) => {
