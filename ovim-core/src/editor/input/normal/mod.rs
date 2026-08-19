@@ -14,13 +14,19 @@ mod pending_commands;
 mod text_objects;
 
 use crate::editor::Editor;
-use crate::KeyEvent;
+use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
 /// Handle a key event in normal mode.
 ///
 /// This dispatcher tries each handler in priority order until one handles the key.
 pub fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    // The test panel is passive rather than focused, so Escape must hide it
+    // even when a pending operator or multi-key command consumes the key.
+    if key_event.code == KeyCode::Esc {
+        editor.close_test_panel();
+    }
+
     // 1. Try pending operators (dd, dw, yy, etc.)
     if operators::try_handle(editor, key_event)? {
         return Ok(());

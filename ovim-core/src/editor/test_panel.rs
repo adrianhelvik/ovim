@@ -136,6 +136,11 @@ impl Editor {
         }
     }
 
+    /// Hide the test panel without affecting a test running in the background.
+    pub fn close_test_panel(&mut self) {
+        self.build.test_panel.open = false;
+    }
+
     /// `<Space>to` / `:TestOutput` - open the raw output of the last
     /// test/make run in a scratch buffer.
     pub fn open_test_output_buffer(&mut self) {
@@ -381,6 +386,23 @@ mod tests {
         assert_eq!(state.runs[0].status, TestRunStatus::Cancelled);
         assert_eq!(state.runs[1].status, TestRunStatus::Running);
         assert!(state.open);
+    }
+
+    #[test]
+    fn closing_the_panel_does_not_cancel_the_running_test() {
+        let mut editor = Editor::with_content("");
+        editor
+            .build
+            .test_panel
+            .start_run("nearest", "cargo test example".into(), "ovim".into());
+
+        editor.close_test_panel();
+
+        assert!(!editor.is_test_panel_open());
+        assert_eq!(
+            editor.test_panel().latest().unwrap().status,
+            TestRunStatus::Running
+        );
     }
 
     #[test]

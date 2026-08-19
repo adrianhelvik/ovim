@@ -67,7 +67,8 @@ fn empty_state_lines() -> Vec<Line<'static>> {
         ("<Space>tl", "re-run the last test"),
         ("<Space>tv", "jump to the last-run test"),
         ("<Space>to", "raw output in a buffer"),
-        ("<Space>tt", "close this panel"),
+        ("<Esc>", "close this panel"),
+        ("<Space>tt", "toggle this panel"),
     ];
 
     let mut lines = vec![

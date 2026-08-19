@@ -71,8 +71,9 @@ Running a test opens the **test panel** on the right side of the editor:
 output streams in live, the header shows a spinner while the run is in
 flight, then flips to a pass/fail verdict with a parsed summary
 ("12 passed, 1 failed") and duration. The panel keeps a short history of
-recent runs. Close it with `Space t t`; open it before any run to see the
-keybinding cheat sheet.
+recent runs. Close it with `Escape` or toggle it with `Space t t`; open it
+before any run to see the keybinding cheat sheet. Closing the panel does not
+stop a test that is still running.
 
 Commands run in the background in the file's own project root (nearest
 `Cargo.toml`, `package.json`, `go.mod`, or pytest marker — resolved per
