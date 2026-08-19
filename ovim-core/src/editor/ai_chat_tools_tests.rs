@@ -141,6 +141,220 @@ fn activating_skill_returns_catalog_instructions_without_a_file_target() {
 }
 
 #[test]
+fn unnamed_chat_can_discover_buffer_ids_and_read_buffer_tool() {
+    let mut editor = Editor::default();
+    let visible_id = editor.buffer().id();
+    editor.open_ai_chat(ChatOpts::default()).expect("open chat");
+    let profile = editor
+        .ai_state
+        .config
+        .resolve_profile(&editor.ai_state.active_profile)
+        .expect("active profile")
+        .clone();
+
+    let schemas = editor.build_tool_schemas_for_chat(&profile);
+    for expected in ["workspace_context", "read_buffer"] {
+        assert!(
+            schemas.iter().any(|schema| {
+                schema
+                    .pointer("/function/name")
+                    .and_then(|value| value.as_str())
+                    == Some(expected)
+            }),
+            "{expected} should be available without a project root"
+        );
+    }
+
+    let call = ToolCallInfo {
+        id: "workspace-no-root".into(),
+        name: "workspace_context".into(),
+        arguments: serde_json::json!({"include_git": false, "include_projects": false}),
+    };
+    match editor.dispatch_tool_call_with_approval(&call, None) {
+        ToolDispatchOutcome::Completed(ToolResult::Success(metadata)) => {
+            assert!(metadata.contains("Workspace:"), "{metadata}");
+            assert!(
+                metadata.contains(&format!("buffer {visible_id}")),
+                "{metadata}"
+            );
+        }
+        ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+            panic!("workspace_context failed without a root: {error}")
+        }
+        ToolDispatchOutcome::ApprovalRequired(request) => {
+            panic!(
+                "workspace metadata unexpectedly required approval: {}",
+                request.message
+            )
+        }
+    }
+}
+
+#[test]
+fn read_buffer_requires_approval_before_reading_non_visible_unnamed_content() {
+    let mut editor = Editor::default();
+    let secret = crate::buffer::Buffer::new_from_str("TOKEN=do-not-leak\n");
+    let secret_id = secret.id();
+    editor.push_buffer(secret);
+    editor.open_ai_chat(ChatOpts::default()).expect("open chat");
+
+    let workspace = crate::ai::tools::builtins::execute_builtin(
+        "workspace_context",
+        &serde_json::json!({"include_git": false, "include_projects": false}),
+        &editor.build_tool_execution_context(),
+    );
+    match workspace {
+        ToolResult::Success(metadata) => {
+            assert!(
+                metadata.contains(&format!("buffer {secret_id}")),
+                "{metadata}"
+            );
+            assert!(metadata.contains("approval required to read"), "{metadata}");
+            assert!(
+                !metadata.contains("TOKEN="),
+                "workspace metadata leaked unnamed buffer content: {metadata}"
+            );
+        }
+        ToolResult::Error(error) => panic!("workspace_context failed: {error}"),
+    }
+
+    let call = ToolCallInfo {
+        id: "read-buffer-1".into(),
+        name: "read_buffer".into(),
+        arguments: serde_json::json!({
+            "buffer_id": secret_id,
+            "start_line": 1,
+            "end_line": 20,
+        }),
+    };
+
+    let approval = match editor.dispatch_tool_call_with_approval(&call, None) {
+        ToolDispatchOutcome::ApprovalRequired(request) => request,
+        ToolDispatchOutcome::Completed(ToolResult::Success(content)) => {
+            panic!("unnamed content leaked before approval: {content}")
+        }
+        ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+            panic!("expected approval request, got error: {error}")
+        }
+    };
+    assert!(approval.message.contains("unnamed buffer"));
+    assert!(approval.message.contains(&secret_id.to_string()));
+
+    match editor.dispatch_tool_call_with_approval(&call, Some(&approval.approval_root)) {
+        ToolDispatchOutcome::Completed(ToolResult::Success(content)) => {
+            assert!(content.contains("TOKEN=do-not-leak"));
+        }
+        ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+            panic!("approved read failed: {error}")
+        }
+        ToolDispatchOutcome::ApprovalRequired(request) => {
+            panic!(
+                "approved read requested approval again: {}",
+                request.message
+            )
+        }
+    }
+}
+
+#[test]
+fn read_buffer_reads_visible_unnamed_buffer_without_extra_approval() {
+    let mut editor = Editor::default();
+    *editor.buffer_mut() = crate::buffer::Buffer::new_from_str("visible notes\n");
+    let visible_id = editor.buffer().id();
+    editor.open_ai_chat(ChatOpts::default()).expect("open chat");
+
+    let call = ToolCallInfo {
+        id: "read-buffer-visible".into(),
+        name: "read_buffer".into(),
+        arguments: serde_json::json!({
+            "buffer_id": visible_id,
+            "start_line": 1,
+            "end_line": 20,
+        }),
+    };
+
+    match editor.dispatch_tool_call_with_approval(&call, None) {
+        ToolDispatchOutcome::Completed(ToolResult::Success(content)) => {
+            assert!(content.contains("visible notes"));
+        }
+        ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+            panic!("visible buffer read failed: {error}")
+        }
+        ToolDispatchOutcome::ApprovalRequired(request) => {
+            panic!(
+                "visible buffer unexpectedly required approval: {}",
+                request.message
+            )
+        }
+    }
+
+    let profile_name = editor.ai_state.active_profile.clone();
+    editor
+        .ai_state
+        .config
+        .profiles
+        .get_mut(&profile_name)
+        .expect("active profile")
+        .tools = vec!["read_file".to_string()];
+    match editor.dispatch_tool_call_with_approval(&call, None) {
+        ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+            assert!(
+                error.contains("unavailable for the active profile"),
+                "{error}"
+            );
+        }
+        ToolDispatchOutcome::Completed(ToolResult::Success(content)) => {
+            panic!("profile-excluded tool still read content: {content}")
+        }
+        ToolDispatchOutcome::ApprovalRequired(request) => {
+            panic!(
+                "profile-excluded tool requested approval: {}",
+                request.message
+            )
+        }
+    }
+}
+
+#[test]
+fn read_buffer_rechecks_pathless_status_after_approval() {
+    let mut editor = Editor::default();
+    let hidden = crate::buffer::Buffer::new_from_str("sensitive scratch\n");
+    let hidden_id = hidden.id();
+    editor.push_buffer(hidden);
+    editor.open_ai_chat(ChatOpts::default()).expect("open chat");
+
+    let call = ToolCallInfo {
+        id: "read-buffer-recheck".into(),
+        name: "read_buffer".into(),
+        arguments: serde_json::json!({"buffer_id": hidden_id}),
+    };
+    let approval = match editor.dispatch_tool_call_with_approval(&call, None) {
+        ToolDispatchOutcome::ApprovalRequired(request) => request,
+        _ => panic!("hidden unnamed buffer should require approval"),
+    };
+
+    editor
+        .get_buffer_by_id_mut(hidden_id)
+        .expect("hidden buffer")
+        .set_file_path("/tmp/.env".to_string());
+
+    match editor.dispatch_tool_call_with_approval(&call, Some(&approval.approval_root)) {
+        ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+            assert!(error.contains("use read_file_at_path"), "{error}");
+        }
+        ToolDispatchOutcome::Completed(ToolResult::Success(content)) => {
+            panic!("path-backed content bypassed path safety: {content}")
+        }
+        ToolDispatchOutcome::ApprovalRequired(request) => {
+            panic!(
+                "expected path-safety rejection, got approval: {}",
+                request.message
+            )
+        }
+    }
+}
+
+#[test]
 fn tool_summary_for_edit_range_reports_plus_minus_delta() {
     let mut editor = Editor::default();
     editor

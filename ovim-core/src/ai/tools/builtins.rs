@@ -242,7 +242,11 @@ fn detect_workspace_projects(root: &std::path::Path) -> (Vec<String>, bool) {
 
 #[derive(Debug, Clone)]
 pub struct OpenBufferState {
+    /// Stable editor identity. Unlike an index, this does not change when
+    /// another buffer closes.
+    pub buffer_id: u64,
     pub path: String,
+    pub unnamed: bool,
     pub modified: bool,
     pub revision: usize,
     pub visible: bool,
@@ -266,6 +270,7 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(compact_def());
     registry.register(activate_skill_def());
     registry.register(read_file_def());
+    registry.register(read_buffer_def());
     registry.register(workspace_context_def());
     registry.register(read_file_at_path_def());
     registry.register(view_image_def());
@@ -332,6 +337,10 @@ pub fn execute_builtin(
                 .to_string(),
         ),
         "read_file" => handle_read_file(args, ctx),
+        "read_buffer" => ToolResult::Error(
+            "'read_buffer' must be dispatched by the editor so unnamed content remains behind its approval boundary"
+                .to_string(),
+        ),
         "workspace_context" => handle_workspace_context(args, ctx),
         "read_file_at_path" => handle_read_file_at_path(args, ctx),
         "view_image" => ToolResult::Error(
@@ -549,7 +558,7 @@ fn workspace_context_def() -> ToolDefinition {
         name: "workspace_context".to_string(),
         description: "Return a compact orientation snapshot: workspace root, Git state, active and open buffers, detected project types, selection, and diagnostic counts. Use this first when starting work in an unfamiliar workspace.".to_string(),
         required_scope: RequiredScope {
-            file_scope: FileScope::Project,
+            file_scope: FileScope::File,
             shell: false,
             network: false,
         },
@@ -585,37 +594,48 @@ fn bool_arg(args: &serde_json::Value, name: &str) -> bool {
 }
 
 fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext) -> ToolResult {
-    let Some(root) = ctx.scope_context.project_root.as_ref() else {
-        return ToolResult::Error("No approved workspace root is attached.".to_string());
+    let root = ctx.scope_context.project_root.as_ref();
+    let mut output = if let Some(root) = root {
+        format!(
+            "Workspace: {}\nAttached roots: {}\n",
+            root.display(),
+            root.display()
+        )
+    } else {
+        "Workspace: unavailable (no approved root attached)\n".to_string()
     };
-    let mut output = format!("Workspace: {}\n", root.display());
-    output.push_str(&format!("Attached roots: {}\n", root.display()));
 
     if bool_arg(args, "include_git") {
-        let branch = std::process::Command::new("git")
-            .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
-            .current_dir(root)
-            .output()
-            .ok()
-            .filter(|result| result.status.success())
-            .map(|result| String::from_utf8_lossy(&result.stdout).trim().to_string());
-        let head = branch.or_else(|| {
+        let branch = root.and_then(|root| {
             std::process::Command::new("git")
-                .args(["rev-parse", "--short", "HEAD"])
+                .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
                 .current_dir(root)
                 .output()
                 .ok()
                 .filter(|result| result.status.success())
-                .map(|result| {
-                    format!(
-                        "detached at {}",
-                        String::from_utf8_lossy(&result.stdout).trim()
-                    )
-                })
+                .map(|result| String::from_utf8_lossy(&result.stdout).trim().to_string())
+        });
+        let head = branch.or_else(|| {
+            root.and_then(|root| {
+                std::process::Command::new("git")
+                    .args(["rev-parse", "--short", "HEAD"])
+                    .current_dir(root)
+                    .output()
+                    .ok()
+                    .filter(|result| result.status.success())
+                    .map(|result| {
+                        format!(
+                            "detached at {}",
+                            String::from_utf8_lossy(&result.stdout).trim()
+                        )
+                    })
+            })
         });
         if let Some(head) = head {
             output.push_str(&format!("Branch: {head}\n"));
-            if let Some((modified, untracked, truncated)) = bounded_git_status_counts(root) {
+            if let Some((modified, untracked, truncated)) =
+                root.and_then(|root| bounded_git_status_counts(root))
+            {
                 let suffix = if truncated { " (scan bounded)" } else { "" };
                 output.push_str(&format!(
                     "Git worktree: {modified} modified, {untracked} untracked{suffix}\n"
@@ -630,10 +650,11 @@ fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext
     output.push_str("\nVisible buffer:\n");
     if let Some(visible) = visible {
         output.push_str(&format!(
-            "  {}:{}:{} [{}revision {}]\n",
+            "  {}:{}:{} [buffer {}, {}revision {}]\n",
             visible.path,
             ctx.visible_cursor.0 + 1,
             ctx.visible_cursor.1 + 1,
+            visible.buffer_id,
             if visible.modified { "modified, " } else { "" },
             visible.revision,
         ));
@@ -644,12 +665,13 @@ fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext
         .open_buffer_states
         .iter()
         .find(|buffer| buffer.chat_target);
-    if target.map(|buffer| buffer.path.as_str()) != visible.map(|buffer| buffer.path.as_str()) {
+    if target.map(|buffer| buffer.buffer_id) != visible.map(|buffer| buffer.buffer_id) {
         output.push_str("Chat target:\n");
         if let Some(target) = target {
             output.push_str(&format!(
-                "  {} [{}revision {}]\n",
+                "  {} [buffer {}, {}revision {}]\n",
                 target.path,
+                target.buffer_id,
                 if target.modified { "modified, " } else { "" },
                 target.revision,
             ));
@@ -680,10 +702,16 @@ fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext
     output.push_str("\nOpen buffers:\n");
     for buffer in ctx.open_buffer_states.iter().take(20) {
         output.push_str(&format!(
-            "  {} [{}revision {}]\n",
+            "  {} [buffer {}, {}revision {}{}]\n",
             buffer.path,
+            buffer.buffer_id,
             if buffer.modified { "modified, " } else { "" },
             buffer.revision,
+            if buffer.unnamed && !buffer.visible && !buffer.chat_target {
+                ", approval required to read"
+            } else {
+                ""
+            },
         ));
     }
     if ctx.open_buffer_states.len() > 20 {
@@ -702,7 +730,7 @@ fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext
         if unsaved == 1 { "" } else { "s" }
     ));
 
-    if bool_arg(args, "include_projects") {
+    if let (true, Some(root)) = (bool_arg(args, "include_projects"), root) {
         let (projects, truncated) = detect_workspace_projects(root);
         output.push_str("\nDetected projects:\n");
         if projects.is_empty() {
@@ -777,6 +805,41 @@ fn read_file_def() -> ToolDefinition {
         side_effect: SideEffect::Read,
         custom_input_schema: None,
         parameters: vec![
+            ToolParam {
+                name: "start_line".to_string(),
+                param_type: ParamType::LineNumber,
+                required: false,
+                description: "First line to read (1-indexed, inclusive).".to_string(),
+            },
+            ToolParam {
+                name: "end_line".to_string(),
+                param_type: ParamType::LineNumber,
+                required: false,
+                description: "Last line to read (1-indexed, inclusive).".to_string(),
+            },
+        ],
+    }
+}
+
+fn read_buffer_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "read_buffer".to_string(),
+        description: "Read an open unnamed buffer by its stable buffer ID from workspace_context. Reading a buffer that is neither visible nor the chat target requires explicit user approval because Ovim cannot apply path-based sensitive-file rules."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::File,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        custom_input_schema: None,
+        parameters: vec![
+            ToolParam {
+                name: "buffer_id".to_string(),
+                param_type: ParamType::Integer,
+                required: true,
+                description: "Stable buffer ID returned by workspace_context.".to_string(),
+            },
             ToolParam {
                 name: "start_line".to_string(),
                 param_type: ParamType::LineNumber,
@@ -2015,7 +2078,9 @@ mod tests {
             open_buffers: std::collections::HashMap::new(),
             open_buffer_revisions: std::collections::HashMap::new(),
             open_buffer_states: vec![OpenBufferState {
+                buffer_id: 1,
                 path: "test.rs".to_string(),
+                unnamed: false,
                 modified: false,
                 revision: 7,
                 visible: true,
@@ -2078,6 +2143,29 @@ mod tests {
             }
             ToolResult::Error(error) => panic!("expected success, got error: {error}"),
         }
+    }
+
+    #[test]
+    fn workspace_context_reports_editor_metadata_without_a_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx_with_project("notes\n", dir.path().to_path_buf());
+        ctx.scope_context.project_root = None;
+
+        let result = execute_builtin(
+            "workspace_context",
+            &serde_json::json!({"include_git": false, "include_projects": false}),
+            &ctx,
+        );
+        match result {
+            ToolResult::Success(output) => {
+                assert!(output.contains("Workspace: unavailable"), "{output}");
+                assert!(output.contains("buffer 1"), "{output}");
+            }
+            ToolResult::Error(error) => panic!("expected metadata without root, got: {error}"),
+        }
+
+        let definition = workspace_context_def();
+        assert_eq!(definition.required_scope.file_scope, FileScope::File);
     }
 
     #[test]
@@ -2384,7 +2472,9 @@ mod tests {
             open_buffers: std::collections::HashMap::new(),
             open_buffer_revisions: std::collections::HashMap::new(),
             open_buffer_states: vec![OpenBufferState {
+                buffer_id: 1,
                 path: "test.rs".to_string(),
+                unnamed: false,
                 modified: false,
                 revision: 7,
                 visible: true,

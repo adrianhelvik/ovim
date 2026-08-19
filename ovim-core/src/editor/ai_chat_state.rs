@@ -761,6 +761,9 @@ pub struct AiChatState {
     /// Exact temp files created during this live chat, shared by every turn
     /// and agent participating in the session.
     pub(super) created_temp_files: super::ai_session_temp::SessionTempFiles,
+    /// Pathless buffers explicitly approved for this chat. Stable buffer IDs
+    /// avoid granting access to a different buffer after index shifts.
+    pub approved_unnamed_buffers: HashSet<BufferId>,
     /// Compact tool event summaries keyed by tool call id.
     pub tool_event_summaries: HashMap<String, ToolEventSummary>,
     /// Images loaded by a tool and waiting to be attached to its tool result.
@@ -951,6 +954,7 @@ impl AiChatState {
             pending_no_repo_folder_approval: None,
             approved_external_roots: Vec::new(),
             created_temp_files: Default::default(),
+            approved_unnamed_buffers: HashSet::new(),
             tool_event_summaries: HashMap::new(),
             tool_result_images: HashMap::new(),
             file_snapshots: HashMap::new(),

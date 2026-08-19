@@ -256,7 +256,13 @@ impl Editor {
         let mut open_buffer_states = Vec::with_capacity(self.buffers.len());
         for (index, b) in self.buffers.iter().enumerate() {
             open_buffer_states.push(OpenBufferState {
-                path: b.file_path().unwrap_or("[No Name]").to_string(),
+                buffer_id: b.id(),
+                path: b
+                    .file_path()
+                    .or_else(|| b.display_name())
+                    .unwrap_or("[No Name]")
+                    .to_string(),
+                unnamed: b.file_path().is_none(),
                 modified: b.is_modified(),
                 revision: b.version(),
                 visible: index == visible_index,
@@ -521,6 +527,135 @@ impl Editor {
         })
     }
 
+    fn remember_tool_approval(&mut self, tool_call: &ToolCallInfo, approval_root: &Path) {
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return;
+        };
+        if tool_call.name == "read_buffer" {
+            if let Some(buffer_id) = tool_call
+                .arguments
+                .get("buffer_id")
+                .and_then(|value| value.as_u64())
+            {
+                chat.approved_unnamed_buffers.insert(buffer_id);
+            }
+            return;
+        }
+
+        let root = normalize_path(approval_root);
+        if !chat
+            .approved_external_roots
+            .iter()
+            .any(|path| normalize_path(path) == root)
+        {
+            chat.approved_external_roots.push(root);
+        }
+    }
+
+    fn execute_read_buffer_tool(
+        &mut self,
+        tc: &ToolCallInfo,
+        approved_once_token: Option<&PathBuf>,
+    ) -> ToolDispatchOutcome {
+        let Some(buffer_id) = tc
+            .arguments
+            .get("buffer_id")
+            .and_then(|value| value.as_u64())
+            .filter(|buffer_id| *buffer_id > 0)
+        else {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "'buffer_id' parameter is required and must be a positive integer".to_string(),
+            ));
+        };
+        let Some(buffer) = self.get_buffer_by_id(buffer_id) else {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(format!(
+                "buffer {buffer_id} is no longer open; call workspace_context for current buffer IDs"
+            )));
+        };
+        if buffer.file_path().is_some() {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(format!(
+                "buffer {buffer_id} has a file path; use read_file_at_path so path safety rules apply"
+            )));
+        }
+
+        let visible = self.buffer().id() == buffer_id;
+        let chat_target = self
+            .ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.active_buffer_id == buffer_id);
+        let session_approved = self
+            .ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.approved_unnamed_buffers.contains(&buffer_id));
+        let approval_token = PathBuf::from(format!("unnamed-buffer:{buffer_id}"));
+        let approved_once = approved_once_token == Some(&approval_token);
+
+        if !visible
+            && !chat_target
+            && !session_approved
+            && !approved_once
+            && !self.ai_chat_yolo_mode()
+        {
+            let message = format!(
+                "Allow this chat to read unnamed buffer {buffer_id}? Ovim cannot determine whether a pathless buffer contains sensitive information. Press Ctrl-Y to allow once, Ctrl-A to allow for this chat session, Ctrl-N to deny."
+            );
+            return ToolDispatchOutcome::ApprovalRequired(ToolApprovalRequest {
+                requested_path: approval_token.clone(),
+                approval_root: approval_token,
+                reason: "unnamed buffer content requires explicit approval".to_string(),
+                message,
+            });
+        }
+
+        // Resolve content only after the approval check. This keeps unapproved
+        // pathless text out of the generic tool execution snapshot.
+        let buffer = self
+            .get_buffer_by_id(buffer_id)
+            .expect("buffer existence checked before approval");
+        let content = buffer.rope().to_string();
+        let revision = buffer.version();
+        let label = buffer.display_name().unwrap_or("[No Name]");
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.is_empty() {
+            return ToolDispatchOutcome::Completed(ToolResult::Success(format!(
+                "[empty buffer] Buffer {buffer_id} has no content.\nBuffer revision: {revision}"
+            )));
+        }
+
+        let total = lines.len();
+        let start = tc
+            .arguments
+            .get("start_line")
+            .and_then(|value| value.as_u64())
+            .map(|line| line.saturating_sub(1) as usize)
+            .unwrap_or(0)
+            .min(total);
+        let end = tc
+            .arguments
+            .get("end_line")
+            .and_then(|value| value.as_u64())
+            .map(|line| line as usize)
+            .unwrap_or(total)
+            .min(total);
+        if start >= end {
+            return ToolDispatchOutcome::Completed(ToolResult::Success(
+                "[empty range]".to_string(),
+            ));
+        }
+
+        let mut output = format!(
+            "Buffer: {label} (id {buffer_id}, lines {}-{} of {total})\nBuffer revision: {revision}\n",
+            start + 1,
+            end,
+        );
+        for (offset, line) in lines[start..end].iter().enumerate() {
+            output.push_str(&format!("{:>4} | {}\n", start + offset + 1, line));
+        }
+        ToolDispatchOutcome::Completed(ToolResult::Success(output))
+    }
+
     /// Dispatch a single tool call by side effect. Read tools get a snapshot,
     /// mutation tools get `&mut self`.
     ///
@@ -550,6 +685,27 @@ impl Editor {
         }
         if tc.name == super::ai_compaction::COMPACT_TOOL {
             return ToolDispatchOutcome::Completed(self.execute_compact_tool(&tc.arguments));
+        }
+        if tc.name == "read_buffer" {
+            let caps = self.build_chat_capabilities();
+            let authorized = self
+                .ai_state
+                .config
+                .profiles
+                .get(&self.ai_state.active_profile)
+                .is_some_and(|profile| {
+                    self.ai_state
+                        .tool_registry
+                        .tools_for_profile(profile, &caps)
+                        .iter()
+                        .any(|tool| tool.name == "read_buffer")
+                });
+            if !authorized {
+                return ToolDispatchOutcome::Completed(ToolResult::Error(
+                    "tool 'read_buffer' is unavailable for the active profile or scope".to_string(),
+                ));
+            }
+            return self.execute_read_buffer_tool(tc, approved_once_root);
         }
         if tc.name == super::ai_comprehension::RECORD_COMPREHENSION_CHECKPOINT_TOOL {
             return ToolDispatchOutcome::Completed(
@@ -844,6 +1000,9 @@ impl Editor {
             };
             if allow {
                 let tool_name = pending.tool_call.name.clone();
+                if remember {
+                    self.remember_tool_approval(&pending.tool_call, &pending.approval_root);
+                }
                 self.execute_dynamic_tool_after_policy(
                     turn,
                     tool,
@@ -903,16 +1062,7 @@ impl Editor {
         }
 
         if remember {
-            if let Some(chat) = self.ai_state.chat.as_mut() {
-                let root = normalize_path(&pending.approval_root);
-                if !chat
-                    .approved_external_roots
-                    .iter()
-                    .any(|p| normalize_path(p) == root)
-                {
-                    chat.approved_external_roots.push(root);
-                }
-            }
+            self.remember_tool_approval(&pending.tool_call, &pending.approval_root);
         }
 
         if pending.tool_call.name == "bash" {
