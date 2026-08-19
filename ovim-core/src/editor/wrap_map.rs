@@ -307,8 +307,9 @@ impl WrapMap {
         let mut flat_col = 0usize;
         let mut row_col = 0usize;
 
-        for ch in line_text.chars() {
-            if ch == '\t' {
+        use unicode_segmentation::UnicodeSegmentation;
+        for grapheme in line_text.graphemes(true) {
+            if grapheme == "\t" {
                 let ch_width = tab_width - (flat_col % tab_width);
                 for _ in 0..ch_width {
                     if row_col >= max_width {
@@ -319,7 +320,7 @@ impl WrapMap {
                     row_col += 1;
                 }
             } else {
-                let ch_width = crate::display::char_display_width(ch);
+                let ch_width = crate::display::grapheme_display_width(grapheme);
                 if row_col + ch_width > max_width {
                     starts.push(flat_col);
                     row_col = 0;

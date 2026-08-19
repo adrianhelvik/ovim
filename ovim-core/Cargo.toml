@@ -14,7 +14,7 @@ bitflags = "2"
 # unicode/
 unicode-segmentation = "1.12"
 # display.rs
-unicode-width = "0.1"
+unicode-width = "0.2"
 # modeline.rs - no extra deps (only std)
 # log.rs
 lazy_static = "1.4"

@@ -5,7 +5,8 @@
 //! mapping (`WrapMap`) and the visual rendering (`split_line_into_rows`)
 //! call into these functions, guaranteeing consistent behaviour.
 
-use crate::display::char_display_width;
+use crate::display::grapheme_display_width;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Computes the character indices where a line should wrap.
 ///
@@ -74,8 +75,14 @@ pub fn compute_wrap_points_with_decorations(
     let mut dec_idx = 0;
     let mut last_char_idx = 0usize;
 
-    for (char_idx, ch) in line.chars().enumerate() {
-        last_char_idx = char_idx + 1;
+    // Walk graphemes, not chars: a multi-scalar emoji (VS16 or ZWJ sequence)
+    // renders as one 2-column glyph, so it must wrap atomically and count
+    // its rendered width, not the sum of its scalars. `char_idx` tracks the
+    // grapheme's starting char index — wrap points and decoration anchors
+    // stay in char-index space.
+    let mut char_idx = 0usize;
+    for grapheme in line.graphemes(true) {
+        last_char_idx = char_idx + grapheme.chars().count();
         // Add decoration width at this character position.  Decoration text
         // is inserted before the character by the renderer, so its width is
         // accumulated before the character's own width check.
@@ -102,7 +109,7 @@ pub fn compute_wrap_points_with_decorations(
             dec_idx += 1;
         }
 
-        if ch == '\t' {
+        if grapheme == "\t" {
             // Tabs expand to spaces before row-splitting, so the renderer can
             // break a row in the middle of a tab's spaces. Consume the tab
             // column-by-column, wrapping lazily (a row that ends exactly full
@@ -118,7 +125,7 @@ pub fn compute_wrap_points_with_decorations(
                 content_col += 1;
             }
         } else {
-            let ch_width = char_display_width(ch);
+            let ch_width = grapheme_display_width(grapheme);
             if current_width + ch_width > max_width {
                 wrap_points.push(char_idx);
                 current_width = ch_width;
@@ -127,6 +134,7 @@ pub fn compute_wrap_points_with_decorations(
             }
             content_col += ch_width;
         }
+        char_idx += grapheme.chars().count();
     }
 
     // Post-loop drain: any decoration anchored at or beyond the end of the
@@ -195,7 +203,11 @@ pub fn visual_position_for_flat_col(
     let mut sub_line: usize = 0;
     let mut dec_idx: usize = 0;
 
-    for (char_idx, ch) in line_text.chars().enumerate() {
+    // Grapheme walk with a char-index counter, mirroring
+    // compute_wrap_points_with_decorations (emoji sequences are atomic,
+    // 2-column cells).
+    let mut char_idx = 0usize;
+    for grapheme in line_text.graphemes(true) {
         // Decoration widths at this char position, added column-by-column
         // to match compute_wrap_points_with_decorations.
         while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 <= char_idx {
@@ -214,7 +226,7 @@ pub fn visual_position_for_flat_col(
             dec_idx += 1;
         }
 
-        if ch == '\t' {
+        if grapheme == "\t" {
             // Tabs expand before row-splitting, so a row break can land
             // mid-tab. Consume the tab column-by-column, mirroring
             // compute_wrap_points_with_decorations.
@@ -232,7 +244,7 @@ pub fn visual_position_for_flat_col(
                 }
             }
         } else {
-            let ch_width = char_display_width(ch);
+            let ch_width = grapheme_display_width(grapheme);
 
             // Wide char that doesn't fit on current row → push to next row.
             // Padding is NOT added to flat_col (it's a rendering artifact,
@@ -255,6 +267,7 @@ pub fn visual_position_for_flat_col(
                 row_col = 0;
             }
         }
+        char_idx += grapheme.chars().count();
     }
 
     // Post-loop drain: any decoration anchored at or beyond the end of
@@ -357,7 +370,7 @@ mod visual_position_tests {
                             let w = if ch == '\t' {
                                 tab_width.max(1) - (content % tab_width.max(1))
                             } else {
-                                char_display_width(ch)
+                                crate::display::char_display_width(ch)
                             };
                             content += w;
                             flat += w;

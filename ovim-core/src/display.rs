@@ -19,6 +19,22 @@ pub fn char_display_width(ch: char) -> usize {
     }
 }
 
+/// Returns the display width of a single grapheme cluster, accounting for
+/// control chars (2 columns, caret notation) and emoji sequences.
+///
+/// Multi-scalar graphemes (VS16 emoji like ❤️, ZWJ sequences like 👨‍👩‍👧,
+/// flags, skin tones) must be measured as a whole string: summing per-char
+/// widths overcounts ZWJ sequences and undercounts VS16 sequences. This
+/// matches how ratatui (unicode-width's str impl) measures them when
+/// rendering, so cursor math and rendered cells agree.
+pub fn grapheme_display_width(grapheme: &str) -> usize {
+    let mut chars = grapheme.chars();
+    match (chars.next(), chars.next()) {
+        (Some(ch), None) => char_display_width(ch),
+        _ => UnicodeWidthStr::width(grapheme),
+    }
+}
+
 /// Returns the caret notation for a control character, or None if not a control char.
 /// ESC → ['^','['], NUL → ['^','@'], DEL → ['^','?'], etc.
 pub fn control_char_caret(ch: char) -> Option<[char; 2]> {
@@ -33,50 +49,59 @@ pub fn control_char_caret(ch: char) -> Option<[char; 2]> {
     }
 }
 
-/// Converts a character column index to a display column, accounting for tabs and wide characters.
+/// Converts a character column index to a display column, accounting for tabs,
+/// wide characters, and multi-scalar emoji graphemes.
+///
+/// Walks graphemes (not chars) so VS16/ZWJ emoji contribute their rendered
+/// width. A `char_col` that lands mid-grapheme resolves to the grapheme's
+/// starting display column.
 pub fn char_col_to_display_col(text: &str, char_col: usize, tab_width: usize) -> usize {
     let mut display_col = 0;
+    let mut chars_seen = 0;
 
-    for (current_char_idx, ch) in text.chars().enumerate() {
-        if current_char_idx >= char_col {
+    for grapheme in text.graphemes(true) {
+        if chars_seen >= char_col {
             break;
         }
 
-        if ch == '\t' {
-            let spaces_to_add = tab_width - (display_col % tab_width);
-            display_col += spaces_to_add;
+        if grapheme == "\t" {
+            display_col += tab_width - (display_col % tab_width);
         } else {
-            display_col += char_display_width(ch);
+            display_col += grapheme_display_width(grapheme);
         }
+        chars_seen += grapheme.chars().count();
     }
 
     display_col
 }
 
-/// Converts a display column to a character column index, accounting for tabs and wide characters.
-/// If the display column falls in the middle of a wide character, returns the char index of that character.
+/// Converts a display column to a character column index, accounting for tabs,
+/// wide characters, and multi-scalar emoji graphemes.
+/// If the display column falls in the middle of a wide grapheme, returns the
+/// char index of that grapheme's first char.
 pub fn display_col_to_char_col(text: &str, display_col: usize, tab_width: usize) -> usize {
     let mut current_display = 0;
+    let mut chars_seen = 0;
 
-    for (char_idx, ch) in text.chars().enumerate() {
+    for grapheme in text.graphemes(true) {
         if current_display >= display_col {
-            return char_idx;
+            return chars_seen;
         }
 
-        if ch == '\t' {
-            let spaces = tab_width - (current_display % tab_width);
-            current_display += spaces;
+        if grapheme == "\t" {
+            current_display += tab_width - (current_display % tab_width);
         } else {
-            current_display += char_display_width(ch);
+            current_display += grapheme_display_width(grapheme);
         }
 
         if current_display > display_col {
-            return char_idx;
+            return chars_seen;
         }
+        chars_seen += grapheme.chars().count();
     }
 
     // display_col is beyond end of text — return char count
-    text.chars().count()
+    chars_seen
 }
 
 /// Calculates the display width of a string, accounting for tabs and wide characters.
@@ -85,12 +110,8 @@ pub fn display_width(text: &str, tab_width: usize) -> usize {
     for grapheme in text.graphemes(true) {
         if grapheme == "\t" {
             width += tab_width - (width % tab_width);
-        } else if let Some(ch) = grapheme.chars().next().filter(|_| grapheme.len() == 1) {
-            width += char_display_width(ch);
         } else {
-            // Emoji joined with ZWJ, combining marks, and flags occupy the
-            // width of one rendered grapheme, not the sum of their scalars.
-            width += UnicodeWidthStr::width(grapheme);
+            width += grapheme_display_width(grapheme);
         }
     }
     width
@@ -252,6 +273,39 @@ mod tests {
         assert_eq!(display_col_to_char_col(text, 1, 4), 1);
         assert_eq!(display_col_to_char_col(text, 2, 4), 1); // mid-control → char 1
         assert_eq!(display_col_to_char_col(text, 3, 4), 2);
+    }
+
+    #[test]
+    fn emoji_sequences_measure_rendered_width() {
+        // Single-scalar emoji: 2 columns.
+        assert_eq!(grapheme_display_width("😀"), 2);
+        // VS16 emoji presentation (❤ + U+FE0F): renders 2 columns even
+        // though the base char alone is narrow.
+        assert_eq!(grapheme_display_width("❤\u{fe0f}"), 2);
+        // ZWJ sequence: one 2-column glyph, not the sum of its scalars.
+        assert_eq!(grapheme_display_width("👨\u{200d}👩\u{200d}👧"), 2);
+    }
+
+    #[test]
+    fn char_col_conversion_handles_emoji_sequences() {
+        // "x❤️y": chars are x(0) ❤(1) FE0F(2) y(3). The heart renders as
+        // one 2-column glyph, so 'y' starts at display col 3.
+        let text = "x❤\u{fe0f}y";
+        assert_eq!(char_col_to_display_col(text, 0, 4), 0);
+        assert_eq!(char_col_to_display_col(text, 1, 4), 1);
+        assert_eq!(char_col_to_display_col(text, 3, 4), 3);
+        assert_eq!(display_col_to_char_col(text, 3, 4), 3);
+        // mid-heart display col resolves to the heart's first char
+        assert_eq!(display_col_to_char_col(text, 2, 4), 1);
+
+        // "x👨‍👩‍👧y": ZWJ family is chars 1..=5, one 2-column glyph;
+        // 'y' (char 6) starts at display col 3.
+        let text = "x👨\u{200d}👩\u{200d}👧y";
+        assert_eq!(char_col_to_display_col(text, 6, 4), 3);
+        assert_eq!(display_col_to_char_col(text, 3, 4), 6);
+
+        assert_eq!(display_width("x❤\u{fe0f}y", 4), 4);
+        assert_eq!(display_width("x👨\u{200d}👩\u{200d}👧y", 4), 4);
     }
 
     #[test]

@@ -8,8 +8,9 @@ use ratatui::{
     Frame,
 };
 
-use crate::display::char_display_width;
+use crate::display::{char_display_width, grapheme_display_width};
 use crate::ui::renderer::markdown_conceal::scan_markdown_conceal;
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::helpers::{compose_conceal_and_tabs, expand_tabs_with_mapping, remap_char_col};
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
@@ -40,31 +41,40 @@ pub struct WindowRenderContext {
 }
 
 /// Converts an expanded char index to a display column.
+///
+/// Grapheme-based: multi-scalar emoji (VS16/ZWJ sequences) count their
+/// rendered width, matching ratatui's cell layout. A `char_idx` mid-grapheme
+/// resolves to the grapheme's starting column.
 fn expanded_char_to_display_col(text: &str, char_idx: usize) -> usize {
     let mut display_col = 0;
-    for (i, ch) in text.chars().enumerate() {
-        if i >= char_idx {
+    let mut chars_seen = 0;
+    for grapheme in text.graphemes(true) {
+        if chars_seen >= char_idx {
             break;
         }
-        display_col += char_display_width(ch);
+        display_col += grapheme_display_width(grapheme);
+        chars_seen += grapheme.chars().count();
     }
     display_col
 }
 
 /// Converts a display column to a char index within a string.
-/// If the display column falls in the middle of a wide char, returns that char's index.
+/// If the display column falls in the middle of a wide grapheme, returns the
+/// char index of that grapheme's first char.
 fn display_col_to_char_idx(text: &str, target_display_col: usize) -> usize {
     let mut display_col = 0;
-    for (char_idx, ch) in text.chars().enumerate() {
+    let mut chars_seen = 0;
+    for grapheme in text.graphemes(true) {
         if display_col >= target_display_col {
-            return char_idx;
+            return chars_seen;
         }
-        display_col += char_display_width(ch);
+        display_col += grapheme_display_width(grapheme);
         if display_col > target_display_col {
-            return char_idx;
+            return chars_seen;
         }
+        chars_seen += grapheme.chars().count();
     }
-    text.chars().count()
+    chars_seen
 }
 
 /// Converts a UTF-16 offset to a char index within a line of text.
@@ -90,7 +100,7 @@ fn slice_horizontal_viewport(line: &str, h_offset: usize, width: usize) -> (Stri
     }
 
     // Calculate total display width of the line
-    let total_display_width: usize = line.chars().map(char_display_width).sum();
+    let total_display_width: usize = line.graphemes(true).map(grapheme_display_width).sum();
 
     // Line fits entirely in viewport
     if total_display_width <= width {
@@ -111,33 +121,33 @@ fn slice_horizontal_viewport(line: &str, h_offset: usize, width: usize) -> (Stri
         result.push('<');
     }
 
-    // Walk chars to find the start position (skip h_offset display columns)
+    // Walk graphemes to find the start position (skip h_offset display columns)
     let mut display_col = 0;
-    let mut chars = line.chars().peekable();
+    let mut graphemes = line.graphemes(true).peekable();
 
-    // Skip characters until we reach h_offset
-    while let Some(&ch) = chars.peek() {
-        let ch_width = char_display_width(ch);
-        if display_col + ch_width > h_offset {
+    // Skip graphemes until we reach h_offset
+    while let Some(&grapheme) = graphemes.peek() {
+        let g_width = grapheme_display_width(grapheme);
+        if display_col + g_width > h_offset {
             break;
         }
-        display_col += ch_width;
-        chars.next();
+        display_col += g_width;
+        graphemes.next();
     }
 
-    // Collect characters that fit within content_width display columns
+    // Collect graphemes that fit within content_width display columns
     let mut content_display_width = 0;
-    while let Some(&ch) = chars.peek() {
-        let ch_width = char_display_width(ch);
-        if content_display_width + ch_width > content_width {
+    while let Some(&grapheme) = graphemes.peek() {
+        let g_width = grapheme_display_width(grapheme);
+        if content_display_width + g_width > content_width {
             break;
         }
-        result.push(ch);
-        content_display_width += ch_width;
-        chars.next();
+        result.push_str(grapheme);
+        content_display_width += g_width;
+        graphemes.next();
     }
 
-    // Pad if a wide char didn't fit exactly
+    // Pad if a wide grapheme didn't fit exactly
     while content_display_width < content_width {
         result.push(' ');
         content_display_width += 1;
@@ -189,11 +199,11 @@ fn shift_highlights_for_viewport(
     byte_to_display.clear();
     {
         let mut display_col = 0;
-        for (byte_idx, ch) in expanded_text.char_indices() {
+        for (byte_idx, grapheme) in expanded_text.grapheme_indices(true) {
             while byte_to_display.len() <= byte_idx {
                 byte_to_display.push(display_col);
             }
-            display_col += char_display_width(ch);
+            display_col += grapheme_display_width(grapheme);
         }
         while byte_to_display.len() <= expanded_text.len() {
             byte_to_display.push(display_col);
@@ -204,9 +214,9 @@ fn shift_highlights_for_viewport(
     let sliced_display_to_byte = &mut buffers.display_to_byte;
     sliced_display_to_byte.clear();
     {
-        for (byte_idx, ch) in sliced_text.char_indices() {
-            let ch_width = char_display_width(ch);
-            for _ in 0..ch_width {
+        for (byte_idx, grapheme) in sliced_text.grapheme_indices(true) {
+            let g_width = grapheme_display_width(grapheme);
+            for _ in 0..g_width {
                 sliced_display_to_byte.push(byte_idx);
             }
         }
@@ -770,7 +780,11 @@ fn truncate_line_to_width(line: &mut Line<'static>, max_width: usize) {
     // First pass: find the truncation point.
     let mut split_at: Option<(usize, usize)> = None; // (span_index, budget_cols)
     for (i, span) in line.spans.iter().enumerate() {
-        let span_width: usize = span.content.chars().map(char_display_width).sum();
+        let span_width: usize = span
+            .content
+            .graphemes(true)
+            .map(grapheme_display_width)
+            .sum();
         if total + span_width <= max_width {
             total += span_width;
             keep_spans += 1;
@@ -785,12 +799,12 @@ fn truncate_line_to_width(line: &mut Line<'static>, max_width: usize) {
         let style = line.spans[span_idx].style;
         let mut kept = String::new();
         let mut used = 0;
-        for ch in line.spans[span_idx].content.chars() {
-            let w = char_display_width(ch);
+        for grapheme in line.spans[span_idx].content.graphemes(true) {
+            let w = grapheme_display_width(grapheme);
             if used + w > budget {
                 break;
             }
-            kept.push(ch);
+            kept.push_str(grapheme);
             used += w;
         }
         line.spans.truncate(keep_spans);
@@ -927,7 +941,12 @@ fn fit_with_ellipsis(text: &str, max_chars: usize) -> String {
 fn line_display_width(line: &Line<'_>) -> usize {
     line.spans
         .iter()
-        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
+        .map(|s| {
+            s.content
+                .graphemes(true)
+                .map(grapheme_display_width)
+                .sum::<usize>()
+        })
         .sum()
 }
 
@@ -948,7 +967,12 @@ fn content_display_width(line: &Line<'_>) -> usize {
     }
     spans
         .iter()
-        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
+        .map(|s| {
+            s.content
+                .graphemes(true)
+                .map(grapheme_display_width)
+                .sum::<usize>()
+        })
         .sum()
 }
 
@@ -1151,7 +1175,12 @@ fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>>
     let total_width: usize = line
         .spans
         .iter()
-        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
+        .map(|s| {
+            s.content
+                .graphemes(true)
+                .map(grapheme_display_width)
+                .sum::<usize>()
+        })
         .sum();
 
     if total_width <= width {
@@ -1173,8 +1202,10 @@ fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>>
         let style = span.style;
         let mut chunk = String::new();
 
-        for ch in span.content.chars() {
-            let ch_width = char_display_width(ch);
+        // Split at grapheme boundaries: a VS16/ZWJ emoji is one 2-column
+        // cell and must move to the next row whole, never mid-sequence.
+        for grapheme in span.content.graphemes(true) {
+            let ch_width = grapheme_display_width(grapheme);
 
             if current_width + ch_width > width {
                 // Flush accumulated chunk for this span
@@ -1192,7 +1223,7 @@ fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>>
                 current_width = 0;
             }
 
-            chunk.push(ch);
+            chunk.push_str(grapheme);
             current_width += ch_width;
 
             if current_width >= width {
@@ -2062,8 +2093,8 @@ pub fn render_buffer(
                         let mut row_text = String::new();
                         let mut row_width = 0;
 
-                        for ch in line_text.chars() {
-                            let ch_width = char_display_width(ch);
+                        for grapheme in line_text.graphemes(true) {
+                            let ch_width = grapheme_display_width(grapheme);
 
                             if row_width + ch_width > text_width && !row_text.is_empty() {
                                 // Flush current row
@@ -2091,7 +2122,7 @@ pub fn render_buffer(
                                 row_width = 0;
                             }
 
-                            row_text.push(ch);
+                            row_text.push_str(grapheme);
                             row_width += ch_width;
                         }
 

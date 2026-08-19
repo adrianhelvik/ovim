@@ -2880,7 +2880,7 @@ dependencies = [
  "tower",
  "tree-sitter",
  "unicode-segmentation",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.0",
  "which 6.0.3",
  "zip",
 ]
@@ -2960,7 +2960,7 @@ dependencies = [
  "tree-sitter-yaml",
  "tree-sitter-zig",
  "unicode-segmentation",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.0",
  "url",
  "which 6.0.3",
 ]

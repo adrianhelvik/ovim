@@ -1453,6 +1453,88 @@ mod cursor_screen_position_tests {
     }
 
     #[test]
+    fn cursor_column_matches_rendered_glyph_for_emoji() {
+        // The hardware cursor must land on the same terminal cell where the
+        // glyph under the cursor was actually rendered. Emoji widths must
+        // agree between the renderer (ratatui / unicode-width 0.2, grapheme
+        // aware) and ovim's own display-column math: VS16 sequences (❤️) and
+        // ZWJ sequences (👨‍👩‍👧) render as 2 cells, single-scalar emoji (😀)
+        // as 2 cells.
+        for content in ["x😀y", "x❤\u{fe0f}y", "x👨\u{200d}👩\u{200d}👧y"] {
+            let mut editor = Editor::with_content(content);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(0, ovim_core::unicode::GraphemeCol(2));
+
+            let backend = TestBackend::new(40, 12);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut line_cache = LineRenderCache::new();
+            terminal
+                .draw(|f| Renderer::render_to_frame(f, &mut editor, &mut line_cache))
+                .unwrap();
+            let position = terminal.get_cursor_position().unwrap();
+            let buf = terminal.backend().buffer();
+
+            let mut rendered_y_x = None;
+            for x in 0..buf.area.width {
+                if buf[(x, position.y)].symbol() == "y" {
+                    rendered_y_x = Some(x);
+                    break;
+                }
+            }
+            let rendered_y_x =
+                rendered_y_x.unwrap_or_else(|| panic!("'y' not rendered for {content:?}"));
+            assert_eq!(
+                position.x, rendered_y_x,
+                "cursor x for {content:?} must match the rendered column of 'y'"
+            );
+        }
+    }
+
+    #[test]
+    fn wrapped_cursor_matches_rendered_glyph_after_emoji_run() {
+        const WIDTH: u16 = 30;
+        const HEIGHT: u16 = 8;
+        // A run of VS16 hearts long enough to soft-wrap, then a 'z' marker.
+        // The cursor on 'z' must land exactly on the rendered 'z' cell:
+        // wrap points, row splitting, and cursor math must all agree on
+        // hearts being 2 columns wide.
+        let hearts = 20;
+        let content = format!("{}z", "❤\u{fe0f}".repeat(hearts));
+        let (mut editor, _, _, _) = wrapped_editor_layout(&content, WIDTH, HEIGHT);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(0, ovim_core::unicode::GraphemeCol(hearts));
+
+        let backend = TestBackend::new(WIDTH, HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut line_cache = LineRenderCache::new();
+        terminal
+            .draw(|f| Renderer::render_to_frame(f, &mut editor, &mut line_cache))
+            .unwrap();
+        let position = terminal.get_cursor_position().unwrap();
+        let buf = terminal.backend().buffer();
+
+        let mut rendered_z = None;
+        'outer: for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].symbol() == "z" {
+                    rendered_z = Some((x, y));
+                    break 'outer;
+                }
+            }
+        }
+        let rendered_z = rendered_z.expect("'z' must be rendered");
+        assert_eq!(
+            (position.x, position.y),
+            rendered_z,
+            "cursor must sit on the rendered 'z' after a wrapped emoji run"
+        );
+    }
+
+    #[test]
     fn cursor_on_wrapped_wide_char_lands_on_wrapped_row() {
         const WIDTH: u16 = 30;
         const HEIGHT: u16 = 8;

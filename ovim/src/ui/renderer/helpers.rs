@@ -1,7 +1,6 @@
-use crate::display::{char_display_width, control_char_caret};
+use crate::display::control_char_caret;
 use crate::ui::renderer::markdown_conceal::LineTransform;
 use std::ops::Range;
-use unicode_width::UnicodeWidthChar;
 
 /// Result of expanding tabs and control characters for rendering.
 /// Carries the expanded text alongside the mappings needed to remap
@@ -29,19 +28,29 @@ pub fn expand_tabs_with_mapping(text: &str, tab_width: usize) -> ExpandedLine {
     let mut expanded_byte_pos = 0;
     let mut expanded_char_idx = 0;
 
-    for (orig_byte_idx, ch) in text.char_indices() {
-        // Record mapping from original position to expanded position
-        byte_mapping.push((orig_byte_idx, expanded_byte_pos));
-        char_mapping.push(expanded_char_idx);
+    // Walk graphemes so tab stops after multi-scalar emoji (VS16/ZWJ
+    // sequences) use the rendered width, not the sum of scalar widths.
+    // Mappings stay per-char: each char inside a copied grapheme maps to
+    // its own expanded position (graphemes are copied verbatim).
+    use unicode_segmentation::UnicodeSegmentation;
+    for (grapheme_start, grapheme) in text.grapheme_indices(true) {
+        let mut grapheme_chars = grapheme.chars();
+        let first_char = grapheme_chars.next().unwrap_or(' ');
+        let is_single_char = grapheme_chars.next().is_none();
 
-        if ch == '\t' {
+        if is_single_char && first_char == '\t' {
+            byte_mapping.push((grapheme_start, expanded_byte_pos));
+            char_mapping.push(expanded_char_idx);
             // Calculate spaces needed to reach next tab stop
             let spaces_to_add = tab_width - (display_col % tab_width);
             result.push_str(&" ".repeat(spaces_to_add));
             expanded_byte_pos += spaces_to_add;
             expanded_char_idx += spaces_to_add;
             display_col += spaces_to_add;
-        } else if let Some(caret) = control_char_caret(ch) {
+        } else if is_single_char && control_char_caret(first_char).is_some() {
+            let caret = control_char_caret(first_char).unwrap();
+            byte_mapping.push((grapheme_start, expanded_byte_pos));
+            char_mapping.push(expanded_char_idx);
             let start = expanded_byte_pos;
             result.push(caret[0]); // '^'
             result.push(caret[1]); // notation char
@@ -50,11 +59,15 @@ pub fn expand_tabs_with_mapping(text: &str, tab_width: usize) -> ExpandedLine {
             display_col += 2;
             control_ranges.push(start..expanded_byte_pos);
         } else {
-            result.push(ch);
-            expanded_byte_pos += ch.len_utf8();
-            expanded_char_idx += 1;
-            // Use display width (emojis = 2, most chars = 1, zero-width = 0)
-            display_col += ch.width().unwrap_or(1);
+            for (offset, ch) in grapheme.char_indices() {
+                byte_mapping.push((grapheme_start + offset, expanded_byte_pos));
+                char_mapping.push(expanded_char_idx);
+                result.push(ch);
+                expanded_byte_pos += ch.len_utf8();
+                expanded_char_idx += 1;
+            }
+            // Rendered width of the whole grapheme (emoji sequences = 2)
+            display_col += crate::display::grapheme_display_width(grapheme);
         }
     }
 
@@ -158,7 +171,6 @@ pub fn remap_char_col(original_col: usize, char_mapping: &[usize]) -> usize {
 /// where `char_col_to_display_col` would over-count by summing per-char widths.
 pub fn grapheme_col_to_display_col(text: &str, grapheme_col: usize, tab_width: usize) -> usize {
     use unicode_segmentation::UnicodeSegmentation;
-    use unicode_width::UnicodeWidthStr;
 
     let mut display_col = 0;
     for (i, grapheme) in text.graphemes(true).enumerate() {
@@ -169,7 +181,7 @@ pub fn grapheme_col_to_display_col(text: &str, grapheme_col: usize, tab_width: u
             let spaces = tab_width - (display_col % tab_width);
             display_col += spaces;
         } else {
-            display_col += UnicodeWidthStr::width(grapheme);
+            display_col += crate::display::grapheme_display_width(grapheme);
         }
     }
     display_col
@@ -177,16 +189,17 @@ pub fn grapheme_col_to_display_col(text: &str, grapheme_col: usize, tab_width: u
 
 /// Truncates text to fit within a display width, accounting for wide characters
 pub fn truncate_to_width(text: &str, max_width: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
     let mut result = String::new();
     let mut display_width = 0;
 
-    for ch in text.chars() {
-        let ch_width = char_display_width(ch);
-        if display_width + ch_width > max_width {
+    for grapheme in text.graphemes(true) {
+        let g_width = crate::display::grapheme_display_width(grapheme);
+        if display_width + g_width > max_width {
             break;
         }
-        result.push(ch);
-        display_width += ch_width;
+        result.push_str(grapheme);
+        display_width += g_width;
     }
 
     result
