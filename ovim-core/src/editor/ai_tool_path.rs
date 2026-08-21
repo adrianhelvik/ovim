@@ -526,6 +526,33 @@ mod tests {
     }
 
     #[test]
+    fn ignores_empty_git_marker_in_shared_ancestor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(temp.path().join(".git")).expect("empty marker");
+        let project = temp.path().join("project");
+        fs::create_dir(&project).expect("project directory");
+        let file = project.join("notes.txt");
+        fs::write(&file, "hello\n").expect("project file");
+
+        assert_eq!(discover_repo_root_from_start(&file), None);
+    }
+
+    #[test]
+    fn recognizes_partial_git_directory_with_head_marker() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        fs::create_dir_all(project.join(".git")).expect("git directory");
+        fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").expect("HEAD marker");
+        let file = project.join("notes.txt");
+        fs::write(&file, "hello\n").expect("project file");
+
+        assert_eq!(
+            discover_repo_root_from_start(&file),
+            Some(normalize_path(&project))
+        );
+    }
+
+    #[test]
     fn trusts_personal_and_system_skill_packages() {
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_home = temp.path().join(".codex");

@@ -3,6 +3,14 @@ use crate::mode::Mode;
 use crate::unicode::{grapheme_count, GraphemeCol};
 
 impl Editor {
+    /// Returns the current visual selection as user-visible text.
+    ///
+    /// Frontends use this for native clipboard integration while keeping the
+    /// mode-specific grapheme/line/block semantics in one core implementation.
+    pub fn visual_selection_text(&self) -> Option<String> {
+        crate::editor::input::helpers::get_visual_selection_text(self)
+    }
+
     /// Gets the visual selection start position
     pub fn visual_start(&self) -> Option<(usize, usize)> {
         self.visual.visual_start

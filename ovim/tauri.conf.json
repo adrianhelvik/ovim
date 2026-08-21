@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Ovim",
+  "mainBinaryName": "ovim-gui",
+  "version": "1.2.7",
+  "identifier": "dev.ovim.editor",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "gui/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Ovim",
+        "width": 1360,
+        "height": 860,
+        "minWidth": 760,
+        "minHeight": 480,
+        "center": true,
+        "decorations": false,
+        "resizable": true,
+        "visible": true,
+        "backgroundColor": "#090b12"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' customprotocol: asset:; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost blob: data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "publisher": "Ovim contributors",
+    "homepage": "https://github.com/adrianhelvik/ovim",
+    "shortDescription": "A fast, batteries-included native Vim editor",
+    "longDescription": "Ovim combines Vim editing semantics with tree-sitter syntax, language servers, debugging, test integration, and AI assistance in a native desktop workbench.",
+    "licenseFile": "../LICENSE",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

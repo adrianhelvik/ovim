@@ -559,6 +559,16 @@ impl WindowManager {
         self.get_window_mut(self.focused_window)
     }
 
+    /// Focus a window by its depth-first layout index.
+    pub fn focus_window(&mut self, index: usize) -> bool {
+        if index < self.window_count() {
+            self.focused_window = index;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Gets a window by index (depth-first traversal)
     pub fn get_window(&self, index: usize) -> Option<&Window> {
         self.get_window_recursive(&self.root, index).map(|(w, _)| w)

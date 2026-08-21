@@ -110,6 +110,19 @@ impl Editor {
         self.restore_cursor_from_focused_window();
     }
 
+    /// Focus a specific window selected by a native frontend hit-test.
+    pub fn focus_window(&mut self, index: usize) -> bool {
+        self.save_cursor_to_focused_window();
+        let focused = self
+            .window_manager
+            .as_mut()
+            .is_some_and(|manager| manager.focus_window(index));
+        if focused {
+            self.restore_cursor_from_focused_window();
+        }
+        focused
+    }
+
     /// Moves focus to the window to the left
     pub fn focus_window_left(&mut self) {
         self.save_cursor_to_focused_window();

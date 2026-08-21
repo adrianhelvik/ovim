@@ -371,6 +371,17 @@ impl FileTree {
         self.selected_index
     }
 
+    /// Select an entry by its flattened row index.
+    ///
+    /// Native frontends use this to turn a pointer hit-test into the same
+    /// selection state that keyboard navigation operates on.
+    pub fn set_selected_index(&mut self, index: usize) {
+        if !self.flattened.is_empty() {
+            self.selected_index = index.min(self.flattened.len() - 1);
+            self.ensure_visible();
+        }
+    }
+
     /// Moves selection down
     pub fn select_next(&mut self) {
         if !self.flattened.is_empty() {

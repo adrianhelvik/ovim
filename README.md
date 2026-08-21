@@ -1,6 +1,7 @@
 # ovim — Oxidized Vim
 
-A fast, batteries-included terminal editor with Vim keybindings, built in Rust.
+A fast, batteries-included editor with Vim keybindings, built in Rust. Use it
+in the terminal or open the native Tauri/SolidJS interface with `ovim gui`.
 
 ovim gives you what Neovim distros give you. LSP, tree-sitter highlighting, AI chat, sane defaults.
 
@@ -16,6 +17,7 @@ ovim gives you what Neovim distros give you. LSP, tree-sitter highlighting, AI c
 - **Test runner** — `Space t n` runs the test under the cursor (cargo, vitest/jest/bun/node:test, pytest, go test), monorepo-aware, with live-streaming results panel
 - **Lua config** — `vim.opt.number = true` just works. Configure when you want to, not because you have to.
 - **Headless mode** — run without a terminal, control via REST API
+- **Native GUI** — a GPU-composited desktop shell with DOM-native editor widgets
 
 ## Install
 
@@ -27,8 +29,16 @@ brew install ovim-editor/tap/ovim
 <summary>Build from source instead</summary>
 
 ```bash
-cargo build --release
-# binary at ./target/release/ovim
+# Ubuntu/Debian only: native webview build dependencies
+sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+npm ci --prefix ovim/gui
+npm run build --prefix ovim/gui
+cargo build --release -p ovim --bins
+# binaries at ./target/release/ovim and ./target/release/ovim-gui
+
+# Optional: build native installers for the current platform
+npm run bundle --prefix ovim/gui
 ```
 
 </details>
@@ -39,6 +49,9 @@ cargo build --release
 # Open a file
 ovim file.rs
 
+# Open the native GUI
+ovim gui file.rs
+
 # Open a folder in the file explorer
 ovim .
 
@@ -47,6 +60,19 @@ ovim src/main.rs:42:10
 ```
 
 LSP starts automatically. Syntax highlighting works. No setup needed.
+
+The GUI uses the same editor core, keymaps, buffers, syntax engine, LSP, and
+background tasks as the terminal frontend. `ovim gui` starts the Tauri shell
+directly—there is no local server or companion-process lookup. Keyboard, IME,
+clipboard, mouse, split-pane, picker, tree, diagnostics, test, debug, LSP
+manager, and AI-chat interactions flow through Ovim's normal state machinery.
+An event-driven, coalescing channel projects bounded visible state into SolidJS
+so idle editors do no DOM work and large files or panels cannot create
+unbounded webview payloads.
+
+For GUI development, run `npm test --prefix ovim/gui` for the Solid DOM suite
+and `cargo test -p ovim gui:: --lib` for bridge, Unicode geometry, wrapping,
+split-layout, and projection tests.
 
 > This README uses `ovim` assuming the binary is on your `PATH`.
 

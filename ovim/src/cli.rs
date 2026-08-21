@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(name = "ovim")]
 #[command(version, disable_version_flag = true)]
-#[command(about = "Oxidized Vim — a snappy, batteries-included terminal editor with Vim keybindings", long_about = None)]
+#[command(about = "Oxidized Vim — a snappy, batteries-included editor with terminal and native GUI frontends", long_about = None)]
 pub struct Cli {
     /// Print version
     #[arg(
@@ -119,6 +119,18 @@ impl FileArg {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Open Ovim's native Tauri GUI
+    #[command(next_help_heading = "Editor")]
+    Gui {
+        /// File or directory to open
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
+
+        /// Resume persisted AI conversations instead of starting fresh chats
+        #[arg(long)]
+        resume: bool,
+    },
+
     // ── File Operations ──────────────────────────────────────────────
     /// Replace text in a file
     #[command(next_help_heading = "File Operations")]
@@ -580,6 +592,18 @@ mod tests {
 
         let resumed = Cli::try_parse_from(["ovim", "--resume"]).unwrap();
         assert!(resumed.resume);
+    }
+
+    #[test]
+    fn gui_accepts_an_optional_file_and_resume_flag() {
+        let cli = Cli::try_parse_from(["ovim", "gui", "src/main.rs", "--resume"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Gui {
+                file: Some(ref file),
+                resume: true,
+            }) if file == "src/main.rs"
+        ));
     }
 
     #[test]

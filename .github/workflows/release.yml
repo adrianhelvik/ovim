@@ -73,39 +73,98 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ovim/gui/package-lock.json
+      - name: Build SolidJS frontend
+        run: |
+          npm ci --prefix ovim/gui
+          npm run build --prefix ovim/gui
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Build
         run: cargo build --release --locked -p ovim --features vendored --target ${{ matrix.target }}
+      - name: Verify native GUI target
+        shell: bash
+        run: |
+          gui_binary="target/${{ matrix.target }}/release/ovim-gui"
+          if [ "$(wc -c < "$gui_binary")" -lt 5000000 ]; then
+            echo "::error::$gui_binary is too small to be the Ovim GUI executable"
+            exit 1
+          fi
+          if ! grep -aFq "Only one file or directory can be opened at startup" "$gui_binary"; then
+            echo "::error::$gui_binary does not contain the Ovim GUI entry point"
+            exit 1
+          fi
+      - name: Bundle native desktop package
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            bundles="dmg"
+          else
+            bundles="deb,appimage"
+          fi
+          cd ovim
+          ./gui/node_modules/.bin/tauri bundle \
+            --target "${{ matrix.target }}" \
+            --features vendored \
+            --bundles "$bundles" \
+            --no-sign \
+            --ci
+          cd ..
+          find "target/${{ matrix.target }}/release/bundle" -type f \
+            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' \) \
+            -exec cp {} . \;
       # The Intel macOS binary is cross-compiled from an arm64 runner with
       # vendored OpenSSL, libgit2 and Lua. A build script that ignores the
       # target would silently emit an arm64 binary, so assert the architecture
       # rather than trusting the toolchain.
       - name: Verify binary architecture
         run: |
-          binary="target/${{ matrix.target }}/release/ovim"
-          described="$(file -b "$binary")"
-          echo "$described"
-          case "$described" in
-            *"${{ matrix.arch_pattern }}"*) ;;
-            *)
-              echo "::error::${{ matrix.target }} produced the wrong architecture: $described"
-              exit 1
-              ;;
-          esac
+          for binary in \
+            "target/${{ matrix.target }}/release/ovim" \
+            "target/${{ matrix.target }}/release/ovim-gui"; do
+            described="$(file -b "$binary")"
+            echo "$binary: $described"
+            case "$described" in
+              *"${{ matrix.arch_pattern }}"*) ;;
+              *)
+                echo "::error::$binary has the wrong architecture: $described"
+                exit 1
+                ;;
+            esac
+          done
       - name: Package
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
           name="ovim-${tag}-${{ matrix.target }}"
           mkdir "$name"
           cp "target/${{ matrix.target }}/release/ovim" "$name/"
+          cp "target/${{ matrix.target }}/release/ovim-gui" "$name/"
           cp README.md LICENSE "$name/"
           tar czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          for bundle in Ovim_*.deb Ovim_*.AppImage Ovim_*.dmg; do
+            [ -f "$bundle" ] || continue
+            shasum -a 256 "$bundle" > "$bundle.sha256"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: ovim-${{ matrix.target }}
           path: |
             *.tar.gz
             *.tar.gz.sha256
+            Ovim_*.deb
+            Ovim_*.AppImage
+            Ovim_*.dmg
+            Ovim_*.deb.sha256
+            Ovim_*.AppImage.sha256
+            Ovim_*.dmg.sha256
           if-no-files-found: error
 
   # Only publishes for a real tag push, or a dispatch that explicitly opts in.
@@ -124,9 +183,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
-          shasum -a 256 *.tar.gz > checksums.txt
+          find . -maxdepth 1 -type f \
+            \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' \) \
+            -print0 | sort -z | xargs -0 shasum -a 256 > checksums.txt
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber *.tar.gz *.sha256 checksums.txt
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+              *.tar.gz *.deb *.AppImage *.dmg *.sha256 checksums.txt
           else
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "$tag" --generate-notes *.tar.gz *.sha256 checksums.txt
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "$tag" --generate-notes \
+              *.tar.gz *.deb *.AppImage *.dmg *.sha256 checksums.txt
           fi

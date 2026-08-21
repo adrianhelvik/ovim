@@ -158,6 +158,8 @@ fn expand_escapes(s: &str) -> String {
 /// Execute a subcommand
 pub fn execute_subcommand(command: Command) -> Result<()> {
     match command {
+        Command::Gui { file, resume } => cmd_gui(file, resume),
+
         // File operations (direct file I/O, no session needed)
         Command::Edit {
             file,
@@ -230,6 +232,20 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
             port,
             session,
         } => cmd_mcp_server(workspace, port, session),
+    }
+}
+
+/// Run the native shell in-process so `ovim gui` works in source builds,
+/// standalone CLI distributions, and desktop packages without path probing.
+fn cmd_gui(file: Option<String>, resume: bool) -> Result<()> {
+    #[cfg(feature = "gui")]
+    {
+        crate::gui::app::run(file.as_deref().map(FileArg::parse), resume)
+    }
+    #[cfg(not(feature = "gui"))]
+    {
+        let _ = (file, resume);
+        anyhow::bail!("This Ovim build does not include the native GUI feature")
     }
 }
 

@@ -2,7 +2,7 @@
 
 `ovim::frontend` (`ovim/src/frontend/`) is the frontend-agnostic runtime
 plumbing shared by every frontend that embeds the editor core: the TUI, the
-headless loop, and eventually a GUI. `ovim-core` already has zero
+headless loop, and the Tauri GUI. `ovim-core` already has zero
 ratatui/crossterm dependencies — it defines its own `KeyEvent`/`Color` types
 and renders highlights as spans rather than styled terminal cells, so it has
 no UI framework to be coupled to in the first place. `ovim::frontend` is the
@@ -82,9 +82,9 @@ A terminal frontend can hand `Rgb` straight to the display and already has a
 16-color and 256-color palette to resolve the ANSI-named and `Indexed`
 variants against. A GUI frontend has no such built-in palette: it must supply
 its own mapping from the ANSI-named and `Indexed` variants to concrete RGB
-before it can paint anything. Building that palette-resolution helper is
-explicitly deferred (see `planning/gui-frontend-prep/PLAN.md`'s non-goals) —
-it does not exist yet.
+before it can paint anything. The native reference frontend implements that
+mapping in `ovim/src/gui/mod.rs` and serializes resolved CSS colors, keeping
+terminal palette assumptions out of the SolidJS layer.
 
 ## Reference implementation
 
@@ -100,10 +100,11 @@ concrete, compiling version of the contract above.
 
 The REST API (`ovim/src/api/`) is a separate, agent-oriented surface: JSON
 over HTTP, poll-only (no push/streaming), meant for CLI tools and AI agents
-that talk to a running headless session over the network. A GUI frontend
-does not talk to that API — it links the `ovim` lib directly and drives the
-editor through `ovim::frontend` and `InputHandler` in-process, the same way
-the TUI does. SSE/streaming support for the REST API is a separate,
+that talk to a running headless session over the network. The GUI does not
+talk to that API — `ovim/src/gui/mod.rs` owns the editor on a dedicated
+runtime thread, drives it through `ovim::frontend` and `InputHandler`, and
+projects bounded serializable snapshots into the Tauri webview. SSE/streaming
+support for the REST API is a separate,
 explicitly deferred concern (also listed in
 `planning/gui-frontend-prep/PLAN.md`'s non-goals) and is unrelated to
 whether a GUI can be built today.

@@ -2,7 +2,17 @@
 name = "ovim"
 version = "1.2.7"
 edition = "2024"
-description = "Oxidized Vim — a snappy, batteries-included terminal editor with Vim keybindings, Lua config, LSP, and AI built in."
+description = "Oxidized Vim — a snappy, batteries-included editor with terminal and native GUI frontends, Vim keybindings, Lua config, LSP, and AI built in."
+
+[[bin]]
+name = "ovim-gui"
+path = "src/bin/ovim-gui/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "key_debug"
+path = "src/bin/key_debug.rs"
+required-features = ["key-debug"]
 
 [lints]
 workspace = true
@@ -38,6 +48,7 @@ open = "5"
 flate2 = "1"
 tar = "0.4"
 zip = "2"
+tauri = { version = "2", optional = true, features = [] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }
@@ -47,8 +58,10 @@ libc = "0.2"
 sysinfo = "0.32"
 
 [features]
-default = ["lua"]
+default = ["lua", "gui"]
 lua = ["mlua", "ovim-core/lua"]
+gui = ["dep:tauri"]
+key-debug = []
 metrics = ["prometheus", "ovim-core/metrics"]
 # Statically link OpenSSL for portable release binaries
 vendored = ["ovim-core/vendored", "reqwest/native-tls-vendored"]
@@ -61,3 +74,6 @@ streaming-iterator = "0.1.9"
 insta = "1.40"
 rand = "0.8"
 proptest = "1.5"
+
+[build-dependencies]
+tauri-build = { version = "2" }
