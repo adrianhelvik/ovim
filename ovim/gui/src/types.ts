@@ -49,6 +49,7 @@ export interface GuiAiChat {
   waiting: boolean;
   input: string;
   inputCursor: number;
+  pendingImages: string[];
   messages: Array<{ role: string; content: string; model?: string; tools: string[] }>;
   streaming?: string;
   approval?: string;

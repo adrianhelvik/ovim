@@ -51,6 +51,35 @@ pub struct GuiKeyInput {
     pub meta: bool,
 }
 
+fn attach_chat_images(editor: &mut Editor, paths: &[std::path::PathBuf]) -> Result<()> {
+    if editor.mode() != Mode::AiChat {
+        anyhow::bail!("Open AI chat before dropping an image");
+    }
+
+    if paths.is_empty() {
+        return Ok(());
+    }
+    for path in paths {
+        let supported = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "png" | "jpg" | "jpeg" | "gif" | "webp"
+                )
+            });
+        if !supported {
+            anyhow::bail!("Unsupported image format: {}", path.display());
+        }
+        let path = path
+            .to_str()
+            .with_context(|| format!("Image path is not valid UTF-8: {}", path.display()))?;
+        editor.handle_paste_event(path)?;
+    }
+    Ok(())
+}
+
 impl GuiKeyInput {
     fn into_core(self) -> Result<ovim_core::key::KeyEvent> {
         use ovim_core::key::{KeyCode, KeyEvent, Modifiers};
@@ -314,6 +343,7 @@ pub struct GuiAiChat {
     pub waiting: bool,
     pub input: String,
     pub input_cursor: usize,
+    pub pending_images: Vec<String>,
     pub messages: Vec<GuiChatMessage>,
     pub streaming: Option<String>,
     pub approval: Option<String>,
@@ -437,6 +467,10 @@ enum GuiRequest {
         text: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    AttachImages {
+        paths: Vec<std::path::PathBuf>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     SetCursor {
         pane: usize,
         line: usize,
@@ -547,6 +581,11 @@ impl GuiBridge {
 
     pub async fn paste(&self, text: String) -> Result<(), String> {
         self.request(|reply| GuiRequest::Paste { text, reply })
+            .await
+    }
+
+    pub async fn attach_images(&self, paths: Vec<std::path::PathBuf>) -> Result<(), String> {
+        self.request(|reply| GuiRequest::AttachImages { paths, reply })
             .await
     }
 
@@ -773,6 +812,14 @@ async fn handle_request(
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
             }
+            (reply, result)
+        }
+        GuiRequest::AttachImages { paths, reply } => {
+            let result = attach_chat_images(editor, &paths);
+            if let Err(error) = &result {
+                editor.set_status_message(format!("Image attachment: {error}"));
+            }
+            refresh_after_input(editor);
             (reply, result)
         }
         GuiRequest::Paste { text, reply } => {
@@ -1643,6 +1690,18 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             waiting: editor.ai_chat_waiting(),
             input: truncate_panel_text(editor.ai_chat_input(), 12_000),
             input_cursor: editor.ai_chat_input_cursor(),
+            pending_images: editor
+                .ai_chat_pending_images()
+                .iter()
+                .map(|image| {
+                    image
+                        .path
+                        .file_name()
+                        .unwrap_or(image.path.as_os_str())
+                        .to_string_lossy()
+                        .to_string()
+                })
+                .collect(),
             messages: messages[start..]
                 .iter()
                 .map(|message| GuiChatMessage {
@@ -2022,6 +2081,30 @@ mod tests {
         assert_eq!(indexed_rgb(231), (255, 255, 255));
         assert_eq!(indexed_rgb(232), (8, 8, 8));
         assert_eq!(indexed_rgb(255), (238, 238, 238));
+    }
+
+    #[test]
+    fn dropped_gui_image_reaches_chat_snapshot() {
+        let path = std::env::temp_dir().join(format!(
+            "ovim-gui-image-{}-{}.png",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        let mut editor = Editor::new();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+
+        attach_chat_images(&mut editor, std::slice::from_ref(&path)).unwrap();
+        let view = snapshot(&editor, 1);
+
+        assert_eq!(editor.ai_chat_pending_images().len(), 1);
+        assert_eq!(
+            view.ai_chat.unwrap().pending_images,
+            vec![path.file_name().unwrap().to_string_lossy().to_string()]
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

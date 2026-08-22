@@ -3,7 +3,7 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { mockSnapshot } from "./mock";
-import type { GuiKeyInput, GuiLayoutNode, GuiPane, GuiSnapshot } from "./types";
+import type { GuiAiChat, GuiKeyInput, GuiLayoutNode, GuiPane, GuiSnapshot } from "./types";
 
 const LINE_HEIGHT = 22;
 const FALLBACK_CELL_WIDTH = 8.15;
@@ -14,6 +14,34 @@ export const Markdown = (props: { text: string }) => {
     { USE_PROFILES: { html: true } },
   ));
   return <div class="markdown" innerHTML={html()} />;
+};
+
+const splitAtUtf8Offset = (text: string, offset: number) => {
+  const limit = Math.max(0, Math.min(offset, new TextEncoder().encode(text).length));
+  let bytes = 0;
+  let codeUnits = 0;
+  for (const character of text) {
+    const next = bytes + new TextEncoder().encode(character).length;
+    if (next > limit) break;
+    bytes = next;
+    codeUnits += character.length;
+  }
+  return [text.slice(0, codeUnits), text.slice(codeUnits)] as const;
+};
+
+export const ChatComposer = (props: { chat: GuiAiChat }) => {
+  const parts = createMemo(() => splitAtUtf8Offset(props.chat.input, props.chat.inputCursor));
+  return (
+    <div class="chat-composer" classList={{ waiting: props.chat.waiting }}>
+      <Show when={props.chat.pendingImages.length}>
+        <div class="chat-attachments" aria-label="Pending image attachments">
+          <For each={props.chat.pendingImages}>{(name) => <span title={name}>▧ {name}</span>}</For>
+        </div>
+      </Show>
+      <pre aria-label="AI chat input"><Show when={props.chat.input} fallback={<><i class="chat-caret" aria-hidden="true" /><span class="chat-placeholder">Ask Ovim about this code…</span></>}><span>{parts()[0]}</span><i class="chat-caret" aria-hidden="true" /><span>{parts()[1]}</span></Show></pre>
+      <footer><span>{props.chat.waiting ? "working" : "Enter to send · drop images to attach · Esc to return"}</span><b>{props.chat.reasoningEffort}</b></footer>
+    </div>
+  );
 };
 
 const Icon = (props: { name: "files" | "search" | "branch" | "spark" | "gear" | "close" | "min" | "max" }) => {
@@ -300,10 +328,7 @@ function App() {
           <Show when={chat.streaming}>{(content) => <article class="chat-message assistant streaming"><header><b>assistant</b><small>streaming</small></header><Markdown text={content()} /></article>}</Show>
         </div>
         <Show when={chat.approval}>{(approval) => <div class="approval-card"><b>Approval required</b><span>{approval()}</span><small>Use the keyboard choices shown by Ovim.</small></div>}</Show>
-        <div class="chat-composer" classList={{ waiting: chat.waiting }}>
-          <pre>{chat.input || "Ask Ovim about this code…"}</pre>
-          <footer><span>{chat.waiting ? "working" : "Enter to send · Esc to return"}</span><b>{chat.reasoningEffort}</b></footer>
-        </div>
+        <div onMouseDown={() => inputSink.focus({ preventScroll: true })}><ChatComposer chat={chat} /></div>
       </section>
     )}</Show>
   );
@@ -433,7 +458,7 @@ function App() {
             <button classList={{ active: Boolean(view().fileTree) }} title="Explorer  –" onClick={() => void sendLiteral("-")}><Icon name="files" /></button>
             <button title="Search project  Space s g" onClick={() => void sendLiteral(" sg")}><Icon name="search" /></button>
             <button title="Source control"><Icon name="branch" /></button>
-            <button title="AI chat  Space Space" onClick={() => void sendLiteral("  ")}><Icon name="spark" /></button>
+            <button title="AI chat  Space Space" onClick={() => { inputSink.focus({ preventScroll: true }); void sendLiteral("  "); }}><Icon name="spark" /></button>
           </div>
           <button title="Settings  :set" onClick={() => void sendLiteral(":set")}><Icon name="gear" /></button>
         </nav>

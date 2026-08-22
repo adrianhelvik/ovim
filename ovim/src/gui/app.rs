@@ -4,7 +4,7 @@ use super::{GuiBridge, GuiKeyInput, GuiSnapshot};
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
 use tauri::ipc::Channel;
-use tauri::{Manager, RunEvent, State, WebviewWindow};
+use tauri::{DragDropEvent, Manager, RunEvent, State, WebviewWindow, WindowEvent};
 
 #[tauri::command]
 async fn gui_snapshot(
@@ -152,6 +152,17 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
                 window
                     .set_title("Ovim")
                     .context("Failed to set the GUI window title")?;
+                let drop_bridge = app.state::<GuiBridge>().inner().clone();
+                window.on_window_event(move |event| {
+                    let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event else {
+                        return;
+                    };
+                    let bridge = drop_bridge.clone();
+                    let paths = paths.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = bridge.attach_images(paths).await;
+                    });
+                });
             }
             Ok(())
         })

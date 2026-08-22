@@ -1,8 +1,8 @@
 /** @vitest-environment jsdom */
 
-import { render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { Markdown } from "./App";
+import App, { ChatComposer, Markdown } from "./App";
 
 class ResizeObserverMock {
   observe() {}
@@ -48,5 +48,35 @@ describe("Ovim Solid workbench", () => {
     expect(screen.getByText("safe").tagName).toBe("STRONG");
     expect(result.container.querySelector("img")?.hasAttribute("onerror")).toBe(false);
     expect(result.container.querySelector("script")).toBeNull();
+  });
+
+  it("renders the chat caret at the core UTF-8 cursor and pending images", () => {
+    const result = render(() => <ChatComposer chat={{
+      profile: "codex",
+      reasoningEffort: "high",
+      activity: "idle",
+      waiting: false,
+      input: "a界b",
+      inputCursor: 4,
+      pendingImages: ["diagram.png"],
+      messages: [],
+    }} />);
+
+    const caret = result.container.querySelector(".chat-caret");
+    expect(caret?.previousSibling?.textContent).toBe("a界");
+    expect(caret?.nextSibling?.textContent).toBe("b");
+    expect(screen.getByText("▧ diagram.png")).toBeTruthy();
+  });
+
+  it("returns DOM focus to the editor input when AI chat is activated", () => {
+    render(() => <App />);
+    const input = screen.getByLabelText("Ovim editor input");
+    const focus = vi.mocked(HTMLElement.prototype.focus);
+    focus.mockClear();
+
+    fireEvent.click(document.querySelector<HTMLButtonElement>('[title^="AI chat"]')!);
+
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(focus.mock.instances).toContain(input);
   });
 });
