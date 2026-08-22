@@ -420,7 +420,7 @@ function App() {
   );
 
   const LspOverlay = () => (
-    <Show when={view().lspManager} keyed>{(manager) => (
+    <Show when={!view().aiChat ? view().lspManager : undefined} keyed>{(manager) => (
       <div class="overlay-shade lsp-overlay">
         <section class="lsp-panel">
           <header><div><b>Language servers</b><small>Install, inspect, and manage language intelligence</small></div><kbd>esc</kbd></header>
@@ -575,7 +575,7 @@ function App() {
               </div>
             </Show>
 
-            <Show when={view().completion} keyed>{(menu) => (
+            <Show when={!view().aiChat ? view().completion : undefined} keyed>{(menu) => (
               <div class="completion-popover" style={{ top: `${Math.min(58, (view().cursor.line - view().firstLine + 1) * LINE_HEIGHT + 6)}px`, left: `${Math.min(70, (view().cursor.displayColumn - view().horizontalOffset) * cellWidth + 76)}px` }}>
                 <For each={menu.items}>{(item) => (
                   <div class="completion-item" classList={{ selected: item.index === menu.selected }}>
@@ -585,11 +585,11 @@ function App() {
               </div>
             )}</Show>
 
-            <Show when={view().hover} keyed>{(hover) => (
+            <Show when={!view().aiChat ? view().hover : undefined} keyed>{(hover) => (
               <div class="hover-popover"><div class="popover-label">Documentation</div><pre>{hover.content}</pre></div>
             )}</Show>
 
-            <Show when={view().picker} keyed>{(picker) => (
+            <Show when={!view().aiChat ? view().picker : undefined} keyed>{(picker) => (
               <div class="overlay-shade">
                 <section class="picker">
                   <header><Icon name="search" /><span>{picker.query || picker.title}</span><kbd>esc</kbd></header>

@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { ChatComposer, ChatPanel, Markdown, isNearChatBottom } from "./App";
+import { mockSnapshot } from "./mock";
 import type { GuiAiChat } from "./types";
 
 class ResizeObserverMock {
@@ -126,5 +127,33 @@ describe("Ovim Solid workbench", () => {
   it("uses a small threshold when deciding whether chat should follow", () => {
     expect(isNearChatBottom({ scrollHeight: 500, scrollTop: 260, clientHeight: 200 })).toBe(true);
     expect(isNearChatBottom({ scrollHeight: 500, scrollTop: 200, clientHeight: 200 })).toBe(false);
+  });
+
+  it("does not let stale editor overlays cover an active AI chat", () => {
+    mockSnapshot.aiChat = {
+      profile: "codex", reasoningEffort: "high", activity: "idle", waiting: false,
+      input: "visible draft", inputCursor: 13, pendingImages: [], messages: [],
+    };
+    mockSnapshot.picker = {
+      title: "Stale picker", query: "", selected: 0, total: 1,
+      items: [{ index: 0, display: "Result", location: "src/main.rs", matched: [] }],
+    };
+    mockSnapshot.lspManager = { filter: "", selected: 0, showDetail: false, items: [] };
+    mockSnapshot.hover = { content: "Stale hover" };
+    mockSnapshot.completion = { selected: 0, items: [{ index: 0, label: "stale" }] };
+
+    try {
+      const result = render(() => <App />);
+      expect(screen.getByLabelText("AI chat input").textContent).toContain("visible draft");
+      expect(result.container.querySelector(".overlay-shade")).toBeNull();
+      expect(result.container.querySelector(".hover-popover")).toBeNull();
+      expect(result.container.querySelector(".completion-popover")).toBeNull();
+    } finally {
+      delete mockSnapshot.aiChat;
+      delete mockSnapshot.picker;
+      delete mockSnapshot.lspManager;
+      delete mockSnapshot.hover;
+      delete mockSnapshot.completion;
+    }
   });
 });
