@@ -16,6 +16,14 @@ export const Markdown = (props: { text: string }) => {
   return <div class="markdown" innerHTML={html()} />;
 };
 
+export const chatSelectionText = (selection: Selection | null = window.getSelection()) => {
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return "";
+  const elementFor = (node: Node | null) => node instanceof Element ? node : node?.parentElement;
+  const anchorChat = elementFor(selection.anchorNode)?.closest(".chat-messages");
+  const focusChat = elementFor(selection.focusNode)?.closest(".chat-messages");
+  return anchorChat && anchorChat === focusChat ? selection.toString() : "";
+};
+
 export const isNearChatBottom = (element: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">) =>
   element.scrollHeight - element.scrollTop - element.clientHeight <= 48;
 
@@ -244,14 +252,14 @@ function App() {
   };
 
   const handleCopy = (event: ClipboardEvent) => {
-    const text = view().selectionText;
+    const text = chatSelectionText() || view().selectionText;
     if (!text) return;
     event.clipboardData?.setData("text/plain", text);
     event.preventDefault();
   };
 
   const handleCut = (event: ClipboardEvent) => {
-    const text = view().selectionText;
+    const text = chatSelectionText() || view().selectionText;
     if (!text) return;
     event.clipboardData?.setData("text/plain", text);
     event.preventDefault();

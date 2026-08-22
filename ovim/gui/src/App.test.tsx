@@ -3,7 +3,7 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { ChatComposer, ChatPanel, ChatSetupCard, Markdown, isNearChatBottom } from "./App";
+import App, { ChatComposer, ChatPanel, ChatSetupCard, Markdown, chatSelectionText, isNearChatBottom } from "./App";
 import { mockSnapshot } from "./mock";
 import type { GuiAiChat } from "./types";
 
@@ -173,5 +173,22 @@ describe("Ovim Solid workbench", () => {
     expect(input.querySelector(".chat-caret")?.previousSibling?.textContent).toBe("••");
     fireEvent.click(screen.getByRole("button", { name: "Not now" }));
     expect(onKey).toHaveBeenCalledWith("Escape");
+  });
+
+  it("recognizes a browser selection made inside the chat transcript", () => {
+    const transcript = document.createElement("div");
+    transcript.className = "chat-messages";
+    transcript.textContent = "copy this response";
+    document.body.append(transcript);
+    const range = document.createRange();
+    range.selectNodeContents(transcript);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    expect(chatSelectionText(selection)).toBe("copy this response");
+
+    transcript.className = "editor-content";
+    expect(chatSelectionText(selection)).toBe("");
   });
 });
