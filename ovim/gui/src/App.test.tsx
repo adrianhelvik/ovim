@@ -1,8 +1,10 @@
 /** @vitest-environment jsdom */
 
 import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { ChatComposer, Markdown } from "./App";
+import App, { ChatComposer, ChatPanel, Markdown, isNearChatBottom } from "./App";
+import type { GuiAiChat } from "./types";
 
 class ResizeObserverMock {
   observe() {}
@@ -78,5 +80,51 @@ describe("Ovim Solid workbench", () => {
 
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     expect(focus.mock.instances).toContain(input);
+  });
+
+  it("follows chat updates until the reader scrolls away from the bottom", async () => {
+    const initial: GuiAiChat = {
+      profile: "codex",
+      reasoningEffort: "high",
+      activity: "idle",
+      waiting: false,
+      input: "",
+      inputCursor: 0,
+      pendingImages: [],
+      messages: [{ role: "assistant", content: "First response", model: "codex", tools: [] }],
+    };
+    const [chat, setChat] = createSignal(initial);
+    const result = render(() => <ChatPanel chat={chat()} focusInput={() => {}} />);
+    const transcript = result.container.querySelector<HTMLElement>(".chat-messages")!;
+    Object.defineProperties(transcript, {
+      scrollHeight: { configurable: true, value: 600, writable: true },
+      clientHeight: { configurable: true, value: 200 },
+      scrollTop: { configurable: true, value: 0, writable: true },
+    });
+
+    await Promise.resolve();
+    expect(transcript.scrollTop).toBe(600);
+
+    transcript.scrollTop = 360;
+    fireEvent.scroll(transcript);
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 700 });
+    setChat({ ...initial, streaming: "Streaming while pinned" });
+    await Promise.resolve();
+    expect(transcript.scrollTop).toBe(700);
+
+    transcript.scrollTop = 100;
+    fireEvent.scroll(transcript);
+    expect(screen.getByRole("button", { name: "↓ Jump to latest" })).toBeTruthy();
+    setChat({ ...initial, streaming: "More streaming content" });
+    await Promise.resolve();
+    expect(transcript.scrollTop).toBe(100);
+
+    fireEvent.click(screen.getByRole("button", { name: "↓ Jump to latest" }));
+    expect(transcript.scrollTop).toBe(700);
+  });
+
+  it("uses a small threshold when deciding whether chat should follow", () => {
+    expect(isNearChatBottom({ scrollHeight: 500, scrollTop: 260, clientHeight: 200 })).toBe(true);
+    expect(isNearChatBottom({ scrollHeight: 500, scrollTop: 200, clientHeight: 200 })).toBe(false);
   });
 });

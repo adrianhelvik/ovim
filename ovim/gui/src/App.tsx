@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
@@ -14,6 +14,60 @@ export const Markdown = (props: { text: string }) => {
     { USE_PROFILES: { html: true } },
   ));
   return <div class="markdown" innerHTML={html()} />;
+};
+
+export const isNearChatBottom = (element: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">) =>
+  element.scrollHeight - element.scrollTop - element.clientHeight <= 48;
+
+export const ChatPanel = (props: { chat: GuiAiChat; focusInput: () => void }) => {
+  const [following, setFollowing] = createSignal(true);
+  let transcript!: HTMLDivElement;
+  let messageCount = props.chat.messages.length;
+
+  const jumpToLatest = () => {
+    transcript.scrollTop = transcript.scrollHeight;
+    setFollowing(true);
+  };
+
+  createEffect(() => {
+    const messages = props.chat.messages;
+    const latest = messages.at(-1);
+    const revision = `${messages.length}:${latest?.content.length ?? 0}:${props.chat.streaming?.length ?? 0}:${props.chat.approval?.length ?? 0}`;
+    if (messages.length > messageCount && latest?.role === "user") setFollowing(true);
+    messageCount = messages.length;
+    void revision;
+    queueMicrotask(() => {
+      if (following()) jumpToLatest();
+    });
+  });
+
+  return (
+    <section class="side-panel ai-panel" aria-label="AI chat">
+      <header class="side-panel-header">
+        <div><b>AI chat</b><small>{props.chat.profile} · {props.chat.reasoningEffort}</small></div>
+        <span classList={{ working: props.chat.activity !== "idle" }}>{props.chat.activity.replaceAll("_", " ")}</span>
+      </header>
+      <div class="chat-transcript">
+        <div
+          class="chat-messages"
+          ref={transcript}
+          onScroll={() => setFollowing(isNearChatBottom(transcript))}
+        >
+          <For each={props.chat.messages}>{(message) => (
+            <article class={`chat-message ${message.role}`}>
+              <header><b>{message.role}</b><small>{message.model}</small></header>
+              <Markdown text={message.content} />
+              <Show when={message.tools.length}><div class="tool-chips"><For each={message.tools}>{(tool) => <span>{tool}</span>}</For></div></Show>
+            </article>
+          )}</For>
+          <Show when={props.chat.streaming}>{(content) => <article class="chat-message assistant streaming"><header><b>assistant</b><small>streaming</small></header><Markdown text={content()} /></article>}</Show>
+        </div>
+        <Show when={!following()}><button class="chat-jump" onClick={() => { jumpToLatest(); props.focusInput(); }}>↓ Jump to latest</button></Show>
+      </div>
+      <Show when={props.chat.approval}>{(approval) => <div class="approval-card"><b>Approval required</b><span>{approval()}</span><small>Use the keyboard choices shown by Ovim.</small></div>}</Show>
+      <div onMouseDown={props.focusInput}><ChatComposer chat={props.chat} /></div>
+    </section>
+  );
 };
 
 const splitAtUtf8Offset = (text: string, offset: number) => {
@@ -311,25 +365,8 @@ function App() {
   );
 
   const AiPanel = () => (
-    <Show when={view().aiChat} keyed>{(chat) => (
-      <section class="side-panel ai-panel" aria-label="AI chat">
-        <header class="side-panel-header">
-          <div><b>AI chat</b><small>{chat.profile} · {chat.reasoningEffort}</small></div>
-          <span classList={{ working: chat.activity !== "idle" }}>{chat.activity.replaceAll("_", " ")}</span>
-        </header>
-        <div class="chat-messages">
-          <For each={chat.messages}>{(message) => (
-            <article class={`chat-message ${message.role}`}>
-              <header><b>{message.role}</b><small>{message.model}</small></header>
-              <Markdown text={message.content} />
-              <Show when={message.tools.length}><div class="tool-chips"><For each={message.tools}>{(tool) => <span>{tool}</span>}</For></div></Show>
-            </article>
-          )}</For>
-          <Show when={chat.streaming}>{(content) => <article class="chat-message assistant streaming"><header><b>assistant</b><small>streaming</small></header><Markdown text={content()} /></article>}</Show>
-        </div>
-        <Show when={chat.approval}>{(approval) => <div class="approval-card"><b>Approval required</b><span>{approval()}</span><small>Use the keyboard choices shown by Ovim.</small></div>}</Show>
-        <div onMouseDown={() => inputSink.focus({ preventScroll: true })}><ChatComposer chat={chat} /></div>
-      </section>
+    <Show when={view().aiChat}>{(chat) => (
+      <ChatPanel chat={chat()} focusInput={() => inputSink.focus({ preventScroll: true })} />
     )}</Show>
   );
 
