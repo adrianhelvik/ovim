@@ -566,6 +566,11 @@ enum GuiRequest {
         paths: Vec<std::path::PathBuf>,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    AttachImageData {
+        name: String,
+        data: Vec<u8>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     SetCursor {
         pane: usize,
         line: usize,
@@ -681,6 +686,11 @@ impl GuiBridge {
 
     pub async fn attach_images(&self, paths: Vec<std::path::PathBuf>) -> Result<(), String> {
         self.request(|reply| GuiRequest::AttachImages { paths, reply })
+            .await
+    }
+
+    pub async fn attach_image_data(&self, name: String, data: Vec<u8>) -> Result<(), String> {
+        self.request(|reply| GuiRequest::AttachImageData { name, data, reply })
             .await
     }
 
@@ -907,6 +917,14 @@ async fn handle_request(
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
             }
+            (reply, result)
+        }
+        GuiRequest::AttachImageData { name, data, reply } => {
+            let result = editor.attach_ai_chat_image_data(&name, data);
+            if let Err(error) = &result {
+                editor.set_status_message(format!("Image attachment: {error}"));
+            }
+            refresh_after_input(editor);
             (reply, result)
         }
         GuiRequest::AttachImages { paths, reply } => {
@@ -1788,13 +1806,18 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             pending_images: editor
                 .ai_chat_pending_images()
                 .iter()
-                .map(|image| {
-                    image
+                .enumerate()
+                .map(|(index, image)| {
+                    let name = image
                         .path
                         .file_name()
                         .unwrap_or(image.path.as_os_str())
-                        .to_string_lossy()
-                        .to_string()
+                        .to_string_lossy();
+                    if name.starts_with("clipboard-") {
+                        format!("Pasted image {}", index + 1)
+                    } else {
+                        name.to_string()
+                    }
                 })
                 .collect(),
             setup: chat_setup(editor),
@@ -2199,6 +2222,16 @@ mod tests {
         assert_eq!(
             view.ai_chat.unwrap().pending_images,
             vec![path.file_name().unwrap().to_string_lossy().to_string()]
+        );
+        editor
+            .attach_ai_chat_image_data("clipboard.png", b"\x89PNG\r\n\x1a\nfixture".to_vec())
+            .unwrap();
+        assert_eq!(
+            snapshot(&editor, 2).ai_chat.unwrap().pending_images,
+            vec![
+                path.file_name().unwrap().to_string_lossy().to_string(),
+                "Pasted image 2".to_string(),
+            ]
         );
         let _ = std::fs::remove_file(path);
     }

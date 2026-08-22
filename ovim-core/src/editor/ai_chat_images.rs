@@ -1,6 +1,7 @@
 use super::Editor;
 use crate::ai::chat_types::{ChatFocus, ImageAttachment};
 use anyhow::{bail, Context, Result};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
@@ -131,6 +132,67 @@ impl Editor {
         Ok(true)
     }
 
+    /// Attach image bytes supplied by a graphical clipboard without requiring
+    /// a filesystem path. The synthetic path is stable for identical content
+    /// and retains the extension used by provider and gallery projections.
+    pub fn attach_ai_chat_image_data(&mut self, file_name: &str, data: Vec<u8>) -> Result<()> {
+        if self.has_codex_auth_dialog() || self.ai_chat_has_exa_setup_dialog() {
+            bail!("Finish or dismiss AI setup before pasting an image");
+        }
+        let Some(chat) = self.ai_state.chat.as_ref() else {
+            bail!("Open AI chat before pasting an image");
+        };
+        if chat.focus != ChatFocus::TextInput {
+            bail!("Focus the AI chat composer before pasting an image");
+        }
+        if data.len() as u64 > MAX_IMAGE_BYTES {
+            bail!("Image exceeds the 20 MiB limit");
+        }
+        let source_path = Path::new(file_name);
+        let mime_type = image_mime_type(source_path).context("Unsupported image format")?;
+        if !has_image_signature(mime_type, &data) {
+            bail!("Clipboard data is not a valid {mime_type} image");
+        }
+        let existing_bytes: usize = self
+            .ai_chat_pending_images()
+            .iter()
+            .map(|image| image.data.len())
+            .sum();
+        if existing_bytes.saturating_add(data.len()) > MAX_TOTAL_IMAGE_BYTES {
+            bail!("Chat image attachments exceed the 40 MiB total limit");
+        }
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        file_name.hash(&mut hasher);
+        data.hash(&mut hasher);
+        let extension = source_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("png");
+        let path = PathBuf::from(format!(
+            "clipboard-{:016x}.{}",
+            hasher.finish(),
+            extension.to_ascii_lowercase()
+        ));
+        let image = ImageAttachment {
+            path: path.clone(),
+            mime_type: mime_type.to_string(),
+            data,
+        };
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            if chat
+                .pending_images
+                .iter()
+                .any(|existing| existing.path == path)
+            {
+                return Ok(());
+            }
+            chat.pending_images.push(image);
+        }
+        self.set_status_message("Attached clipboard image".to_string());
+        Ok(())
+    }
+
     /// Backspace on an empty composer removes the most recently attached image.
     pub fn remove_last_ai_chat_image(&mut self) -> bool {
         self.ai_state
@@ -247,6 +309,24 @@ mod tests {
             .try_attach_dropped_chat_images("please inspect image.png")
             .unwrap());
         assert!(editor.ai_chat_pending_images().is_empty());
+    }
+
+    #[test]
+    fn clipboard_image_bytes_are_validated_and_attached() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+
+        editor
+            .attach_ai_chat_image_data("pasted.png", b"\x89PNG\r\n\x1a\nminimal".to_vec())
+            .unwrap();
+
+        let image = &editor.ai_chat_pending_images()[0];
+        assert_eq!(image.mime_type, "image/png");
+        assert!(image.file_name().starts_with("clipboard-"));
+        assert!(editor
+            .attach_ai_chat_image_data("fake.png", b"not an image".to_vec())
+            .is_err());
+        assert_eq!(editor.ai_chat_pending_images().len(), 1);
     }
 
     #[test]

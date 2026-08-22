@@ -7,6 +7,7 @@ import type { GuiAiChat, GuiKeyInput, GuiLayoutNode, GuiPane, GuiSnapshot } from
 
 const LINE_HEIGHT = 22;
 const FALLBACK_CELL_WIDTH = 8.15;
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
 export const Markdown = (props: { text: string }) => {
   const html = createMemo(() => DOMPurify.sanitize(
@@ -15,6 +16,13 @@ export const Markdown = (props: { text: string }) => {
   ));
   return <div class="markdown" innerHTML={html()} />;
 };
+
+export const imageExtension = (mimeType: string) => ({
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+} as Record<string, string>)[mimeType];
 
 export const chatSelectionText = (selection: Selection | null = window.getSelection()) => {
   if (!selection || selection.isCollapsed || !selection.rangeCount) return "";
@@ -245,6 +253,23 @@ function App() {
   };
 
   const handlePaste = (event: ClipboardEvent) => {
+    const image = Array.from(event.clipboardData?.items ?? [])
+      .find((item) => imageExtension(item.type))
+      ?.getAsFile()
+      ?? Array.from(event.clipboardData?.files ?? []).find((file) => imageExtension(file.type));
+    if (image) {
+      event.preventDefault();
+      if (image.size > MAX_IMAGE_BYTES) {
+        setError("Clipboard image exceeds the 20 MiB limit");
+        return;
+      }
+      void image.arrayBuffer()
+        .then((data) => invoke("gui_attach_image", new Uint8Array(data), {
+          headers: { "x-ovim-image-extension": imageExtension(image.type) },
+        }))
+        .catch((reason) => setError(String(reason)));
+      return;
+    }
     const text = event.clipboardData?.getData("text/plain");
     if (!text) return;
     event.preventDefault();

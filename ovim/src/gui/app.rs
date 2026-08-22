@@ -3,7 +3,7 @@
 use super::{GuiBridge, GuiKeyInput, GuiSnapshot};
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, InvokeBody, Request};
 use tauri::{DragDropEvent, Manager, RunEvent, State, WebviewWindow, WindowEvent};
 
 #[tauri::command]
@@ -49,6 +49,27 @@ async fn gui_key(bridge: State<'_, GuiBridge>, input: GuiKeyInput) -> Result<(),
 #[tauri::command]
 async fn gui_paste(bridge: State<'_, GuiBridge>, text: String) -> Result<(), String> {
     bridge.paste(text).await
+}
+
+#[tauri::command]
+async fn gui_attach_image(
+    request: Request<'_>,
+    bridge: State<'_, GuiBridge>,
+) -> Result<(), String> {
+    let data = match request.body() {
+        InvokeBody::Raw(data) if data.len() <= 20 * 1024 * 1024 => data.clone(),
+        InvokeBody::Raw(_) => return Err("Clipboard image exceeds the 20 MiB limit".to_string()),
+        InvokeBody::Json(_) => {
+            return Err("Image upload requires a binary request body".to_string())
+        }
+    };
+    let extension = request
+        .headers()
+        .get("x-ovim-image-extension")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("png");
+    let name = format!("pasted-image.{extension}");
+    bridge.attach_image_data(name, data).await
 }
 
 #[tauri::command]
@@ -138,6 +159,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_subscribe,
             gui_key,
             gui_paste,
+            gui_attach_image,
             gui_set_cursor,
             gui_select_tab,
             gui_focus_pane,

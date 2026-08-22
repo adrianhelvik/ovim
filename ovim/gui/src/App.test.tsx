@@ -3,7 +3,7 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { ChatComposer, ChatPanel, ChatSetupCard, Markdown, chatSelectionText, isNearChatBottom } from "./App";
+import App, { ChatComposer, ChatPanel, ChatSetupCard, Markdown, chatSelectionText, imageExtension, isNearChatBottom } from "./App";
 import { mockSnapshot } from "./mock";
 import type { GuiAiChat } from "./types";
 
@@ -190,5 +190,13 @@ describe("Ovim Solid workbench", () => {
 
     transcript.className = "editor-content";
     expect(chatSelectionText(selection)).toBe("");
+  });
+
+  it("accepts only image formats supported by the core attachment path", () => {
+    expect(imageExtension("image/png")).toBe("png");
+    expect(imageExtension("image/jpeg")).toBe("jpg");
+    expect(imageExtension("image/gif")).toBe("gif");
+    expect(imageExtension("image/webp")).toBe("webp");
+    expect(imageExtension("image/svg+xml")).toBeUndefined();
   });
 });
