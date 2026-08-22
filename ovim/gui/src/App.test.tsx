@@ -3,7 +3,7 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { ChatComposer, ChatPanel, ChatSetupCard, Markdown, chatSelectionText, imageExtension, isNearChatBottom } from "./App";
+import App, { ChatComposer, ChatMessageView, ChatPanel, ChatSetupCard, Markdown, chatSelectionText, imageExtension, isNearChatBottom, toolResultSummary } from "./App";
 import { mockSnapshot } from "./mock";
 import type { GuiAiChat } from "./types";
 
@@ -198,5 +198,33 @@ describe("Ovim Solid workbench", () => {
     expect(imageExtension("image/gif")).toBe("gif");
     expect(imageExtension("image/webp")).toBe("webp");
     expect(imageExtension("image/svg+xml")).toBeUndefined();
+  });
+
+  it("keeps tool results collapsed until their details are requested", async () => {
+    const payload = "large tool payload that should start hidden";
+    const result = render(() => <ChatMessageView message={{
+      role: "tool", content: payload, toolName: "search_project", tools: [],
+    }} />);
+
+    expect(screen.getByText("search_project")).toBeTruthy();
+    expect(screen.getByText(toolResultSummary(payload))).toBeTruthy();
+    expect(result.container.querySelector(".markdown")).toBeNull();
+
+    const details = result.container.querySelector<HTMLDetailsElement>("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    await Promise.resolve();
+    expect(screen.getByText(payload)).toBeTruthy();
+  });
+
+  it("collapses assistant tool-call lists by default", () => {
+    const result = render(() => <ChatMessageView message={{
+      role: "assistant", content: "I will inspect this.", model: "codex",
+      tools: ["search_project", "read_file_at_path"],
+    }} />);
+
+    const details = result.container.querySelector<HTMLDetailsElement>(".tool-call-list")!;
+    expect(details.open).toBe(false);
+    expect(screen.getByText("2 tool calls")).toBeTruthy();
   });
 });

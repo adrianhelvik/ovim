@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
@@ -54,6 +54,50 @@ export const ChatSetupCard = (props: { setup: NonNullable<GuiAiChat["setup"]>; o
   );
 };
 
+type GuiChatMessage = GuiAiChat["messages"][number];
+
+export const toolResultSummary = (content: string) => {
+  const failed = /^\s*(error|failed|failure|denied|cancelled)\b/i.test(content.slice(0, 240));
+  return `${failed ? "Failed" : "Completed"} · ${content.length.toLocaleString()} characters`;
+};
+
+export const ToolCallList = (props: { tools: string[] }) => (
+  <Show when={props.tools.length}>
+    <details class="tool-call-list">
+      <summary>{props.tools.length} tool {props.tools.length === 1 ? "call" : "calls"}</summary>
+      <div class="tool-chips"><For each={props.tools}>{(tool) => <span>{tool}</span>}</For></div>
+    </details>
+  </Show>
+);
+
+export const ChatMessageView = (props: { message: GuiChatMessage }) => {
+  const [expanded, setExpanded] = createSignal(false);
+  let disclosure: HTMLDetailsElement | undefined;
+  let identity = "";
+  createEffect(() => {
+    const next = `${props.message.role}:${props.message.toolName ?? ""}:${props.message.content}`;
+    if (identity && identity !== next) {
+      setExpanded(false);
+      if (disclosure) disclosure.open = false;
+    }
+    identity = next;
+  });
+  return (
+    <article class={`chat-message ${props.message.role}`}>
+      <Show when={props.message.role === "tool"} fallback={<>
+        <header><b>{props.message.role}</b><small>{props.message.model}</small></header>
+        <Markdown text={props.message.content} />
+        <ToolCallList tools={props.message.tools} />
+      </>}>
+        <details ref={disclosure} class="tool-result" onToggle={(event) => setExpanded(event.currentTarget.open)}>
+          <summary><span><b>{props.message.toolName || "Tool result"}</b><small>{toolResultSummary(props.message.content)}</small></span><em>Details</em></summary>
+          <Show when={expanded()}><Markdown text={props.message.content} /></Show>
+        </details>
+      </Show>
+    </article>
+  );
+};
+
 export const ChatPanel = (props: { chat: GuiAiChat; focusInput: () => void; onSetupKey?: (key: string) => void }) => {
   const [following, setFollowing] = createSignal(true);
   let transcript!: HTMLDivElement;
@@ -88,13 +132,7 @@ export const ChatPanel = (props: { chat: GuiAiChat; focusInput: () => void; onSe
           ref={transcript}
           onScroll={() => setFollowing(isNearChatBottom(transcript))}
         >
-          <For each={props.chat.messages}>{(message) => (
-            <article class={`chat-message ${message.role}`}>
-              <header><b>{message.role}</b><small>{message.model}</small></header>
-              <Markdown text={message.content} />
-              <Show when={message.tools.length}><div class="tool-chips"><For each={message.tools}>{(tool) => <span>{tool}</span>}</For></div></Show>
-            </article>
-          )}</For>
+          <Index each={props.chat.messages}>{(message) => <ChatMessageView message={message()} />}</Index>
           <Show when={props.chat.streaming}>{(content) => <article class="chat-message assistant streaming"><header><b>assistant</b><small>streaming</small></header><Markdown text={content()} /></article>}</Show>
         </div>
         <Show when={!following()}><button class="chat-jump" onClick={() => { jumpToLatest(); props.focusInput(); }}>↓ Jump to latest</button></Show>

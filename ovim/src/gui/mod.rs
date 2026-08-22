@@ -450,6 +450,7 @@ pub struct GuiChatMessage {
     pub role: String,
     pub content: String,
     pub model: Option<String>,
+    pub tool_name: Option<String>,
     pub tools: Vec<String>,
 }
 
@@ -1796,6 +1797,11 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
     (editor.mode() == Mode::AiChat).then(|| {
         let messages = editor.ai_chat_messages();
         let start = messages.len().saturating_sub(40);
+        let tool_names = messages
+            .iter()
+            .flat_map(|message| message.tool_calls.iter())
+            .map(|tool| (tool.id.as_str(), tool.name.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
         GuiAiChat {
             profile: editor.ai_chat_effective_profile(),
             reasoning_effort: editor.ai_chat_reasoning_effort(),
@@ -1834,6 +1840,11 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                     .to_string(),
                     content: truncate_panel_text(&message.content, 8_000),
                     model: message.model.clone(),
+                    tool_name: message
+                        .tool_call_id
+                        .as_deref()
+                        .and_then(|id| tool_names.get(id).copied())
+                        .map(str::to_string),
                     tools: message
                         .tool_calls
                         .iter()
