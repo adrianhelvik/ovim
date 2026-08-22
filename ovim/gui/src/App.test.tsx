@@ -3,7 +3,7 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { ChatComposer, ChatPanel, Markdown, isNearChatBottom } from "./App";
+import App, { ChatComposer, ChatPanel, ChatSetupCard, Markdown, isNearChatBottom } from "./App";
 import { mockSnapshot } from "./mock";
 import type { GuiAiChat } from "./types";
 
@@ -155,5 +155,23 @@ describe("Ovim Solid workbench", () => {
       delete mockSnapshot.hover;
       delete mockSnapshot.completion;
     }
+  });
+
+  it("shows blocking chat setup inline with masked input and working actions", () => {
+    const onKey = vi.fn();
+    render(() => <ChatSetupCard setup={{
+      kind: "exaKey",
+      title: "Enable web search",
+      detail: "Paste an Exa API key or skip this optional setup.",
+      maskedInput: "••••",
+      inputCursor: 2,
+      actions: [{ label: "Save key", key: "Enter" }, { label: "Not now", key: "Escape" }],
+    }} onKey={onKey} />);
+
+    const input = screen.getByLabelText("Exa API key input");
+    expect(input.textContent).toBe("••••");
+    expect(input.querySelector(".chat-caret")?.previousSibling?.textContent).toBe("••");
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    expect(onKey).toHaveBeenCalledWith("Escape");
   });
 });

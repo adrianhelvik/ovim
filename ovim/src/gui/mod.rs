@@ -51,6 +51,100 @@ pub struct GuiKeyInput {
     pub meta: bool,
 }
 
+fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
+    if let Some(summary) = editor.codex_auth_dialog_summary() {
+        use ovim_core::editor::CodexAuthDialogPhase;
+        let (title, detail, actions) = match summary.phase {
+            CodexAuthDialogPhase::Offer => (
+                "Sign in to Codex",
+                summary.detail.unwrap_or_else(|| {
+                    "Use your ChatGPT plan for Codex inference inside Ovim.".to_string()
+                }),
+                vec![("Sign in in browser", "Enter"), ("Not now", "Escape")],
+            ),
+            CodexAuthDialogPhase::Refreshing => (
+                "Refreshing Codex sign-in",
+                "Your draft and selection are preserved while Ovim refreshes its credentials."
+                    .to_string(),
+                vec![("Cancel", "Escape")],
+            ),
+            CodexAuthDialogPhase::WaitingForBrowser => (
+                "Finish sign-in in your browser",
+                "Ovim will continue automatically when OpenAI sign-in succeeds.".to_string(),
+                vec![("Reopen browser", "o"), ("Cancel", "Escape")],
+            ),
+            CodexAuthDialogPhase::Error => (
+                "Codex sign-in needs attention",
+                summary.detail.unwrap_or_else(|| {
+                    "Codex sign-in failed; your draft is preserved.".to_string()
+                }),
+                vec![("Try again", "Enter"), ("Cancel", "Escape")],
+            ),
+        };
+        return Some(GuiChatSetup {
+            kind: "codexAuth".to_string(),
+            title: title.to_string(),
+            detail,
+            masked_input: None,
+            input_cursor: None,
+            error: None,
+            actions: actions
+                .into_iter()
+                .map(|(label, key)| GuiChatSetupAction {
+                    label: label.to_string(),
+                    key: key.to_string(),
+                })
+                .collect(),
+        });
+    }
+
+    let (input, cursor, error, environment_override) = editor.ai_chat_exa_setup_summary()?;
+    let cursor = input[..cursor.min(input.len())].chars().count();
+    Some(GuiChatSetup {
+        kind: "exaKey".to_string(),
+        title: "Enable web search".to_string(),
+        detail: if environment_override {
+            "EXA_API_KEY is set in the environment. Update or unset it there to replace it."
+                .to_string()
+        } else {
+            "Paste an Exa API key to enable live web search, or skip this optional setup."
+                .to_string()
+        },
+        masked_input: Some("•".repeat(input.chars().count())),
+        input_cursor: Some(cursor),
+        error,
+        actions: vec![
+            GuiChatSetupAction {
+                label: "Save key".to_string(),
+                key: "Enter".to_string(),
+            },
+            GuiChatSetupAction {
+                label: "Not now".to_string(),
+                key: "Escape".to_string(),
+            },
+        ],
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiChatSetup {
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub masked_input: Option<String>,
+    pub input_cursor: Option<usize>,
+    pub error: Option<String>,
+    pub actions: Vec<GuiChatSetupAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiChatSetupAction {
+    pub label: String,
+    pub key: String,
+}
+
 fn attach_chat_images(editor: &mut Editor, paths: &[std::path::PathBuf]) -> Result<()> {
     if editor.mode() != Mode::AiChat {
         anyhow::bail!("Open AI chat before dropping an image");
@@ -344,6 +438,7 @@ pub struct GuiAiChat {
     pub input: String,
     pub input_cursor: usize,
     pub pending_images: Vec<String>,
+    pub setup: Option<GuiChatSetup>,
     pub messages: Vec<GuiChatMessage>,
     pub streaming: Option<String>,
     pub approval: Option<String>,
@@ -1702,6 +1797,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                         .to_string()
                 })
                 .collect(),
+            setup: chat_setup(editor),
             messages: messages[start..]
                 .iter()
                 .map(|message| GuiChatMessage {

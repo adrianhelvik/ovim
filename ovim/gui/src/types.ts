@@ -50,6 +50,15 @@ export interface GuiAiChat {
   input: string;
   inputCursor: number;
   pendingImages: string[];
+  setup?: {
+    kind: string;
+    title: string;
+    detail: string;
+    maskedInput?: string;
+    inputCursor?: number;
+    error?: string;
+    actions: Array<{ label: string; key: string }>;
+  };
   messages: Array<{ role: string; content: string; model?: string; tools: string[] }>;
   streaming?: string;
   approval?: string;

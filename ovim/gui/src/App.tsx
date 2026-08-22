@@ -19,7 +19,26 @@ export const Markdown = (props: { text: string }) => {
 export const isNearChatBottom = (element: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">) =>
   element.scrollHeight - element.scrollTop - element.clientHeight <= 48;
 
-export const ChatPanel = (props: { chat: GuiAiChat; focusInput: () => void }) => {
+export const ChatSetupCard = (props: { setup: NonNullable<GuiAiChat["setup"]>; onKey?: (key: string) => void }) => {
+  const maskedParts = createMemo(() => {
+    const value = props.setup.maskedInput ?? "";
+    const cursor = Math.max(0, Math.min(props.setup.inputCursor ?? 0, value.length));
+    return [value.slice(0, cursor), value.slice(cursor)] as const;
+  });
+  return (
+    <section class="chat-setup-card" aria-label={props.setup.title}>
+      <header><b>{props.setup.title}</b><span>{props.setup.kind === "exaKey" ? "optional" : "required"}</span></header>
+      <p>{props.setup.detail}</p>
+      <Show when={props.setup.maskedInput !== undefined}>
+        <pre aria-label="Exa API key input"><span>{maskedParts()[0]}</span><i class="chat-caret" aria-hidden="true" /><span>{maskedParts()[1] || (!props.setup.maskedInput ? "Paste API key…" : "")}</span></pre>
+      </Show>
+      <Show when={props.setup.error}><small>{props.setup.error}</small></Show>
+      <footer><For each={props.setup.actions}>{(action) => <button onClick={() => props.onKey?.(action.key)}>{action.label}</button>}</For></footer>
+    </section>
+  );
+};
+
+export const ChatPanel = (props: { chat: GuiAiChat; focusInput: () => void; onSetupKey?: (key: string) => void }) => {
   const [following, setFollowing] = createSignal(true);
   let transcript!: HTMLDivElement;
   let messageCount = props.chat.messages.length;
@@ -65,6 +84,7 @@ export const ChatPanel = (props: { chat: GuiAiChat; focusInput: () => void }) =>
         <Show when={!following()}><button class="chat-jump" onClick={() => { jumpToLatest(); props.focusInput(); }}>↓ Jump to latest</button></Show>
       </div>
       <Show when={props.chat.approval}>{(approval) => <div class="approval-card"><b>Approval required</b><span>{approval()}</span><small>Use the keyboard choices shown by Ovim.</small></div>}</Show>
+      <Show when={props.chat.setup}>{(setup) => <ChatSetupCard setup={setup()} onKey={props.onSetupKey} />}</Show>
       <div onMouseDown={props.focusInput}><ChatComposer chat={props.chat} /></div>
     </section>
   );
@@ -366,7 +386,11 @@ function App() {
 
   const AiPanel = () => (
     <Show when={view().aiChat}>{(chat) => (
-      <ChatPanel chat={chat()} focusInput={() => inputSink.focus({ preventScroll: true })} />
+      <ChatPanel
+        chat={chat()}
+        focusInput={() => inputSink.focus({ preventScroll: true })}
+        onSetupKey={(key) => void sendKey({ key, shift: false, control: false, alt: false, meta: false })}
+      />
     )}</Show>
   );
 
