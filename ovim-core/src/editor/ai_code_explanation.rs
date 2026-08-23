@@ -1277,7 +1277,7 @@ mod tests {
 
     fn setup_editor() -> (tempfile::TempDir, Editor, PathBuf, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join(".git")).expect("git marker");
+        git2::Repository::init(dir.path()).expect("init repository");
         let first = dir.path().join("first.rs");
         let second = dir.path().join("second.rs");
         std::fs::write(

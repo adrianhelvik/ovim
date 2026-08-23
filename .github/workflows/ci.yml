@@ -22,4 +22,6 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace
+        # The suite includes process- and global-state tests that can race when
+        # the Rust harness runs them in parallel, occasionally hanging CI.
+        run: cargo test --workspace -- --test-threads=1
