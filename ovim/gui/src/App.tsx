@@ -1812,7 +1812,24 @@ function App() {
                         </For>
                     </pre>
                     <footer class="panel-summary">
-                        {test().summary || "Output updates live"}
+                        <span>{test().summary || "Output updates live"}</span>
+                        <div>
+                            <button
+                                type="button"
+                                disabled={test().status === "running"}
+                                title="Rerun last test · Space T L"
+                                onClick={() => void runEditorShortcut(" tl")}
+                            >
+                                Rerun
+                            </button>
+                            <button
+                                type="button"
+                                title="Open full output · Space T O"
+                                onClick={() => void runEditorShortcut(" to")}
+                            >
+                                Full output
+                            </button>
+                        </div>
                     </footer>
                 </section>
             )}
@@ -1835,6 +1852,89 @@ function App() {
                         </div>
                         <span>{debug().running ? "running" : "paused"}</span>
                     </header>
+                    <div
+                        class="debug-controls"
+                        role="toolbar"
+                        aria-label="Debug controls"
+                    >
+                        <button
+                            type="button"
+                            disabled={debug().running}
+                            title="Continue · F5"
+                            onClick={() => {
+                                void sendKey({
+                                    key: "F5",
+                                    shift: false,
+                                    control: false,
+                                    alt: false,
+                                    meta: false,
+                                });
+                                queueMicrotask(focusEditorInput);
+                            }}
+                        >
+                            Continue
+                        </button>
+                        <button
+                            type="button"
+                            disabled={debug().running}
+                            title="Step over · F10"
+                            onClick={() => {
+                                void sendKey({
+                                    key: "F10",
+                                    shift: false,
+                                    control: false,
+                                    alt: false,
+                                    meta: false,
+                                });
+                                queueMicrotask(focusEditorInput);
+                            }}
+                        >
+                            Step over
+                        </button>
+                        <button
+                            type="button"
+                            disabled={debug().running}
+                            title="Step into · F11"
+                            onClick={() => {
+                                void sendKey({
+                                    key: "F11",
+                                    shift: false,
+                                    control: false,
+                                    alt: false,
+                                    meta: false,
+                                });
+                                queueMicrotask(focusEditorInput);
+                            }}
+                        >
+                            Step in
+                        </button>
+                        <button
+                            type="button"
+                            disabled={debug().running}
+                            title="Step out · Shift+F11"
+                            onClick={() => {
+                                void sendKey({
+                                    key: "F11",
+                                    shift: true,
+                                    control: false,
+                                    alt: false,
+                                    meta: false,
+                                });
+                                queueMicrotask(focusEditorInput);
+                            }}
+                        >
+                            Step out
+                        </button>
+                        <button
+                            type="button"
+                            class="danger"
+                            title="Stop · Space D S"
+                            onClick={() => void runEditorShortcut(" ds")}
+                        >
+                            <Icon name="stop" size={16} />
+                            Stop
+                        </button>
+                    </div>
                     <div
                         class="debug-stack"
                         role="listbox"

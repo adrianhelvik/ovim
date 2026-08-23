@@ -814,6 +814,67 @@ describe("Ovim Solid workbench", () => {
         }
     });
 
+    it("exposes debugger execution controls and projected stop location", () => {
+        mockSnapshot.debug = {
+            running: false,
+            executionLine: 27,
+            stack: [],
+            output: [],
+        };
+
+        try {
+            render(() => <App />);
+            expect(screen.getByText("stopped at line 27")).toBeTruthy();
+            expect(
+                screen.getByRole("toolbar", { name: "Debug controls" }),
+            ).toBeTruthy();
+            expect(
+                screen
+                    .getByRole("button", { name: "Continue" })
+                    .hasAttribute("disabled"),
+            ).toBe(false);
+            expect(
+                screen.getByRole("button", { name: "Step over" }),
+            ).toBeTruthy();
+            expect(
+                screen.getByRole("button", { name: "Step in" }),
+            ).toBeTruthy();
+            expect(
+                screen.getByRole("button", { name: "Step out" }),
+            ).toBeTruthy();
+            expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+        } finally {
+            delete mockSnapshot.debug;
+        }
+    });
+
+    it("exposes test rerun and full-output actions without duplicating a running job", () => {
+        mockSnapshot.testPanel = {
+            scope: "nearest",
+            command: "cargo test focused_case",
+            directory: "ovim",
+            status: "running",
+            elapsedMs: 1200,
+            truncated: 0,
+            lines: [],
+        };
+
+        try {
+            render(() => <App />);
+            expect(screen.getByText("No test output yet")).toBeTruthy();
+            expect(
+                screen
+                    .getByRole("button", { name: "Rerun" })
+                    .hasAttribute("disabled"),
+            ).toBe(true);
+            expect(
+                screen.getByRole("button", { name: "Full output" }),
+            ).toBeTruthy();
+        } finally {
+            delete mockSnapshot.testPanel;
+        }
+    });
+
     it("shows blocking chat setup inline with masked input and working actions", () => {
         const onKey = vi.fn();
         render(() => (

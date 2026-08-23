@@ -1536,12 +1536,74 @@ button:focus-visible {
 .panel-summary {
     min-height: 27px;
     padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     color: var(--text-secondary);
     border-top: 1px solid var(--border);
     font-size: var(--text-micro);
 }
+.panel-summary > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.panel-summary > div {
+    display: flex;
+    gap: 5px;
+}
+.panel-summary button {
+    min-height: 25px;
+    padding: 0 7px;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-2);
+    background: transparent;
+    font-size: var(--text-micro);
+}
+.panel-summary button:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.panel-summary button:disabled {
+    opacity: 0.4;
+}
 .debug-panel {
-    grid-template-rows: auto minmax(80px, 0.7fr) minmax(80px, 1fr);
+    grid-template-rows: auto auto minmax(80px, 0.7fr) minmax(80px, 1fr);
+}
+.debug-controls {
+    min-width: 0;
+    padding: 6px;
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--border);
+}
+.debug-controls button {
+    min-height: 27px;
+    padding: 0 7px;
+    flex: 0 0 auto;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-2);
+    background: transparent;
+    font-size: var(--text-micro);
+}
+.debug-controls button:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.debug-controls button:disabled {
+    opacity: 0.4;
+}
+.debug-controls button.danger {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--error);
 }
 .debug-stack {
     overflow: auto;
