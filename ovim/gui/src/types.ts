@@ -42,9 +42,15 @@ export interface GuiPane {
   lines: GuiLine[];
 }
 
+export interface GuiAiProfileOption {
+  id: string;
+  provider: string;
+  model: string;
+}
+
 export interface GuiAiChat {
   profile: string;
-  profiles: Array<{ id: string; provider: string; model: string }>;
+  profiles: GuiAiProfileOption[];
   reasoningEffort: string;
   reasoningEffortSelection: string;
   reasoningEfforts: string[];

@@ -3,7 +3,13 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { mockSnapshot } from "./mock";
+import ChatModelPicker from "./ChatModelPicker";
+import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
+import { guiKeyInput } from "./guiInput";
 import type { GuiAiChat, GuiCodeExplanation, GuiKeyInput, GuiLayoutNode, GuiPane, GuiSnapshot } from "./types";
+
+export { default as ChatComposer } from "./ChatComposer";
+export { guiKeyInput } from "./guiInput";
 
 const LINE_HEIGHT = 22;
 const FALLBACK_CELL_WIDTH = 8.15;
@@ -45,27 +51,13 @@ export const QueuedChatMessage = (props: {
   </article>;
 };
 
-export const guiKeyInput = (event: Pick<KeyboardEvent, "key" | "shiftKey" | "ctrlKey" | "altKey" | "metaKey">): GuiKeyInput | undefined => {
-  if (["Shift", "Control", "Alt", "Meta"].includes(event.key)) return undefined;
-  const optionProducedText = event.altKey
-    && Array.from(event.key).length === 1
-    && !/^[\x00-\x7f]$/.test(event.key);
-  return {
-    key: event.key,
-    shift: event.shiftKey,
-    control: event.ctrlKey,
-    alt: event.altKey && !optionProducedText,
-    meta: event.metaKey,
-  };
-};
-
 export const ChatActivityGroup = (props: { item: Extract<ChatTranscriptItem, { kind: "activity" }>; onSelect?: (index: number) => void }) => {
   const [expanded, setExpanded] = createSignal(false);
   return (
     <details class="chat-activity" classList={{ live: props.item.live, selected: props.item.entries.some((entry) => entry.selected) }} data-selected={props.item.entries.some((entry) => entry.selected) || undefined} onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary>
-        <span classList={{ "thinking-spinner": props.item.live }} aria-label={props.item.live ? "Thinking" : undefined} />
-        <span><small>{props.item.live ? "Thinking" : "Activity"}</small><b>{activitySummary(props.item.entries)}</b></span>
+        <span classList={{ "thinking-spinner": props.item.live }} aria-label={props.item.live ? "Working" : undefined} />
+        <span><small>{props.item.live ? "Working" : "Activity"}</small><b>{activitySummary(props.item.entries)}</b></span>
         <em>{props.item.entries.length} {props.item.entries.length === 1 ? "step" : "steps"}</em>
       </summary>
       <Show when={expanded()}><div class="chat-activity-history">
@@ -194,16 +186,19 @@ export const chatTranscriptItems = (
   workLive = thinkingLive,
 ): ChatTranscriptItem[] => {
   const items: ChatTranscriptItem[] = [];
+  let active: Extract<ChatTranscriptItem, { kind: "activity" }> | undefined;
   for (const message of messages) {
     if (!isActivityMessage(message)) {
       items.push({ kind: "message", id: message.id, message });
+      const toolBearingCommentary = message.role === "assistant" && message.tools.length > 0;
+      if (!toolBearingCommentary) active = undefined;
       continue;
     }
-    const previous = items.at(-1);
-    if (previous?.kind === "activity") {
-      previous.entries.push(message);
+    if (active) {
+      active.entries.push(message);
     } else {
-      items.push({ kind: "activity", id: `activity:${message.id}`, entries: [message], live: false });
+      active = { kind: "activity", id: `activity:${message.id}`, entries: [message], live: false };
+      items.push(active);
     }
   }
   if (thinkingLive) {
@@ -216,16 +211,15 @@ export const chatTranscriptItems = (
       tools: [],
       live: true,
     };
-    const previous = items.at(-1);
-    if (previous?.kind === "activity") {
-      previous.entries.push(liveThinking);
-      previous.live = true;
+    if (active) {
+      active.entries.push(liveThinking);
+      active.live = true;
     } else {
-      items.push({ kind: "activity", id: "activity:streaming-thinking", entries: [liveThinking], live: true });
+      active = { kind: "activity", id: "activity:streaming-thinking", entries: [liveThinking], live: true };
+      items.push(active);
     }
-  } else if (workLive) {
-    const previous = items.at(-1);
-    if (previous?.kind === "activity") previous.live = true;
+  } else if (workLive && active) {
+    active.live = true;
   }
   return items;
 };
@@ -359,27 +353,16 @@ export const ChatPanel = (props: {
   return (
     <section class="side-panel ai-panel" aria-label="AI chat">
       <header class="side-panel-header">
-        <div><b>AI chat</b><div class="chat-model-selectors">
-          <select
-            data-gui-native-control
-            aria-label="AI model profile"
-            value={props.chat.profile}
-            onClick={() => queueMicrotask(props.focusInput)}
-            onChange={(event) => { props.onProfile?.(event.currentTarget.value); queueMicrotask(props.focusInput); }}
-          >
-            <For each={props.chat.profiles}>{(profile) => <option value={profile.id}>{profile.id} · {profile.provider}/{profile.model}</option>}</For>
-          </select>
-          <select
-            data-gui-native-control
-            aria-label="Reasoning effort"
-            value={props.chat.reasoningEffortSelection}
-            title={`Effective effort: ${props.chat.reasoningEffort}`}
-            onClick={() => queueMicrotask(props.focusInput)}
-            onChange={(event) => { props.onReasoningEffort?.(event.currentTarget.value); queueMicrotask(props.focusInput); }}
-          >
-            <For each={props.chat.reasoningEfforts}>{(effort) => <option value={effort}>{effort === "default" ? `default (${props.chat.reasoningEffort})` : effort}</option>}</For>
-          </select>
-        </div></div>
+        <div><b>AI chat</b><ChatModelPicker
+          profile={props.chat.profile}
+          profiles={props.chat.profiles}
+          reasoningEffort={props.chat.reasoningEffort}
+          reasoningEffortSelection={props.chat.reasoningEffortSelection}
+          reasoningEfforts={props.chat.reasoningEfforts}
+          onProfile={props.onProfile}
+          onReasoningEffort={props.onReasoningEffort}
+          focusInput={props.focusInput}
+        /></div>
         <span classList={{ working: props.chat.activity !== "idle" }}>{props.chat.activity.replaceAll("_", " ")}</span>
       </header>
       <Show when={props.chat.agents.length}><section class="chat-agents" aria-label="Agent navigation">
@@ -407,7 +390,7 @@ export const ChatPanel = (props: {
           <Show when={props.chat.streaming}>{(content) => <article class="chat-message assistant streaming"><header><b>assistant</b><small>streaming</small></header><Markdown text={content()} /></article>}</Show>
           <For each={props.chat.queuedInputs}>{(item) => <QueuedChatMessage item={item} onAction={props.onQueuedAction} />}</For>
         </div>
-        <Show when={!following()}><button class="chat-jump" onClick={() => { jumpToLatest(); props.focusInput(); }}>↓ Jump to latest</button></Show>
+        <Show when={!following()}><button class="chat-jump" onClick={() => { jumpToLatest(); props.focusInput(); }}>{props.chat.activity !== "idle" ? "New activity ↓" : "New messages ↓"}</button></Show>
       </div>
       <Show when={props.chat.approval}>{(approval) => <div class="approval-card"><b>Approval required</b><span>{approval()}</span><small>Use the keyboard choices shown by Ovim.</small></div>}</Show>
       <Show when={props.chat.setup}>{(setup) => <ChatSetupCard setup={setup()} onKey={props.onSetupKey} />}</Show>
@@ -429,183 +412,6 @@ const splitAtUtf8Offset = (text: string, offset: number) => {
   return [text.slice(0, codeUnits), text.slice(codeUnits)] as const;
 };
 
-export const chatInputOffsetAtPoint = (root: HTMLElement, x: number, y: number) => {
-  const caretDocument = document as Document & {
-    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
-    caretRangeFromPoint?: (x: number, y: number) => Range | null;
-  };
-  const position = caretDocument.caretPositionFromPoint?.(x, y);
-  const fallback = !position ? caretDocument.caretRangeFromPoint?.(x, y) : undefined;
-  const node = position?.offsetNode ?? fallback?.startContainer;
-  const offset = position?.offset ?? fallback?.startOffset;
-  if (!node || offset === undefined || (node !== root && !root.contains(node))) return 0;
-  const range = document.createRange();
-  range.selectNodeContents(root);
-  range.setEnd(node, offset);
-  return new TextEncoder().encode(range.toString()).length;
-};
-
-const chatInputColumns = (root: HTMLElement) => {
-  const style = getComputedStyle(root);
-  const usableWidth = root.clientWidth
-    - (Number.parseFloat(style.paddingLeft) || 0)
-    - (Number.parseFloat(style.paddingRight) || 0);
-  if (usableWidth <= 0) return 0;
-  const probe = document.createElement("span");
-  probe.textContent = "M".repeat(32);
-  probe.style.cssText = `position:fixed;visibility:hidden;white-space:pre;font:${style.font};`;
-  document.body.append(probe);
-  const measured = probe.getBoundingClientRect().width / 32;
-  probe.remove();
-  return Math.max(1, Math.floor(usableWidth / (measured || FALLBACK_CELL_WIDTH)));
-};
-
-export type ChatInputUpdate = {
-  expectedInput: string;
-  expectedCursor: number;
-  input: string;
-  cursor: number;
-  action?: GuiKeyInput;
-};
-
-export const utf8OffsetFromTextArea = (text: string, utf16Offset: number) =>
-  new TextEncoder().encode(text.slice(0, utf16Offset)).length;
-
-export const utf16OffsetFromUtf8 = (text: string, utf8Offset: number) =>
-  splitAtUtf8Offset(text, utf8Offset)[0].length;
-
-export const ChatComposer = (props: {
-  chat: GuiAiChat;
-  revision?: number;
-  bindInput?: (input: HTMLTextAreaElement) => void;
-  onUpdate?: (update: ChatInputUpdate) => Promise<void>;
-  onWidth?: (columns: number) => void;
-}) => {
-  const [draft, setDraft] = createSignal(props.chat.input);
-  let input!: HTMLTextAreaElement;
-  let optimisticInput = props.chat.input;
-  let optimisticCursor = props.chat.inputCursor;
-  let awaiting: { base: string; action: boolean; responseDone: boolean; revision: number } | undefined;
-  let mutations = Promise.resolve();
-  const resize = () => {
-    if (!input) return;
-    input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
-  };
-
-  const applyRemote = () => {
-    const remoteInput = props.chat.input;
-    const remoteCursor = props.chat.inputCursor;
-    if (awaiting) {
-      const matchesOptimistic = remoteInput === optimisticInput && remoteCursor === optimisticCursor;
-      const actionChangedInput = awaiting.action
-        && awaiting.responseDone
-        && (props.revision ?? 0) > awaiting.revision
-        && remoteInput !== awaiting.base;
-      if (!matchesOptimistic && !actionChangedInput) return;
-      awaiting = undefined;
-    }
-    optimisticInput = remoteInput;
-    optimisticCursor = remoteCursor;
-    setDraft(remoteInput);
-    queueMicrotask(() => {
-      if (!input) return;
-      const cursor = utf16OffsetFromUtf8(remoteInput, remoteCursor);
-      input.setSelectionRange(cursor, cursor);
-      resize();
-    });
-  };
-
-  createEffect(applyRemote);
-
-  const publish = (nextInput: string, utf16Cursor: number, action?: GuiKeyInput) => {
-    const nextCursor = utf8OffsetFromTextArea(nextInput, utf16Cursor);
-    const update: ChatInputUpdate = {
-      expectedInput: optimisticInput,
-      expectedCursor: optimisticCursor,
-      input: nextInput,
-      cursor: nextCursor,
-      action,
-    };
-    const base = optimisticInput;
-    optimisticInput = action?.key === "Enter" ? "" : nextInput;
-    optimisticCursor = action?.key === "Enter" ? 0 : nextCursor;
-    if (action?.key === "Enter") setDraft("");
-    awaiting = { base, action: Boolean(action), responseDone: false, revision: props.revision ?? 0 };
-    mutations = mutations
-      .then(() => props.onUpdate?.(update))
-      .then(() => {
-        if (awaiting) awaiting.responseDone = true;
-        applyRemote();
-      })
-      .catch(() => {
-        awaiting = undefined;
-        optimisticInput = props.chat.input;
-        optimisticCursor = props.chat.inputCursor;
-        setDraft(props.chat.input);
-      });
-    return mutations;
-  };
-
-  onMount(() => {
-    props.bindInput?.(input);
-    resize();
-    if (!props.onWidth) return;
-    let previous = 0;
-    const report = () => {
-      const columns = chatInputColumns(input);
-      if (columns > 0 && columns !== previous) {
-        previous = columns;
-        props.onWidth?.(columns);
-      }
-    };
-    const observer = new ResizeObserver(report);
-    observer.observe(input);
-    report();
-    onCleanup(() => observer.disconnect());
-  });
-  return (
-    <div class="chat-composer" classList={{ waiting: props.chat.waiting }}>
-      <Show when={props.chat.pendingImages.length}>
-        <div class="chat-attachments" aria-label="Pending image attachments">
-          <For each={props.chat.pendingImages}>{(name) => <span title={name}>▧ {name}</span>}</For>
-        </div>
-      </Show>
-      <textarea
-        ref={input!}
-        class="chat-input"
-        aria-label="AI chat input"
-        value={draft()}
-        placeholder="Ask Ovim about this code…"
-        rows={2}
-        autocomplete="off"
-        autocapitalize="off"
-        spellcheck={false}
-        onInput={(event) => {
-          const target = event.currentTarget;
-          setDraft(target.value);
-          resize();
-          void publish(target.value, target.selectionStart);
-        }}
-        onSelect={(event) => {
-          const target = event.currentTarget;
-          const cursor = utf8OffsetFromTextArea(target.value, target.selectionStart);
-          if (target.value === optimisticInput && cursor !== optimisticCursor) void publish(target.value, target.selectionStart);
-        }}
-        onKeyDown={(event) => {
-          if (event.isComposing) return;
-          const submit = event.key === "Enter" && !event.shiftKey;
-          const coreAction = submit || event.key === "Tab" || event.key === "Escape";
-          if (!coreAction) return;
-          event.preventDefault();
-          const target = event.currentTarget;
-          void publish(target.value, target.selectionStart, guiKeyInput(event));
-        }}
-      />
-      <footer><span>{props.chat.waiting ? "working" : "Enter to send · drop images to attach · Esc to return"}</span><b>{props.chat.reasoningEffort}</b></footer>
-    </div>
-  );
-};
 
 const Icon = (props: { name: "files" | "search" | "branch" | "spark" | "gear" | "close" | "min" | "max" }) => {
   const paths: Record<string, string> = {

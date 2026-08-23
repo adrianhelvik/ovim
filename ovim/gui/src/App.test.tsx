@@ -199,12 +199,12 @@ describe("Ovim Solid workbench", () => {
 
     transcript.scrollTop = 100;
     fireEvent.scroll(transcript);
-    expect(screen.getByRole("button", { name: "↓ Jump to latest" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New messages ↓" })).toBeTruthy();
     setChat({ ...initial, streaming: "More streaming content" });
     await Promise.resolve();
     expect(transcript.scrollTop).toBe(100);
 
-    fireEvent.click(screen.getByRole("button", { name: "↓ Jump to latest" }));
+    fireEvent.click(screen.getByRole("button", { name: "New messages ↓" }));
     expect(transcript.scrollTop).toBe(700);
   });
 
@@ -228,16 +228,20 @@ describe("Ovim Solid workbench", () => {
     };
     render(() => <ChatPanel chat={chat} focusInput={focusInput} onProfile={onProfile} onReasoningEffort={onReasoningEffort} onQueuedAction={onQueuedAction} />);
 
-    fireEvent.click(screen.getByLabelText("AI model profile"));
+    const trigger = screen.getByRole("button", { name: /codex.*default.*medium/i });
+    fireEvent.click(trigger);
+    const search = screen.getByLabelText("Model profile");
+    fireEvent.input(search, { target: { value: "qwen" } });
+    expect(screen.queryByRole("option", { name: /codex/i })).toBeNull();
+    fireEvent.click(screen.getByRole("option", { name: /local.*ollama.*qwen-test/i }));
     await Promise.resolve();
+    expect(onProfile).toHaveBeenCalledWith("local");
     expect(focusInput).toHaveBeenCalledOnce();
 
-    fireEvent.change(screen.getByLabelText("AI model profile"), { target: { value: "local" } });
-    fireEvent.change(screen.getByLabelText("Reasoning effort"), { target: { value: "high" } });
-    expect(onProfile).toHaveBeenCalledWith("local");
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("button", { name: "high" }));
+    await Promise.resolve();
     expect(onReasoningEffort).toHaveBeenCalledWith("high");
-    expect(screen.getByRole("option", { name: "codex · codex/gpt-test" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "default (medium)" })).toBeTruthy();
     expect(screen.getByText("Queued message")).toBeTruthy();
     expect(screen.getByText("Check the remaining tests")).toBeTruthy();
     expect(screen.getByText("1 image")).toBeTruthy();
@@ -372,7 +376,7 @@ describe("Ovim Solid workbench", () => {
 
     const result = render(() => <ChatActivityGroup item={live} />);
     expect(screen.getByText("Inspecting the matching files")).toBeTruthy();
-    expect(screen.getByLabelText("Thinking")).toBeTruthy();
+    expect(screen.getByLabelText("Working")).toBeTruthy();
     expect(result.container.querySelector(".chat-activity-history")).toBeNull();
     const details = result.container.querySelector<HTMLDetailsElement>("details")!;
     details.open = true;
@@ -393,6 +397,19 @@ describe("Ovim Solid workbench", () => {
     if (activity?.kind !== "activity") throw new Error("expected activity");
     expect(activity.live).toBe(true);
     expect(activitySummary(activity.entries)).toBe("Planning");
+  });
+
+  it("keeps one activity group across tool-bearing assistant commentary", () => {
+    const items = chatTranscriptItems([
+      { id: "1:1", index: 0, selected: false, role: "thinking", content: "Planning", tools: [] },
+      { id: "1:2", index: 1, selected: false, role: "assistant", content: "I’ll inspect the matching files.", tools: ["search_project"] },
+      { id: "1:3", index: 2, selected: false, role: "tool", content: "Found matches", toolName: "search_project", tools: [] },
+    ], "Comparing results", true, true);
+    expect(items.map((item) => item.kind)).toEqual(["activity", "message"]);
+    const activity = items[0];
+    if (activity.kind !== "activity") throw new Error("expected activity");
+    expect(activity.entries.map((entry) => entry.role)).toEqual(["thinking", "tool", "thinking"]);
+    expect(activity.live).toBe(true);
   });
 
   it("keeps tool results collapsed until their details are requested", async () => {
