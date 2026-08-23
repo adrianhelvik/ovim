@@ -166,6 +166,15 @@ async fn gui_select_picker(bridge: State<'_, GuiBridge>, index: usize) -> Result
 }
 
 #[tauri::command]
+async fn gui_select_completion(
+    bridge: State<'_, GuiBridge>,
+    index: usize,
+    activate: bool,
+) -> Result<(), String> {
+    bridge.select_completion(index, activate).await
+}
+
+#[tauri::command]
 async fn gui_select_file_tree(
     bridge: State<'_, GuiBridge>,
     index: usize,
@@ -191,6 +200,11 @@ async fn gui_select_lsp(
     activate: bool,
 ) -> Result<(), String> {
     bridge.select_lsp(index, activate).await
+}
+
+#[tauri::command]
+async fn gui_select_debug_frame(bridge: State<'_, GuiBridge>, index: usize) -> Result<(), String> {
+    bridge.select_debug_frame(index).await
 }
 
 #[tauri::command]
@@ -240,9 +254,11 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_select_tab,
             gui_focus_pane,
             gui_select_picker,
+            gui_select_completion,
             gui_select_file_tree,
             gui_select_problem,
             gui_select_lsp,
+            gui_select_debug_frame,
             gui_window_action,
         ])
         .setup(|app| {

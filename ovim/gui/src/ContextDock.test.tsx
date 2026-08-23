@@ -64,4 +64,22 @@ describe("ContextDock", () => {
             screen.getByRole("tabpanel", { name: "AI chat" }).textContent,
         ).toContain("AI chat content");
     });
+
+    it("honors a controlled active panel without undoing user selection", () => {
+        const [active, setActive] =
+            createSignal<ContextPanelDefinition["id"]>("ai");
+        render(() => (
+            <ContextDock
+                panels={[panel("ai", "AI chat"), panel("tests", "Tests")]}
+                activePanel={active()}
+                onActivePanel={setActive}
+            />
+        ));
+
+        fireEvent.click(screen.getByRole("tab", { name: "Tests" }));
+        expect(active()).toBe("tests");
+        expect(screen.getByRole("tabpanel").textContent).toContain(
+            "Tests content",
+        );
+    });
 });

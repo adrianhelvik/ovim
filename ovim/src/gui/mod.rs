@@ -716,6 +716,11 @@ enum GuiRequest {
         index: usize,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    SelectCompletion {
+        index: usize,
+        activate: bool,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     SelectFileTree {
         index: usize,
         activate: bool,
@@ -730,6 +735,10 @@ enum GuiRequest {
     SelectLsp {
         index: usize,
         activate: bool,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    SelectDebugFrame {
+        index: usize,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Shutdown,
@@ -880,6 +889,15 @@ impl GuiBridge {
             .await
     }
 
+    pub async fn select_completion(&self, index: usize, activate: bool) -> Result<(), String> {
+        self.request(|reply| GuiRequest::SelectCompletion {
+            index,
+            activate,
+            reply,
+        })
+        .await
+    }
+
     pub async fn select_file_tree(&self, index: usize, activate: bool) -> Result<(), String> {
         self.request(|reply| GuiRequest::SelectFileTree {
             index,
@@ -911,6 +929,11 @@ impl GuiBridge {
             reply,
         })
         .await
+    }
+
+    pub async fn select_debug_frame(&self, index: usize) -> Result<(), String> {
+        self.request(|reply| GuiRequest::SelectDebugFrame { index, reply })
+            .await
     }
 
     pub async fn select_ai_profile(&self, profile: String) -> Result<(), String> {
@@ -1293,16 +1316,27 @@ async fn handle_request(
             (reply, result)
         }
         GuiRequest::SelectPicker { index, reply } => {
-            if let Some(picker) = editor.picker_mut() {
+            let result = editor
+                .picker()
+                .is_some_and(|picker| index < picker.filtered_result_count())
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("Unknown picker item: {index}"));
+            if result.is_ok()
+                && let Some(picker) = editor.picker_mut()
+            {
                 picker.set_selected_index(index);
             }
-            let result = InputHandler::handle_key_event_no_dirty(
-                editor,
-                ovim_core::key::KeyEvent::new(
-                    ovim_core::key::KeyCode::Enter,
-                    ovim_core::key::Modifiers::NONE,
-                ),
-            );
+            let result = if result.is_ok() {
+                InputHandler::handle_key_event_no_dirty(
+                    editor,
+                    ovim_core::key::KeyEvent::new(
+                        ovim_core::key::KeyCode::Enter,
+                        ovim_core::key::Modifiers::NONE,
+                    ),
+                )
+            } else {
+                result
+            };
             if result.is_ok() {
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
@@ -1321,6 +1355,24 @@ async fn handle_request(
             }
             refresh_after_input(editor);
             (reply, Ok(()))
+        }
+        GuiRequest::SelectCompletion {
+            index,
+            activate,
+            reply,
+        } => {
+            let result = editor
+                .completion_menu_mut()
+                .select_index(index)
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("Unknown completion item: {index}"));
+            if result.is_ok() {
+                if activate {
+                    editor.accept_completion();
+                }
+                refresh_after_input(editor);
+            }
+            (reply, result)
         }
         GuiRequest::SelectProblem {
             kind,
@@ -1379,6 +1431,16 @@ async fn handle_request(
             if result.is_ok() {
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
+            }
+            (reply, result)
+        }
+        GuiRequest::SelectDebugFrame { index, reply } => {
+            let result = (index < editor.debug_state().stack_frames.len())
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("Unknown debug frame: {index}"));
+            if result.is_ok() {
+                editor.select_stack_frame(index);
+                refresh_after_input(editor);
             }
             (reply, result)
         }

@@ -1527,21 +1527,8 @@ button:focus-visible {
 .problem-panel button.selected {
     background: var(--surface-selected);
 }
-.problem-panel button i {
-    width: 15px;
-    height: 15px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    color: var(--canvas);
-    background: var(--info);
-    font: 700 var(--text-micro)/1 var(--editor-font);
-}
-.problem-panel button i.error {
-    background: var(--error);
-}
-.problem-panel button i.warning {
-    background: var(--warning);
+.problem-panel button > .icon {
+    justify-self: center;
 }
 .problem-panel button strong {
     overflow: hidden;
@@ -1778,13 +1765,21 @@ button:focus-visible {
     overflow-y: auto;
 }
 .completion-item {
+    width: 100%;
     min-height: 26px;
     padding: 4px 9px;
     display: grid;
     grid-template-columns: 19px auto 1fr;
     align-items: center;
     gap: 7px;
+    color: var(--text-primary);
+    border: 0;
+    background: transparent;
+    text-align: left;
     font: 11.5px/1.3 var(--editor-font);
+}
+.completion-item:hover {
+    background: color-mix(in srgb, var(--text-primary) 4%, transparent);
 }
 .completion-item.selected {
     background: var(--surface-selected);

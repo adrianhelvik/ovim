@@ -645,7 +645,7 @@ export const ChatPanel = (props: {
     chat: GuiAiChat;
     revision?: number;
     focusInput: () => void;
-    bindInput?: (input: HTMLTextAreaElement) => void;
+    bindInput?: (input: HTMLTextAreaElement | undefined) => void;
     onInputUpdate?: (update: ChatInputUpdate) => Promise<void>;
     onSetupKey?: (key: string) => void;
     onInputWidth?: (columns: number) => void;
@@ -733,7 +733,10 @@ export const ChatPanel = (props: {
                                 props.chat.focus === "treePanel" &&
                                 props.chat.agentCursor === 0,
                         }}
-                        onClick={() => props.onAgent?.()}
+                        onClick={() => {
+                            props.onAgent?.();
+                            queueMicrotask(props.focusInput);
+                        }}
                     >
                         <span>
                             <b>Primary conversation</b>
@@ -756,7 +759,10 @@ export const ChatPanel = (props: {
                                 style={{
                                     "padding-left": `${9 + agent.depth * 12}px`,
                                 }}
-                                onClick={() => props.onAgent?.(agent.id)}
+                                onClick={() => {
+                                    props.onAgent?.(agent.id);
+                                    queueMicrotask(props.focusInput);
+                                }}
                             >
                                 <span>
                                     <b>{agent.taskName}</b>
@@ -823,7 +829,10 @@ export const ChatPanel = (props: {
                         {(item) => (
                             <QueuedChatMessage
                                 item={item}
-                                onAction={props.onQueuedAction}
+                                onAction={(id, action) => {
+                                    props.onQueuedAction?.(id, action);
+                                    queueMicrotask(props.focusInput);
+                                }}
                             />
                         )}
                     </For>
@@ -899,6 +908,9 @@ function App() {
             ? "context"
             : "explorer",
     );
+    const [activeContextPanel, setActiveContextPanel] = createSignal<
+        "ai" | "tests" | "debug"
+    >("ai");
     let editorBody!: HTMLDivElement;
     let inputSink!: HTMLTextAreaElement;
     let chatInput: HTMLTextAreaElement | undefined;
@@ -915,6 +927,11 @@ function App() {
         ),
     );
     let hadContextDock = hasContextDock();
+    let previousContextAvailability = {
+        ai: Boolean(view().aiChat),
+        tests: Boolean(view().testPanel),
+        debug: Boolean(view().debug),
+    };
 
     createEffect(() => {
         const hasContext = hasContextDock();
@@ -925,6 +942,21 @@ function App() {
         else if (hasContext && !hasExplorer && activeDock() === "explorer")
             setActiveDock("context");
         hadContextDock = hasContext;
+    });
+
+    createEffect(() => {
+        const next = {
+            ai: Boolean(view().aiChat),
+            tests: Boolean(view().testPanel),
+            debug: Boolean(view().debug),
+        };
+        if (next.ai && !previousContextAvailability.ai)
+            setActiveContextPanel("ai");
+        if (next.tests && !previousContextAvailability.tests)
+            setActiveContextPanel("tests");
+        if (next.debug && !previousContextAvailability.debug)
+            setActiveContextPanel("debug");
+        previousContextAvailability = next;
     });
 
     const dimensions = () => {
@@ -964,11 +996,13 @@ function App() {
 
     const accept = (snapshot: GuiSnapshot) => {
         const chatOpened = !view().aiChat && Boolean(snapshot.aiChat);
+        const chatClosed = Boolean(view().aiChat) && !snapshot.aiChat;
         setView(snapshot);
         setConnected(true);
         setError("");
         requestAnimationFrame(syncDimensions);
-        if (chatOpened) queueMicrotask(focusPrimaryInput);
+        if (chatOpened) queueMicrotask(focusChatInput);
+        if (chatClosed) queueMicrotask(focusEditorInput);
         if (snapshot.shouldQuit && native) void windowAction("close");
     };
 
@@ -993,9 +1027,19 @@ function App() {
         }
     };
 
+    const focusEditorInput = () => inputSink?.focus({ preventScroll: true });
+    const focusChatInput = () => {
+        if (chatInput?.isConnected) chatInput.focus({ preventScroll: true });
+        else focusEditorInput();
+    };
     const focusPrimaryInput = () => {
-        const input = view().aiChat ? chatInput : inputSink;
-        input?.focus({ preventScroll: true });
+        if (
+            activeDock() === "context" &&
+            activeContextPanel() === "ai" &&
+            view().aiChat
+        )
+            focusChatInput();
+        else focusEditorInput();
     };
 
     const sendKey = (input: GuiKeyInput) => mutate("gui_key", { input });
@@ -1021,22 +1065,29 @@ function App() {
             activeDock() === "context"
         ) {
             setActiveDock("explorer");
-            queueMicrotask(focusPrimaryInput);
+            queueMicrotask(focusEditorInput);
             return;
         }
         setActiveDock("explorer");
+        focusEditorInput();
         void sendLiteral("-");
     };
 
     const toggleAiChat = () => {
+        setActiveContextPanel("ai");
         if (compactDocks() && view().aiChat && activeDock() === "explorer") {
             setActiveDock("context");
-            queueMicrotask(focusPrimaryInput);
+            queueMicrotask(focusChatInput);
             return;
         }
         setActiveDock("context");
-        focusPrimaryInput();
+        focusChatInput();
         void sendLiteral("  ");
+    };
+
+    const runEditorShortcut = async (keys: string) => {
+        focusEditorInput();
+        await sendLiteral(keys);
     };
 
     const themeVars = createMemo(() => ({
@@ -1239,6 +1290,7 @@ function App() {
         displayStart: number,
     ) => {
         event.stopPropagation();
+        focusEditorInput();
         const target = event.currentTarget as HTMLElement;
         // The content element itself is translated by the horizontal scroll
         // offset, so its bounding box already starts at display column zero.
@@ -1450,7 +1502,7 @@ function App() {
                 <ChatPanel
                     chat={chat()}
                     revision={view().revision}
-                    focusInput={focusPrimaryInput}
+                    focusInput={focusChatInput}
                     bindInput={(input) => {
                         chatInput = input;
                     }}
@@ -1461,7 +1513,7 @@ function App() {
                             control: false,
                             alt: false,
                             meta: false,
-                        })
+                        }).finally(() => focusChatInput())
                     }
                     onInputUpdate={(update) =>
                         mutateStrict("gui_update_chat_input", { ...update })
@@ -1486,8 +1538,7 @@ function App() {
                             id,
                             action,
                         });
-                        if (action === "recall")
-                            queueMicrotask(focusPrimaryInput);
+                        if (action === "recall") queueMicrotask(focusChatInput);
                     }}
                 />
             )}
@@ -1536,11 +1587,24 @@ function App() {
                         </div>
                         <span>{debug.running ? "running" : "paused"}</span>
                     </header>
-                    <div class="debug-stack">
+                    <div
+                        class="debug-stack"
+                        role="listbox"
+                        aria-label="Stack frames"
+                    >
                         <For each={debug.stack}>
                             {(frame) => (
                                 <button
+                                    type="button"
+                                    role="option"
+                                    aria-selected={frame.selected}
                                     classList={{ selected: frame.selected }}
+                                    onClick={() => {
+                                        void mutate("gui_select_debug_frame", {
+                                            index: debug.stack.indexOf(frame),
+                                        });
+                                        queueMicrotask(focusEditorInput);
+                                    }}
                                 >
                                     <b>{frame.name}</b>
                                     <small>
@@ -1596,7 +1660,13 @@ function App() {
         return panels;
     });
 
-    const SideDock = () => <ContextDock panels={contextPanels()} />;
+    const SideDock = () => (
+        <ContextDock
+            panels={contextPanels()}
+            activePanel={activeContextPanel()}
+            onActivePanel={setActiveContextPanel}
+        />
+    );
 
     const ProblemPanel = () => (
         <Show when={view().problems} keyed>
@@ -1609,34 +1679,58 @@ function App() {
                         <b>{problems.title || problems.kind}</b>
                         <span>{problems.total} items</span>
                     </header>
-                    <div>
+                    <div role="listbox" aria-label="Problem entries">
                         <For each={problems.items}>
                             {(item) => (
                                 <button
+                                    type="button"
+                                    role="option"
+                                    aria-selected={
+                                        item.index === problems.selected
+                                    }
                                     classList={{
                                         selected:
                                             item.index === problems.selected,
                                     }}
-                                    onClick={() =>
+                                    onClick={() => {
                                         void mutate("gui_select_problem", {
                                             kind: problems.kind,
                                             index: item.index,
                                             activate: false,
-                                        })
-                                    }
-                                    onDblClick={() =>
+                                        });
+                                        queueMicrotask(focusEditorInput);
+                                    }}
+                                    onDblClick={() => {
                                         void mutate("gui_select_problem", {
                                             kind: problems.kind,
                                             index: item.index,
                                             activate: true,
-                                        })
-                                    }
+                                        });
+                                        queueMicrotask(focusEditorInput);
+                                    }}
+                                    onKeyDown={(event) => {
+                                        if (event.key !== "Enter") return;
+                                        event.preventDefault();
+                                        void mutate("gui_select_problem", {
+                                            kind: problems.kind,
+                                            index: item.index,
+                                            activate: true,
+                                        });
+                                        queueMicrotask(focusEditorInput);
+                                    }}
                                 >
-                                    <i class={item.severity}>
-                                        {item.severity
-                                            .slice(0, 1)
-                                            .toUpperCase()}
-                                    </i>
+                                    {(() => {
+                                        const status = diagnosticIcon(
+                                            item.severity,
+                                        );
+                                        return (
+                                            <Icon
+                                                name={status.name}
+                                                tone={status.tone}
+                                                size={16}
+                                            />
+                                        );
+                                    })()}
                                     <strong>{item.message}</strong>
                                     <small>
                                         {item.file}:{item.line}:{item.column}
@@ -1654,10 +1748,15 @@ function App() {
         <Show when={!view().aiChat ? view().lspManager : undefined} keyed>
             {(manager) => (
                 <div class="overlay-shade lsp-overlay">
-                    <section class="lsp-panel">
+                    <section
+                        class="lsp-panel"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="lsp-manager-title"
+                    >
                         <header>
                             <div>
-                                <b>Language servers</b>
+                                <b id="lsp-manager-title">Language servers</b>
                                 <small>
                                     Install, inspect, and manage language
                                     intelligence
@@ -1669,26 +1768,46 @@ function App() {
                             <Icon name="search" size={16} />
                             {manager.filter || "Filter languages"}
                         </div>
-                        <div class="lsp-list">
+                        <div
+                            class="lsp-list"
+                            role="listbox"
+                            aria-label="Language servers"
+                        >
                             <For each={manager.items}>
                                 {(item) => (
                                     <button
+                                        type="button"
+                                        role="option"
+                                        aria-selected={
+                                            item.index === manager.selected
+                                        }
                                         classList={{
                                             selected:
                                                 item.index === manager.selected,
                                         }}
-                                        onClick={() =>
+                                        onClick={() => {
                                             void mutate("gui_select_lsp", {
                                                 index: item.index,
                                                 activate: false,
-                                            })
-                                        }
-                                        onDblClick={() =>
+                                            });
+                                            queueMicrotask(focusEditorInput);
+                                        }}
+                                        onDblClick={() => {
                                             void mutate("gui_select_lsp", {
                                                 index: item.index,
                                                 activate: true,
-                                            })
-                                        }
+                                            });
+                                            queueMicrotask(focusEditorInput);
+                                        }}
+                                        onKeyDown={(event) => {
+                                            if (event.key !== "Enter") return;
+                                            event.preventDefault();
+                                            void mutate("gui_select_lsp", {
+                                                index: item.index,
+                                                activate: true,
+                                            });
+                                            queueMicrotask(focusEditorInput);
+                                        }}
                                     >
                                         <span
                                             class={`server-dot ${item.section.toLowerCase().replaceAll(" ", "-")}`}
@@ -1820,7 +1939,7 @@ function App() {
                             icon="search"
                             label="Search project"
                             shortcut="Space S G"
-                            onClick={() => void sendLiteral(" sg")}
+                            onClick={() => runEditorShortcut(" sg")}
                         />
                         <IconButton
                             icon="source-control"
@@ -1843,7 +1962,7 @@ function App() {
                         icon="settings"
                         label="Settings"
                         shortcut=":set"
-                        onClick={() => void sendLiteral(":set")}
+                        onClick={() => runEditorShortcut(":set")}
                     />
                 </nav>
 
@@ -1854,10 +1973,25 @@ function App() {
                                 <span>Explorer</span>
                                 <small>{tree.root}</small>
                             </div>
-                            <div class="tree-list">
+                            <div
+                                class="tree-list"
+                                role="tree"
+                                aria-label="Project files"
+                            >
                                 <For each={tree.items}>
                                     {(item) => (
                                         <button
+                                            type="button"
+                                            role="treeitem"
+                                            aria-selected={
+                                                item.index === tree.selected
+                                            }
+                                            aria-expanded={
+                                                item.directory
+                                                    ? item.expanded
+                                                    : undefined
+                                            }
+                                            aria-level={item.depth + 1}
                                             class="tree-item"
                                             classList={{
                                                 selected:
@@ -1868,24 +2002,45 @@ function App() {
                                                 "padding-left": `${10 + item.depth * 14}px`,
                                             }}
                                             title={item.path}
-                                            onClick={() =>
+                                            onClick={() => {
                                                 void mutate(
                                                     "gui_select_file_tree",
                                                     {
                                                         index: item.index,
                                                         activate: false,
                                                     },
-                                                )
-                                            }
-                                            onDblClick={() =>
+                                                );
+                                                queueMicrotask(
+                                                    focusEditorInput,
+                                                );
+                                            }}
+                                            onDblClick={() => {
                                                 void mutate(
                                                     "gui_select_file_tree",
                                                     {
                                                         index: item.index,
                                                         activate: true,
                                                     },
-                                                )
-                                            }
+                                                );
+                                                queueMicrotask(
+                                                    focusEditorInput,
+                                                );
+                                            }}
+                                            onKeyDown={(event) => {
+                                                if (event.key !== "Enter")
+                                                    return;
+                                                event.preventDefault();
+                                                void mutate(
+                                                    "gui_select_file_tree",
+                                                    {
+                                                        index: item.index,
+                                                        activate: true,
+                                                    },
+                                                );
+                                                queueMicrotask(
+                                                    focusEditorInput,
+                                                );
+                                            }}
                                         >
                                             <span
                                                 class={`tree-chevron ${item.directory ? "directory" : "file"}`}
@@ -1924,17 +2079,23 @@ function App() {
                 </Show>
 
                 <section class="editor-stack">
-                    <div class="tabs">
+                    <div class="tabs" role="tablist" aria-label="Open files">
                         <For each={view().tabs}>
                             {(tab) => (
                                 <button
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={tab.active}
+                                    aria-controls="editor-surface"
+                                    tabIndex={tab.active ? 0 : -1}
                                     class="tab"
                                     classList={{ active: tab.active }}
-                                    onClick={() =>
+                                    onClick={() => {
                                         void mutate("gui_select_tab", {
                                             index: tab.index,
-                                        })
-                                    }
+                                        });
+                                        queueMicrotask(focusEditorInput);
+                                    }}
                                 >
                                     <Icon
                                         name="file"
@@ -1948,7 +2109,7 @@ function App() {
                                 </button>
                             )}
                         </For>
-                        <span class="tabs-fill" />
+                        <span class="tabs-fill" role="presentation" />
                     </div>
 
                     <div class="breadcrumbs">
@@ -1975,7 +2136,11 @@ function App() {
                         </Show>
                     </div>
 
-                    <div class="editor-body" ref={editorBody!}>
+                    <div
+                        id="editor-surface"
+                        class="editor-body"
+                        ref={editorBody!}
+                    >
                         <textarea
                             ref={inputSink!}
                             class="input-sink"
@@ -2009,7 +2174,10 @@ function App() {
                         <Show
                             when={!view().dashboard}
                             fallback={
-                                <Dashboard send={sendLiteral} version="1.2.7" />
+                                <Dashboard
+                                    send={runEditorShortcut}
+                                    version="1.2.7"
+                                />
                             }
                         >
                             <div
@@ -2054,6 +2222,8 @@ function App() {
                             {(menu) => (
                                 <div
                                     class="completion-popover"
+                                    role="listbox"
+                                    aria-label="Code completions"
                                     style={{
                                         top: `${Math.min(58, (view().cursor.line - view().firstLine + 1) * LINE_HEIGHT + 6)}px`,
                                         left: `${Math.min(70, (view().cursor.displayColumn - view().horizontalOffset) * cellWidth + 76)}px`,
@@ -2061,12 +2231,38 @@ function App() {
                                 >
                                     <For each={menu.items}>
                                         {(item) => (
-                                            <div
+                                            <button
+                                                type="button"
+                                                role="option"
+                                                aria-selected={
+                                                    item.index === menu.selected
+                                                }
                                                 class="completion-item"
                                                 classList={{
                                                     selected:
                                                         item.index ===
                                                         menu.selected,
+                                                }}
+                                                onPointerEnter={() =>
+                                                    void mutate(
+                                                        "gui_select_completion",
+                                                        {
+                                                            index: item.index,
+                                                            activate: false,
+                                                        },
+                                                    )
+                                                }
+                                                onClick={() => {
+                                                    void mutate(
+                                                        "gui_select_completion",
+                                                        {
+                                                            index: item.index,
+                                                            activate: true,
+                                                        },
+                                                    );
+                                                    queueMicrotask(
+                                                        focusEditorInput,
+                                                    );
                                                 }}
                                             >
                                                 <span class="completion-kind">
@@ -2077,7 +2273,7 @@ function App() {
                                                 </span>
                                                 <strong>{item.label}</strong>
                                                 <small>{item.detail}</small>
-                                            </div>
+                                            </button>
                                         )}
                                     </For>
                                 </div>
@@ -2104,10 +2300,15 @@ function App() {
                         >
                             {(picker) => (
                                 <div class="overlay-shade">
-                                    <section class="picker">
+                                    <section
+                                        class="picker"
+                                        role="dialog"
+                                        aria-modal="true"
+                                        aria-labelledby="picker-title"
+                                    >
                                         <header>
                                             <Icon name="search" />
-                                            <span>
+                                            <span id="picker-title">
                                                 {picker.query || picker.title}
                                             </span>
                                             <kbd>esc</kbd>
@@ -2120,10 +2321,20 @@ function App() {
                                                 </strong>
                                             </div>
                                         </Show>
-                                        <div class="picker-results">
+                                        <div
+                                            class="picker-results"
+                                            role="listbox"
+                                            aria-label="Command results"
+                                        >
                                             <For each={picker.items}>
                                                 {(item) => (
                                                     <button
+                                                        type="button"
+                                                        role="option"
+                                                        aria-selected={
+                                                            item.index ===
+                                                            picker.selected
+                                                        }
                                                         classList={{
                                                             selected:
                                                                 item.index ===
@@ -2135,6 +2346,8 @@ function App() {
                                                                 {
                                                                     index: item.index,
                                                                 },
+                                                            ).finally(
+                                                                focusEditorInput,
                                                             )
                                                         }
                                                     >

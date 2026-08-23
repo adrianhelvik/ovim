@@ -64,7 +64,7 @@ export const utf16OffsetFromUtf8 = (text: string, utf8Offset: number) =>
 export default function ChatComposer(props: {
     chat: GuiAiChat;
     revision?: number;
-    bindInput?: (input: HTMLTextAreaElement) => void;
+    bindInput?: (input: HTMLTextAreaElement | undefined) => void;
     onUpdate?: (update: ChatInputUpdate) => Promise<void>;
     onWidth?: (columns: number) => void;
 }) {
@@ -156,6 +156,7 @@ export default function ChatComposer(props: {
 
     onMount(() => {
         props.bindInput?.(input);
+        onCleanup(() => props.bindInput?.(undefined));
         resize();
         if (!props.onWidth) return;
         let previous = 0;

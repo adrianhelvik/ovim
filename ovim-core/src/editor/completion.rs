@@ -91,6 +91,15 @@ impl CompletionMenu {
         }
     }
 
+    /// Selects a visible completion item by index.
+    pub fn select_index(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        self.selected_index = index;
+        true
+    }
+
     /// Moves the selection down by one item
     pub fn select_next(&mut self) {
         if !self.items.is_empty() {
@@ -181,6 +190,17 @@ mod tests {
         );
         let labels: Vec<String> = menu.items().iter().map(|i| i.label.clone()).collect();
         assert_eq!(labels, vec!["AsMut".to_string(), "AsRef".to_string()]);
+    }
+
+    #[test]
+    fn completion_menu_selects_only_visible_indices() {
+        let mut menu = CompletionMenu::new();
+        menu.show(vec![item("Arc"), item("Box")], 0, String::new());
+
+        assert!(menu.select_index(1));
+        assert_eq!(menu.selected_index(), 1);
+        assert!(!menu.select_index(2));
+        assert_eq!(menu.selected_index(), 1);
     }
 
     #[test]

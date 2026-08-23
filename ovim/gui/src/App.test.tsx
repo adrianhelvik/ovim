@@ -114,7 +114,7 @@ describe("Ovim Solid workbench", () => {
         ).toBe(true);
     });
 
-    it("renders a keyboard-accessible editor projection from the snapshot", () => {
+    it("renders a keyboard-accessible editor projection from the snapshot", async () => {
         const result = render(() => <App />);
 
         expect(
@@ -123,11 +123,33 @@ describe("Ovim Solid workbench", () => {
         expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
         expect(screen.getByLabelText("Ovim editor input")).toBeTruthy();
         expect(
+            screen.getByRole("tablist", { name: "Open files" }),
+        ).toBeTruthy();
+        expect(
+            screen.getByRole("tree", { name: "Project files" }),
+        ).toBeTruthy();
+        expect(
             result.container.querySelectorAll(".code-line").length,
         ).toBeGreaterThan(10);
         expect(
             result.container.querySelector(".code-segment.cursor"),
         ).toBeTruthy();
+
+        const focus = vi.mocked(HTMLElement.prototype.focus);
+        focus.mockClear();
+        fireEvent.mouseDown(result.container.querySelector(".line-content")!, {
+            clientX: 80,
+        });
+        expect(focus.mock.instances).toContain(
+            screen.getByLabelText("Ovim editor input"),
+        );
+
+        focus.mockClear();
+        fireEvent.click(screen.getByRole("tab", { name: "FRONTEND_API.md" }));
+        await Promise.resolve();
+        expect(focus.mock.instances).toContain(
+            screen.getByLabelText("Ovim editor input"),
+        );
     });
 
     it("switches existing compact docks without toggling their core state", () => {

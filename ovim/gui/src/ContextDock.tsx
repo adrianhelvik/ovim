@@ -21,6 +21,8 @@ export interface ContextPanelDefinition {
 
 export default function ContextDock(props: {
     panels: ContextPanelDefinition[];
+    activePanel?: ContextPanelId;
+    onActivePanel?: (id: ContextPanelId) => void;
 }) {
     const [activeId, setActiveId] = createSignal<ContextPanelId>(
         props.panels[0]?.id ?? "ai",
@@ -32,9 +34,25 @@ export default function ContextDock(props: {
     );
 
     createEffect(() => {
+        const requested = props.activePanel;
+        if (
+            requested &&
+            requested !== activeId() &&
+            props.panels.some((panel) => panel.id === requested)
+        ) {
+            setActiveId(requested);
+            return;
+        }
         const panel = activePanel();
-        if (panel && panel.id !== activeId()) setActiveId(panel.id);
+        if (!panel) return;
+        if (panel.id !== activeId()) setActiveId(panel.id);
+        props.onActivePanel?.(panel.id);
     });
+
+    const selectPanel = (id: ContextPanelId) => {
+        setActiveId(id);
+        props.onActivePanel?.(id);
+    };
 
     const moveFocus = (event: KeyboardEvent, panel: ContextPanelDefinition) => {
         const panels = props.panels;
@@ -51,7 +69,7 @@ export default function ContextDock(props: {
 
         event.preventDefault();
         const id = panels[next].id;
-        setActiveId(id);
+        selectPanel(id);
         queueMicrotask(() =>
             document.getElementById(`context-tab-${id}`)?.focus(),
         );
@@ -79,7 +97,7 @@ export default function ContextDock(props: {
                                         tabIndex={
                                             active.id === panel.id ? 0 : -1
                                         }
-                                        onClick={() => setActiveId(panel.id)}
+                                        onClick={() => selectPanel(panel.id)}
                                         onKeyDown={(event) =>
                                             moveFocus(event, panel)
                                         }
