@@ -92,7 +92,10 @@ describe("Ovim Solid workbench", () => {
     const onCursor = vi.fn();
     const result = render(() => <ChatComposer onCursor={onCursor} chat={{
       profile: "codex",
+      profiles: [{ id: "codex", provider: "codex", model: "gpt-test" }],
       reasoningEffort: "high",
+      reasoningEffortSelection: "default",
+      reasoningEfforts: ["default", "high"],
       activity: "idle",
       waiting: false,
       input: "a界b",
@@ -128,7 +131,10 @@ describe("Ovim Solid workbench", () => {
   it("follows chat updates until the reader scrolls away from the bottom", async () => {
     const initial: GuiAiChat = {
       profile: "codex",
+      profiles: [{ id: "codex", provider: "codex", model: "gpt-test" }],
       reasoningEffort: "high",
+      reasoningEffortSelection: "default",
+      reasoningEfforts: ["default", "high"],
       activity: "idle",
       waiting: false,
       input: "",
@@ -167,6 +173,31 @@ describe("Ovim Solid workbench", () => {
     expect(transcript.scrollTop).toBe(700);
   });
 
+  it("offers configured model and reasoning selections", () => {
+    const onProfile = vi.fn();
+    const onReasoningEffort = vi.fn();
+    const chat: GuiAiChat = {
+      profile: "codex",
+      profiles: [
+        { id: "codex", provider: "codex", model: "gpt-test" },
+        { id: "local", provider: "ollama", model: "qwen-test" },
+      ],
+      reasoningEffort: "medium",
+      reasoningEffortSelection: "default",
+      reasoningEfforts: ["default", "low", "medium", "high"],
+      activity: "idle", waiting: false, input: "preserved", inputCursor: 9,
+      pendingImages: [], messages: [], thinkingLive: false,
+    };
+    render(() => <ChatPanel chat={chat} focusInput={() => {}} onProfile={onProfile} onReasoningEffort={onReasoningEffort} />);
+
+    fireEvent.change(screen.getByLabelText("AI model profile"), { target: { value: "local" } });
+    fireEvent.change(screen.getByLabelText("Reasoning effort"), { target: { value: "high" } });
+    expect(onProfile).toHaveBeenCalledWith("local");
+    expect(onReasoningEffort).toHaveBeenCalledWith("high");
+    expect(screen.getByRole("option", { name: "codex · codex/gpt-test" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "default (medium)" })).toBeTruthy();
+  });
+
   it("uses a small threshold when deciding whether chat should follow", () => {
     expect(isNearChatBottom({ scrollHeight: 500, scrollTop: 260, clientHeight: 200 })).toBe(true);
     expect(isNearChatBottom({ scrollHeight: 500, scrollTop: 200, clientHeight: 200 })).toBe(false);
@@ -174,7 +205,8 @@ describe("Ovim Solid workbench", () => {
 
   it("does not let stale editor overlays cover an active AI chat", () => {
     mockSnapshot.aiChat = {
-      profile: "codex", reasoningEffort: "high", activity: "idle", waiting: false,
+      profile: "codex", profiles: [{ id: "codex", provider: "codex", model: "gpt-test" }],
+      reasoningEffort: "high", reasoningEffortSelection: "default", reasoningEfforts: ["default", "high"], activity: "idle", waiting: false,
       input: "visible draft", inputCursor: 13, pendingImages: [], messages: [], thinkingLive: false,
     };
     mockSnapshot.picker = {

@@ -51,6 +51,14 @@ pub struct GuiKeyInput {
     pub meta: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiAiProfileOption {
+    pub id: String,
+    pub provider: String,
+    pub model: String,
+}
+
 fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
     if let Some(summary) = editor.codex_auth_dialog_summary() {
         use ovim_core::editor::CodexAuthDialogPhase;
@@ -432,7 +440,10 @@ pub struct GuiFileTreeItem {
 #[serde(rename_all = "camelCase")]
 pub struct GuiAiChat {
     pub profile: String,
+    pub profiles: Vec<GuiAiProfileOption>,
     pub reasoning_effort: String,
+    pub reasoning_effort_selection: String,
+    pub reasoning_efforts: Vec<String>,
     pub activity: String,
     pub waiting: bool,
     pub input: String,
@@ -614,6 +625,14 @@ enum GuiRequest {
     },
     SetChatInputWidth {
         columns: usize,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    SelectAiProfile {
+        profile: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    SelectReasoningEffort {
+        effort: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Paste {
@@ -823,6 +842,16 @@ impl GuiBridge {
             reply,
         })
         .await
+    }
+
+    pub async fn select_ai_profile(&self, profile: String) -> Result<(), String> {
+        self.request(|reply| GuiRequest::SelectAiProfile { profile, reply })
+            .await
+    }
+
+    pub async fn select_reasoning_effort(&self, effort: String) -> Result<(), String> {
+        self.request(|reply| GuiRequest::SelectReasoningEffort { effort, reply })
+            .await
     }
 
     pub fn shutdown(&self) {
@@ -1073,6 +1102,34 @@ async fn handle_request(
             } else {
                 editor.render_cache.ai_chat_input_content_width = columns;
                 Ok(())
+            };
+            (reply, result)
+        }
+        GuiRequest::SelectAiProfile { profile, reply } => {
+            let result = if editor.mode() != Mode::AiChat {
+                Err(anyhow::anyhow!("AI chat is not active"))
+            } else if editor.ai_set_profile(&profile) {
+                if let Some(chat) = editor.ai_state.chat.as_mut() {
+                    chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
+                }
+                refresh_after_input(editor);
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("Unknown AI profile: {profile}"))
+            };
+            (reply, result)
+        }
+        GuiRequest::SelectReasoningEffort { effort, reply } => {
+            let result = if editor.mode() != Mode::AiChat {
+                Err(anyhow::anyhow!("AI chat is not active"))
+            } else if editor.set_ai_chat_reasoning_effort(&effort) {
+                if let Some(chat) = editor.ai_state.chat.as_mut() {
+                    chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
+                }
+                refresh_after_input(editor);
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("Unknown reasoning effort: {effort}"))
             };
             (reply, result)
         }
@@ -1921,7 +1978,27 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             .collect::<std::collections::HashMap<_, _>>();
         GuiAiChat {
             profile: editor.ai_chat_effective_profile(),
+            profiles: editor
+                .ai_profile_names_sorted()
+                .into_iter()
+                .filter_map(|id| {
+                    editor
+                        .ai_state
+                        .config
+                        .resolve_profile(&id)
+                        .map(|profile| GuiAiProfileOption {
+                            id,
+                            provider: profile.provider.to_string(),
+                            model: profile.model.clone(),
+                        })
+                })
+                .collect(),
             reasoning_effort: editor.ai_chat_reasoning_effort(),
+            reasoning_effort_selection: editor.ai_chat_reasoning_effort_selection(),
+            reasoning_efforts: ovim_core::editor::AI_CHAT_REASONING_EFFORTS
+                .iter()
+                .map(|effort| (*effort).to_string())
+                .collect(),
             activity: editor.ai_chat_activity().as_str().to_string(),
             waiting: editor.ai_chat_waiting(),
             input: editor.ai_chat_input().to_string(),
@@ -2409,6 +2486,17 @@ mod tests {
             editor.ai_chat_focus(),
             ovim_core::ai::chat_types::ChatFocus::TextInput
         );
+        let profile = editor.ai_chat_effective_profile();
+        assert!(editor.ai_set_profile(&profile));
+        assert!(editor.set_ai_chat_reasoning_effort("high"));
+        assert_eq!(editor.ai_chat_input(), "a界b");
+        let projected = snapshot(&editor, 1).ai_chat.unwrap();
+        assert!(projected.profiles.iter().any(|option| option.id == profile));
+        assert_eq!(projected.reasoning_effort_selection, "high");
+        assert!(projected
+            .reasoning_efforts
+            .iter()
+            .any(|effort| effort == "max"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

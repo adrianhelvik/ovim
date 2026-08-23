@@ -251,6 +251,8 @@ export const ChatPanel = (props: {
   onSetupKey?: (key: string) => void;
   onInputCursor?: (offset: number) => void;
   onInputWidth?: (columns: number) => void;
+  onProfile?: (profile: string) => void;
+  onReasoningEffort?: (effort: string) => void;
 }) => {
   const [following, setFollowing] = createSignal(true);
   let transcript!: HTMLDivElement;
@@ -281,7 +283,25 @@ export const ChatPanel = (props: {
   return (
     <section class="side-panel ai-panel" aria-label="AI chat">
       <header class="side-panel-header">
-        <div><b>AI chat</b><small>{props.chat.profile} · {props.chat.reasoningEffort}</small></div>
+        <div><b>AI chat</b><div class="chat-model-selectors">
+          <select
+            data-gui-native-control
+            aria-label="AI model profile"
+            value={props.chat.profile}
+            onChange={(event) => { props.onProfile?.(event.currentTarget.value); queueMicrotask(props.focusInput); }}
+          >
+            <For each={props.chat.profiles}>{(profile) => <option value={profile.id}>{profile.id} · {profile.provider}/{profile.model}</option>}</For>
+          </select>
+          <select
+            data-gui-native-control
+            aria-label="Reasoning effort"
+            value={props.chat.reasoningEffortSelection}
+            title={`Effective effort: ${props.chat.reasoningEffort}`}
+            onChange={(event) => { props.onReasoningEffort?.(event.currentTarget.value); queueMicrotask(props.focusInput); }}
+          >
+            <For each={props.chat.reasoningEfforts}>{(effort) => <option value={effort}>{effort === "default" ? `default (${props.chat.reasoningEffort})` : effort}</option>}</For>
+          </select>
+        </div></div>
         <span classList={{ working: props.chat.activity !== "idle" }}>{props.chat.activity.replaceAll("_", " ")}</span>
       </header>
       <div class="chat-transcript">
@@ -493,6 +513,7 @@ function App() {
 
   const handleKeyDown = (event: KeyboardEvent) => {
     if (event.isComposing || event.key === "Process" || event.key === "Dead") return;
+    if ((event.target as Element | null)?.closest?.("[data-gui-native-control]")) return;
     const clipboardModifier = /Mac|iPhone|iPad/.test(navigator.platform)
       ? event.metaKey
       : event.ctrlKey && event.shiftKey;
@@ -688,6 +709,8 @@ function App() {
         onSetupKey={(key) => void sendKey({ key, shift: false, control: false, alt: false, meta: false })}
         onInputCursor={(offset) => void mutate("gui_set_chat_input_cursor", { offset })}
         onInputWidth={(columns) => void mutate("gui_set_chat_input_width", { columns })}
+        onProfile={(profile) => void mutate("gui_select_ai_profile", { profile })}
+        onReasoningEffort={(effort) => void mutate("gui_select_reasoning_effort", { effort })}
       />
     )}</Show>
   );

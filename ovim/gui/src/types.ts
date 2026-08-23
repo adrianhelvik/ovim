@@ -44,7 +44,10 @@ export interface GuiPane {
 
 export interface GuiAiChat {
   profile: string;
+  profiles: Array<{ id: string; provider: string; model: string }>;
   reasoningEffort: string;
+  reasoningEffortSelection: string;
+  reasoningEfforts: string[];
   activity: string;
   waiting: boolean;
   input: string;

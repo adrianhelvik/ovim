@@ -99,6 +99,22 @@ async fn gui_set_chat_input_width(
 }
 
 #[tauri::command]
+async fn gui_select_ai_profile(
+    bridge: State<'_, GuiBridge>,
+    profile: String,
+) -> Result<(), String> {
+    bridge.select_ai_profile(profile).await
+}
+
+#[tauri::command]
+async fn gui_select_reasoning_effort(
+    bridge: State<'_, GuiBridge>,
+    effort: String,
+) -> Result<(), String> {
+    bridge.select_reasoning_effort(effort).await
+}
+
+#[tauri::command]
 async fn gui_select_tab(bridge: State<'_, GuiBridge>, index: usize) -> Result<(), String> {
     bridge.select_tab(index).await
 }
@@ -179,6 +195,8 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_set_cursor,
             gui_set_chat_input_cursor,
             gui_set_chat_input_width,
+            gui_select_ai_profile,
+            gui_select_reasoning_effort,
             gui_select_tab,
             gui_focus_pane,
             gui_select_picker,
