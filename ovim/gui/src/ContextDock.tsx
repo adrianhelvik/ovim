@@ -4,8 +4,9 @@ import {
     createEffect,
     createMemo,
     createSignal,
-    type JSX,
+    type Component,
 } from "solid-js";
+import { Dynamic } from "solid-js/web";
 import { Icon } from "./Icon";
 import type { IconName } from "./icons.generated";
 
@@ -16,7 +17,7 @@ export interface ContextPanelDefinition {
     label: string;
     state: string;
     icon: IconName;
-    render: () => JSX.Element;
+    component: Component;
 }
 
 export default function ContextDock(props: {
@@ -76,7 +77,7 @@ export default function ContextDock(props: {
     };
 
     return (
-        <Show when={activePanel()} keyed>
+        <Show when={activePanel()}>
             {(active) => (
                 <aside class="side-dock" aria-label="Context">
                     <Show when={props.panels.length > 1}>
@@ -92,10 +93,10 @@ export default function ContextDock(props: {
                                         type="button"
                                         role="tab"
                                         aria-label={panel.label}
-                                        aria-selected={active.id === panel.id}
+                                        aria-selected={active().id === panel.id}
                                         aria-controls={`context-panel-${panel.id}`}
                                         tabIndex={
-                                            active.id === panel.id ? 0 : -1
+                                            active().id === panel.id ? 0 : -1
                                         }
                                         onClick={() => selectPanel(panel.id)}
                                         onKeyDown={(event) =>
@@ -111,19 +112,21 @@ export default function ContextDock(props: {
                         </div>
                     </Show>
                     <div
-                        id={`context-panel-${active.id}`}
+                        id={`context-panel-${active().id}`}
                         class="context-panel"
                         role="tabpanel"
                         aria-label={
-                            props.panels.length === 1 ? active.label : undefined
+                            props.panels.length === 1
+                                ? active().label
+                                : undefined
                         }
                         aria-labelledby={
                             props.panels.length > 1
-                                ? `context-tab-${active.id}`
+                                ? `context-tab-${active().id}`
                                 : undefined
                         }
                     >
-                        {active.render()}
+                        <Dynamic component={active().component} />
                     </div>
                 </aside>
             )}

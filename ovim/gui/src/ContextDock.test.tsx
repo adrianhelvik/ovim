@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { createSignal, onMount } from "solid-js";
 import { afterEach, describe, expect, it } from "vitest";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 
@@ -15,7 +15,7 @@ const panel = (
     label,
     state: "ready",
     icon: id === "ai" ? "ai-spark" : id === "tests" ? "test" : "debug",
-    render: () => <p>{label} content</p>,
+    component: () => <p>{label} content</p>,
 });
 
 describe("ContextDock", () => {
@@ -81,5 +81,37 @@ describe("ContextDock", () => {
         expect(screen.getByRole("tabpanel").textContent).toContain(
             "Tests content",
         );
+    });
+
+    it("preserves the active surface when snapshot metadata changes", () => {
+        let mounts = 0;
+        const StablePanel = () => {
+            onMount(() => mounts++);
+            return <input aria-label="Persistent input" />;
+        };
+        const [panels, setPanels] = createSignal<ContextPanelDefinition[]>([
+            {
+                ...panel("ai", "AI chat"),
+                state: "idle",
+                component: StablePanel,
+            },
+        ]);
+        render(() => <ContextDock panels={panels()} />);
+        const input = screen.getByRole("textbox", {
+            name: "Persistent input",
+        });
+
+        setPanels([
+            {
+                ...panel("ai", "AI chat"),
+                state: "streaming",
+                component: StablePanel,
+            },
+        ]);
+
+        expect(screen.getByRole("textbox", { name: "Persistent input" })).toBe(
+            input,
+        );
+        expect(mounts).toBe(1);
     });
 });

@@ -19,6 +19,7 @@ import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
+import { trapDialogFocus } from "./focus";
 import type {
     GuiAiChat,
     GuiCodeExplanation,
@@ -264,7 +265,15 @@ const WalkthroughDiscussion = (props: {
 export const CodeWalkthrough = (props: {
     walkthrough: GuiCodeExplanation;
     onKey: (key: string) => void;
+    restoreFocus?: () => void;
 }) => {
+    let dialog!: HTMLElement;
+    const dispatch = (key: string) => {
+        props.onKey(key);
+        queueMicrotask(() => dialog?.focus({ preventScroll: true }));
+    };
+    onMount(() => queueMicrotask(() => dialog?.focus({ preventScroll: true })));
+    onCleanup(() => queueMicrotask(() => props.restoreFocus?.()));
     const page = () => props.walkthrough.page;
     const title = () => {
         const active = page();
@@ -283,10 +292,16 @@ export const CodeWalkthrough = (props: {
             aria-label="Code walkthrough"
         >
             <section
+                ref={dialog!}
                 class="walkthrough-card"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="walkthrough-title"
+                data-gui-core-dialog
+                tabIndex={-1}
+                onKeyDown={(event) =>
+                    void trapDialogFocus(event, event.currentTarget)
+                }
             >
                 <header>
                     <div>
@@ -301,7 +316,7 @@ export const CodeWalkthrough = (props: {
                     </div>
                     <button
                         aria-label="Dismiss walkthrough"
-                        onClick={() => props.onKey("Escape")}
+                        onClick={() => dispatch("Escape")}
                     >
                         Esc
                     </button>
@@ -318,7 +333,7 @@ export const CodeWalkthrough = (props: {
                             disabled={
                                 props.walkthrough.current === 1 || composing()
                             }
-                            onClick={() => props.onKey("ArrowLeft")}
+                            onClick={() => dispatch("ArrowLeft")}
                         >
                             Previous
                         </button>
@@ -327,7 +342,7 @@ export const CodeWalkthrough = (props: {
                                 props.walkthrough.current ===
                                     props.walkthrough.total || composing()
                             }
-                            onClick={() => props.onKey("ArrowRight")}
+                            onClick={() => dispatch("ArrowRight")}
                         >
                             Next
                             <Icon name="chevron-right" size={16} />
@@ -337,7 +352,7 @@ export const CodeWalkthrough = (props: {
                         <button
                             disabled={answering()}
                             onClick={() =>
-                                props.onKey(composing() ? "Escape" : " ")
+                                dispatch(composing() ? "Escape" : " ")
                             }
                         >
                             {composing() ? "Cancel question" : "Ask a question"}
@@ -345,7 +360,7 @@ export const CodeWalkthrough = (props: {
                         <button
                             class="primary"
                             disabled={answering()}
-                            onClick={() => props.onKey("Enter")}
+                            onClick={() => dispatch("Enter")}
                         >
                             {composing()
                                 ? "Send question"
@@ -901,6 +916,7 @@ function App() {
     let editorBody!: HTMLDivElement;
     let inputSink!: HTMLTextAreaElement;
     let chatInput: HTMLTextAreaElement | undefined;
+    let lspDialog: HTMLElement | undefined;
     let cellWidth = FALLBACK_CELL_WIDTH;
     let composing = false;
     let ignoreNextInput = false;
@@ -984,12 +1000,17 @@ function App() {
     const accept = (snapshot: GuiSnapshot) => {
         const chatOpened = !view().aiChat && Boolean(snapshot.aiChat);
         const chatClosed = Boolean(view().aiChat) && !snapshot.aiChat;
+        const coreDialogClosed =
+            Boolean(view().picker || view().lspManager) &&
+            !snapshot.picker &&
+            !snapshot.lspManager;
         setView(snapshot);
         setConnected(true);
         setError("");
         requestAnimationFrame(syncDimensions);
         if (chatOpened) queueMicrotask(focusChatInput);
         if (chatClosed) queueMicrotask(focusEditorInput);
+        if (coreDialogClosed) queueMicrotask(focusEditorInput);
         if (snapshot.shouldQuit && native) void windowAction("close");
     };
 
@@ -1096,6 +1117,8 @@ function App() {
         )
             return;
         const target = event.target as Element | null;
+        if (event.key === "Tab" && target?.closest?.("[data-gui-core-dialog]"))
+            return;
         if (
             target !== inputSink &&
             target?.closest?.(
@@ -1447,7 +1470,6 @@ function App() {
     const PaneTree = (props: { node: GuiLayoutNode }) => (
         <Show
             when={props.node.kind === "split" ? props.node : undefined}
-            keyed
             fallback={
                 <PaneView
                     pane={
@@ -1464,20 +1486,20 @@ function App() {
         >
             {(split) => (
                 <div
-                    class={`split-layout ${split.direction}`}
+                    class={`split-layout ${split().direction}`}
                     style={
-                        split.direction === "vertical"
+                        split().direction === "vertical"
                             ? {
-                                  "grid-template-columns": `${split.ratio}fr 1px ${1 - split.ratio}fr`,
+                                  "grid-template-columns": `${split().ratio}fr 1px ${1 - split().ratio}fr`,
                               }
                             : {
-                                  "grid-template-rows": `${split.ratio}fr 1px ${1 - split.ratio}fr`,
+                                  "grid-template-rows": `${split().ratio}fr 1px ${1 - split().ratio}fr`,
                               }
                     }
                 >
-                    <PaneTree node={split.first} />
+                    <PaneTree node={split().first} />
                     <div class="split-separator" />
-                    <PaneTree node={split.second} />
+                    <PaneTree node={split().second} />
                 </div>
             )}
         </Show>
@@ -1536,30 +1558,30 @@ function App() {
     );
 
     const TestPanel = () => (
-        <Show when={view().testPanel} keyed>
+        <Show when={view().testPanel}>
             {(test) => (
                 <section class="side-panel test-panel" aria-label="Test output">
                     <header class="side-panel-header">
                         <div>
-                            <b>{test.scope} tests</b>
-                            <small>{test.directory}</small>
+                            <b>{test().scope} tests</b>
+                            <small>{test().directory}</small>
                         </div>
-                        <span class={`run-status ${test.status}`}>
-                            {test.status} · {(test.elapsedMs / 1000).toFixed(1)}
-                            s
+                        <span class={`run-status ${test().status}`}>
+                            {test().status} ·{" "}
+                            {(test().elapsedMs / 1000).toFixed(1)}s
                         </span>
                     </header>
-                    <div class="run-command">$ {test.command}</div>
+                    <div class="run-command">$ {test().command}</div>
                     <pre class="output-lines">
-                        <Show when={test.truncated}>
-                            <i>… {test.truncated} earlier lines</i>
+                        <Show when={test().truncated}>
+                            <i>… {test().truncated} earlier lines</i>
                         </Show>
-                        <For each={test.lines}>
+                        <For each={test().lines}>
                             {(line) => <span>{line}</span>}
                         </For>
                     </pre>
                     <footer class="panel-summary">
-                        {test.summary || "Output updates live"}
+                        {test().summary || "Output updates live"}
                     </footer>
                 </section>
             )}
@@ -1567,22 +1589,22 @@ function App() {
     );
 
     const DebugPanel = () => (
-        <Show when={view().debug} keyed>
+        <Show when={view().debug}>
             {(debug) => (
                 <section class="side-panel debug-panel" aria-label="Debugger">
                     <header class="side-panel-header">
                         <div>
                             <b>Debugger</b>
-                            <small>{debug.reason || "session active"}</small>
+                            <small>{debug().reason || "session active"}</small>
                         </div>
-                        <span>{debug.running ? "running" : "paused"}</span>
+                        <span>{debug().running ? "running" : "paused"}</span>
                     </header>
                     <div
                         class="debug-stack"
                         role="listbox"
                         aria-label="Stack frames"
                     >
-                        <For each={debug.stack}>
+                        <For each={debug().stack}>
                             {(frame) => (
                                 <button
                                     type="button"
@@ -1591,7 +1613,7 @@ function App() {
                                     classList={{ selected: frame.selected }}
                                     onClick={() => {
                                         void mutate("gui_select_debug_frame", {
-                                            index: debug.stack.indexOf(frame),
+                                            index: debug().stack.indexOf(frame),
                                         });
                                         queueMicrotask(focusEditorInput);
                                     }}
@@ -1605,7 +1627,7 @@ function App() {
                         </For>
                     </div>
                     <pre class="output-lines">
-                        <For each={debug.output}>
+                        <For each={debug().output}>
                             {(line) => <span>{line}</span>}
                         </For>
                     </pre>
@@ -1626,7 +1648,7 @@ function App() {
                 label: "AI chat",
                 state: chat.activity.replaceAll("_", " "),
                 icon: "ai-spark",
-                render: () => <AiPanel />,
+                component: AiPanel,
             });
         }
         if (tests) {
@@ -1635,7 +1657,7 @@ function App() {
                 label: "Tests",
                 state: tests.status,
                 icon: "test",
-                render: () => <TestPanel />,
+                component: TestPanel,
             });
         }
         if (debug) {
@@ -1644,7 +1666,7 @@ function App() {
                 label: "Debug",
                 state: debug.running ? "running" : "paused",
                 icon: "debug",
-                render: () => <DebugPanel />,
+                component: DebugPanel,
             });
         }
         return panels;
@@ -1659,32 +1681,32 @@ function App() {
     );
 
     const ProblemPanel = () => (
-        <Show when={view().problems} keyed>
+        <Show when={view().problems}>
             {(problems) => (
                 <section
                     class="problem-panel"
-                    aria-label={problems.title || "Problems"}
+                    aria-label={problems().title || "Problems"}
                 >
                     <header>
-                        <b>{problems.title || problems.kind}</b>
-                        <span>{problems.total} items</span>
+                        <b>{problems().title || problems().kind}</b>
+                        <span>{problems().total} items</span>
                     </header>
                     <div role="listbox" aria-label="Problem entries">
-                        <For each={problems.items}>
+                        <For each={problems().items}>
                             {(item) => (
                                 <button
                                     type="button"
                                     role="option"
                                     aria-selected={
-                                        item.index === problems.selected
+                                        item.index === problems().selected
                                     }
                                     classList={{
                                         selected:
-                                            item.index === problems.selected,
+                                            item.index === problems().selected,
                                     }}
                                     onClick={() => {
                                         void mutate("gui_select_problem", {
-                                            kind: problems.kind,
+                                            kind: problems().kind,
                                             index: item.index,
                                             activate: false,
                                         });
@@ -1692,7 +1714,7 @@ function App() {
                                     }}
                                     onDblClick={() => {
                                         void mutate("gui_select_problem", {
-                                            kind: problems.kind,
+                                            kind: problems().kind,
                                             index: item.index,
                                             activate: true,
                                         });
@@ -1702,7 +1724,7 @@ function App() {
                                         if (event.key !== "Enter") return;
                                         event.preventDefault();
                                         void mutate("gui_select_problem", {
-                                            kind: problems.kind,
+                                            kind: problems().kind,
                                             index: item.index,
                                             activate: true,
                                         });
@@ -1735,14 +1757,24 @@ function App() {
     );
 
     const LspOverlay = () => (
-        <Show when={!view().aiChat ? view().lspManager : undefined} keyed>
+        <Show when={!view().aiChat ? view().lspManager : undefined}>
             {(manager) => (
                 <div class="overlay-shade lsp-overlay">
                     <section
+                        ref={(element) => {
+                            lspDialog = element;
+                            queueMicrotask(() =>
+                                element.focus({ preventScroll: true }),
+                            );
+                        }}
                         class="lsp-panel"
                         role="dialog"
-                        aria-modal="true"
                         aria-labelledby="lsp-manager-title"
+                        data-gui-core-dialog
+                        tabIndex={-1}
+                        onKeyDown={(event) =>
+                            void trapDialogFocus(event, event.currentTarget)
+                        }
                     >
                         <header>
                             <div>
@@ -1756,38 +1788,47 @@ function App() {
                         </header>
                         <div class="lsp-filter">
                             <Icon name="search" size={16} />
-                            {manager.filter || "Filter languages"}
+                            {manager().filter || "Filter languages"}
                         </div>
                         <div
                             class="lsp-list"
                             role="listbox"
                             aria-label="Language servers"
                         >
-                            <For each={manager.items}>
+                            <For each={manager().items}>
                                 {(item) => (
                                     <button
                                         type="button"
                                         role="option"
                                         aria-selected={
-                                            item.index === manager.selected
+                                            item.index === manager().selected
                                         }
                                         classList={{
                                             selected:
-                                                item.index === manager.selected,
+                                                item.index ===
+                                                manager().selected,
                                         }}
                                         onClick={() => {
                                             void mutate("gui_select_lsp", {
                                                 index: item.index,
                                                 activate: false,
                                             });
-                                            queueMicrotask(focusEditorInput);
+                                            queueMicrotask(() =>
+                                                lspDialog?.focus({
+                                                    preventScroll: true,
+                                                }),
+                                            );
                                         }}
                                         onDblClick={() => {
                                             void mutate("gui_select_lsp", {
                                                 index: item.index,
                                                 activate: true,
                                             });
-                                            queueMicrotask(focusEditorInput);
+                                            queueMicrotask(() =>
+                                                lspDialog?.focus({
+                                                    preventScroll: true,
+                                                }),
+                                            );
                                         }}
                                         onKeyDown={(event) => {
                                             if (event.key !== "Enter") return;
@@ -1796,7 +1837,11 @@ function App() {
                                                 index: item.index,
                                                 activate: true,
                                             });
-                                            queueMicrotask(focusEditorInput);
+                                            queueMicrotask(() =>
+                                                lspDialog?.focus({
+                                                    preventScroll: true,
+                                                }),
+                                            );
                                         }}
                                     >
                                         <span
@@ -1956,25 +2001,25 @@ function App() {
                     />
                 </nav>
 
-                <Show when={view().fileTree} keyed>
+                <Show when={view().fileTree}>
                     {(tree) => (
                         <aside class="explorer">
                             <div class="panel-heading">
                                 <span>Explorer</span>
-                                <small>{tree.root}</small>
+                                <small>{tree().root}</small>
                             </div>
                             <div
                                 class="tree-list"
                                 role="tree"
                                 aria-label="Project files"
                             >
-                                <For each={tree.items}>
+                                <For each={tree().items}>
                                     {(item) => (
                                         <button
                                             type="button"
                                             role="treeitem"
                                             aria-selected={
-                                                item.index === tree.selected
+                                                item.index === tree().selected
                                             }
                                             aria-expanded={
                                                 item.directory
@@ -1986,7 +2031,7 @@ function App() {
                                             classList={{
                                                 selected:
                                                     item.index ===
-                                                    tree.selected,
+                                                    tree().selected,
                                             }}
                                             style={{
                                                 "padding-left": `${10 + item.depth * 14}px`,
@@ -2186,10 +2231,11 @@ function App() {
                             </div>
                         </Show>
 
-                        <Show when={walkthrough()} keyed>
+                        <Show when={walkthrough()}>
                             {(active) => (
                                 <CodeWalkthrough
-                                    walkthrough={active}
+                                    walkthrough={active()}
+                                    restoreFocus={focusPrimaryInput}
                                     onKey={(key) =>
                                         void sendKey({
                                             key,
@@ -2207,7 +2253,6 @@ function App() {
                             when={
                                 !view().aiChat ? view().completion : undefined
                             }
-                            keyed
                         >
                             {(menu) => (
                                 <div
@@ -2219,19 +2264,20 @@ function App() {
                                         left: `${Math.min(70, (view().cursor.displayColumn - view().horizontalOffset) * cellWidth + 76)}px`,
                                     }}
                                 >
-                                    <For each={menu.items}>
+                                    <For each={menu().items}>
                                         {(item) => (
                                             <button
                                                 type="button"
                                                 role="option"
                                                 aria-selected={
-                                                    item.index === menu.selected
+                                                    item.index ===
+                                                    menu().selected
                                                 }
                                                 class="completion-item"
                                                 classList={{
                                                     selected:
                                                         item.index ===
-                                                        menu.selected,
+                                                        menu().selected,
                                                 }}
                                                 onPointerEnter={() =>
                                                     void mutate(
@@ -2270,44 +2316,53 @@ function App() {
                             )}
                         </Show>
 
-                        <Show
-                            when={!view().aiChat ? view().hover : undefined}
-                            keyed
-                        >
+                        <Show when={!view().aiChat ? view().hover : undefined}>
                             {(hover) => (
                                 <div class="hover-popover">
                                     <div class="popover-label">
                                         Documentation
                                     </div>
-                                    <pre>{hover.content}</pre>
+                                    <pre>{hover().content}</pre>
                                 </div>
                             )}
                         </Show>
 
-                        <Show
-                            when={!view().aiChat ? view().picker : undefined}
-                            keyed
-                        >
+                        <Show when={!view().aiChat ? view().picker : undefined}>
                             {(picker) => (
                                 <div class="overlay-shade">
                                     <section
+                                        ref={(element) =>
+                                            queueMicrotask(() =>
+                                                element.focus({
+                                                    preventScroll: true,
+                                                }),
+                                            )
+                                        }
                                         class="picker"
                                         role="dialog"
-                                        aria-modal="true"
                                         aria-labelledby="picker-title"
+                                        data-gui-core-dialog
+                                        tabIndex={-1}
+                                        onKeyDown={(event) =>
+                                            void trapDialogFocus(
+                                                event,
+                                                event.currentTarget,
+                                            )
+                                        }
                                     >
                                         <header>
                                             <Icon name="search" />
                                             <span id="picker-title">
-                                                {picker.query || picker.title}
+                                                {picker().query ||
+                                                    picker().title}
                                             </span>
                                             <kbd>esc</kbd>
                                         </header>
-                                        <Show when={picker.fileFilter}>
+                                        <Show when={picker().fileFilter}>
                                             <div class="picker-filter">
                                                 in{" "}
                                                 <strong>
-                                                    {picker.fileFilter}
+                                                    {picker().fileFilter}
                                                 </strong>
                                             </div>
                                         </Show>
@@ -2316,19 +2371,20 @@ function App() {
                                             role="listbox"
                                             aria-label="Command results"
                                         >
-                                            <For each={picker.items}>
+                                            <For each={picker().items}>
                                                 {(item) => (
                                                     <button
                                                         type="button"
                                                         role="option"
                                                         aria-selected={
                                                             item.index ===
-                                                            picker.selected
+                                                            picker().selected
                                                         }
                                                         classList={{
                                                             selected:
                                                                 item.index ===
-                                                                picker.selected,
+                                                                picker()
+                                                                    .selected,
                                                         }}
                                                         onClick={() =>
                                                             void mutate(
@@ -2379,7 +2435,9 @@ function App() {
                                             </For>
                                         </div>
                                         <footer>
-                                            <span>{picker.total} results</span>
+                                            <span>
+                                                {picker().total} results
+                                            </span>
                                             <span>
                                                 <kbd>↑↓</kbd> navigate{" "}
                                                 <kbd>↵</kbd> open
@@ -2395,7 +2453,6 @@ function App() {
                     <div class="message-line">
                         <Show
                             when={view().prompt}
-                            keyed
                             fallback={
                                 <span class="message">
                                     {error() ||
@@ -2406,8 +2463,8 @@ function App() {
                         >
                             {(prompt) => (
                                 <div class="prompt">
-                                    <b>{prompt.prefix}</b>
-                                    <span>{prompt.text}</span>
+                                    <b>{prompt().prefix}</b>
+                                    <span>{prompt().text}</span>
                                     <i />
                                 </div>
                             )}

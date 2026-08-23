@@ -9,6 +9,7 @@ import {
 } from "solid-js";
 import type { GuiAiProfileOption } from "./types";
 import { Icon } from "./Icon";
+import { trapDialogFocus } from "./focus";
 
 type Props = {
     profile: string;
@@ -119,6 +120,7 @@ export default function ChatModelPicker(props: Props) {
                     role="dialog"
                     aria-label="AI run settings"
                     onKeyDown={(event) => {
+                        if (trapDialogFocus(event, event.currentTarget)) return;
                         if (event.key === "Escape") {
                             event.preventDefault();
                             close();
