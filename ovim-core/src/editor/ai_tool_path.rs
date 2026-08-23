@@ -228,11 +228,10 @@ impl Editor {
         // Opening a temp artifact as the mutation target must not replace the
         // chat's repository boundary. Keep resolving policy and capabilities
         // from the originating project while that exact artifact is active.
-        let active_target_is_unscoped_temp = active_target_file.as_deref().is_some_and(|path| {
-            super::ai_session_temp::is_temp_location(path)
-                && discover_repo_root_from_start(path).is_none()
-        });
-        let target_file = if active_target_is_unscoped_temp {
+        let active_target_is_session_temp = active_target_file
+            .as_deref()
+            .is_some_and(|path| self.current_session_created_temp_file(path));
+        let target_file = if active_target_is_session_temp {
             origin_file.or(active_target_file)
         } else {
             active_target_file.or(origin_file)

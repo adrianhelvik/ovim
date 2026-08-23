@@ -499,6 +499,7 @@ fn session_created_temp_file_can_be_rewritten_and_executed_without_more_approval
         let source = repository.path().join("main.rs");
         fs::write(&source, "fn main() {}\n").expect("seed source");
         let temp = tempfile::tempdir_in(std::env::temp_dir()).expect("session temp parent");
+        git2::Repository::init(temp.path()).expect("init unrelated temp repository");
         let script = temp.path().join("agent-script.sh");
         let runs = tempfile::tempdir().expect("run storage");
 
@@ -540,6 +541,17 @@ fn session_created_temp_file_can_be_rewritten_and_executed_without_more_approval
             }
         }
         assert!(editor.current_session_created_temp_file(&script));
+        assert_eq!(
+            editor
+                .ai_repo_root()
+                .expect("origin repository remains in scope")
+                .canonicalize()
+                .expect("canonical detected repository"),
+            repository
+                .path()
+                .canonicalize()
+                .expect("canonical repository")
+        );
 
         let rewrite = ToolCallInfo {
             id: "rewrite-temp-script".into(),

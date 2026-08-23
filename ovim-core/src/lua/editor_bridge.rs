@@ -312,7 +312,7 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        inner.pending_commands.drain(..).collect()
+        std::mem::take(&mut inner.pending_commands)
     }
 
     /// Get a specific line from the buffer
@@ -388,7 +388,7 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        inner.ai_pending_commands.drain(..).collect()
+        std::mem::take(&mut inner.ai_pending_commands)
     }
 
     pub fn register_api_key(&self, name: String, config: ApiKeyConfig) {

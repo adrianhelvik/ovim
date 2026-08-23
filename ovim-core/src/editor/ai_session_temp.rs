@@ -29,6 +29,9 @@ impl TempFileIdentity {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() != 1 {
+                return None;
+            }
             Some(Self {
                 device: metadata.dev(),
                 inode: metadata.ino(),
@@ -87,6 +90,12 @@ impl SessionTempFiles {
             return words[1..]
                 .iter()
                 .all(|word| self.argument_stays_in_scope(word, project_root));
+        }
+
+        // Interpreter and utility exemptions only apply to normal PATH lookups. An
+        // arbitrary executable named `bash` or `chmod` must not inherit authority.
+        if program_path.is_absolute() || program.contains(['/', '\\']) {
+            return false;
         }
 
         let program_name = program_path
@@ -266,6 +275,22 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn hard_linking_a_recorded_file_revokes_authority() {
+        let directory = tempfile::tempdir_in(std::env::temp_dir()).unwrap();
+        let file = directory.path().join("owned.sh");
+        let alias = directory.path().join("alias.sh");
+        fs::write(&file, "#!/bin/sh\n").unwrap();
+        let mut files = SessionTempFiles::default();
+        assert!(files.record(&file));
+
+        fs::hard_link(&file, &alias).unwrap();
+        assert!(!files.contains(&file));
+        assert!(!files.contains(&alias));
+        assert!(!files.record(&alias));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn canonical_temp_aliases_share_the_same_authority() {
         let directory = tempfile::tempdir_in(std::env::temp_dir()).unwrap();
         let file = directory.path().join("owned.sh");
@@ -328,5 +353,12 @@ mod tests {
         ));
         assert!(!files
             .authorizes_shell_command(&format!("{} ../outside", script.display()), project.path()));
+
+        let fake_bash = directory.path().join("bash");
+        fs::write(&fake_bash, "#!/bin/sh\n").unwrap();
+        assert!(!files.authorizes_shell_command(
+            &format!("{} {}", fake_bash.display(), script.display()),
+            project.path()
+        ));
     }
 }
