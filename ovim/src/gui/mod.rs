@@ -255,6 +255,7 @@ pub struct GuiSnapshot {
     pub dashboard: bool,
     pub file_path: Option<String>,
     pub file_name: String,
+    pub workspace_path: Option<String>,
     pub project_name: String,
     pub language: String,
     pub encoding: String,
@@ -1521,18 +1522,20 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
         .or_else(|| buffer.display_name())
         .unwrap_or("Untitled")
         .to_string();
-    let project_name = editor
+    let workspace_path = editor
         .file_tree()
         .root_path()
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
+        .map(|path| path.to_string_lossy().into_owned())
         .or_else(|| {
             file_path
                 .as_deref()
                 .and_then(|path| Path::new(path).parent())
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-        })
+                .map(|path| path.to_string_lossy().into_owned())
+        });
+    let project_name = workspace_path
+        .as_deref()
+        .and_then(|path| Path::new(path).file_name())
+        .and_then(|name| name.to_str())
         .unwrap_or("ovim")
         .to_string();
     let language = file_path
@@ -1557,6 +1560,7 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
         dashboard: editor.should_show_dashboard(),
         file_path,
         file_name,
+        workspace_path,
         project_name,
         language,
         encoding: buffer.encoding().display_name().to_string(),

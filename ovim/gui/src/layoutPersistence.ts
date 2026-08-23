@@ -6,8 +6,10 @@ export type WorkbenchLayoutPreference = {
 };
 
 export const workspaceLayoutIdentity = (
-    snapshot: Pick<GuiSnapshot, "filePath" | "projectName">,
+    snapshot: Pick<GuiSnapshot, "filePath" | "workspacePath" | "projectName">,
 ) => {
+    const workspace = snapshot.workspacePath?.replaceAll("\\", "/");
+    if (workspace) return workspace;
     const path = snapshot.filePath?.replaceAll("\\", "/");
     if (path) {
         const parts = path.split("/").filter(Boolean);

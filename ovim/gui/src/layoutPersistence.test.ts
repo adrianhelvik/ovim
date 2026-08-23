@@ -10,12 +10,14 @@ describe("workspace layout persistence", () => {
         expect(
             workspaceLayoutIdentity({
                 filePath: "/work/ovim/ovim/src/gui/mod.rs",
+                workspacePath: "/work/ovim",
                 projectName: "ovim",
             }),
-        ).toBe("/work/ovim/ovim");
+        ).toBe("/work/ovim");
         expect(
             workspaceLayoutIdentity({
                 filePath: "C:\\work\\ovim\\src\\main.rs",
+                workspacePath: "C:\\work\\ovim",
                 projectName: "ovim",
             }),
         ).toBe("C:/work/ovim");

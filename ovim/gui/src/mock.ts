@@ -108,6 +108,7 @@ export const mockSnapshot: GuiSnapshot = {
     dashboard: false,
     filePath: "/workspace/ovim/ovim/src/gui/mod.rs",
     fileName: "mod.rs",
+    workspacePath: "/workspace/ovim",
     projectName: "ovim",
     language: "rust",
     encoding: "UTF-8",

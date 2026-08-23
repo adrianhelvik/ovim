@@ -227,6 +227,7 @@ export interface GuiSnapshot {
     dashboard: boolean;
     filePath?: string;
     fileName: string;
+    workspacePath?: string;
     projectName: string;
     language: string;
     encoding: string;
