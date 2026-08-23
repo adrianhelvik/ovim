@@ -678,6 +678,7 @@ export const ChatPanel = (props: {
     const [following, setFollowing] = createSignal(true);
     let transcript!: HTMLDivElement;
     let messageCount = props.chat.messages.length;
+    let selectedMessageId: string | undefined;
     const transcriptItems = createMemo(() =>
         chatTranscriptItems(
             props.chat.messages,
@@ -691,6 +692,8 @@ export const ChatPanel = (props: {
         const selected = props.chat.messages.find(
             (message) => message.selected,
         )?.id;
+        if (selected === selectedMessageId) return;
+        selectedMessageId = selected;
         if (!selected) return;
         setFollowing(false);
         queueMicrotask(() =>

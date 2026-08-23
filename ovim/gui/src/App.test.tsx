@@ -390,6 +390,63 @@ describe("Ovim Solid workbench", () => {
         expect(transcript.scrollTop).toBe(700);
     });
 
+    it("does not repeatedly pull the reader back to an unchanged history selection", async () => {
+        const selectedMessage: GuiAiChat["messages"][number] = {
+            id: "1:1",
+            index: 0,
+            selected: true,
+            role: "assistant",
+            content: "Pinned response",
+            model: "codex",
+            tools: [],
+        };
+        const initial: GuiAiChat = {
+            profile: "codex",
+            profiles: [],
+            reasoningEffort: "medium",
+            reasoningEffortSelection: "default",
+            reasoningEfforts: ["default"],
+            activity: "idle",
+            waiting: false,
+            input: "",
+            inputCursor: 0,
+            queuedInputs: [],
+            pendingImages: [],
+            messages: [selectedMessage],
+            thinkingLive: false,
+            focus: "textInput",
+            agents: [],
+            agentCursor: 0,
+        };
+        const [chat, setChat] = createSignal(initial);
+        const result = render(() => (
+            <ChatPanel chat={chat()} focusInput={() => {}} />
+        ));
+        const transcript =
+            result.container.querySelector<HTMLElement>(".chat-messages")!;
+        Object.defineProperties(transcript, {
+            scrollHeight: { configurable: true, value: 600, writable: true },
+            clientHeight: { configurable: true, value: 200 },
+            scrollTop: { configurable: true, value: 100, writable: true },
+        });
+
+        await Promise.resolve();
+        fireEvent.click(screen.getByRole("button", { name: "New messages" }));
+        expect(transcript.scrollTop).toBe(600);
+
+        setChat({
+            ...initial,
+            activity: "streaming",
+            streaming: "New content on the same selected turn",
+        });
+        await Promise.resolve();
+
+        expect(transcript.scrollTop).toBe(600);
+        expect(
+            screen.queryByRole("button", { name: "New activity" }),
+        ).toBeNull();
+    });
+
     it("offers configured model selections and releases pointer focus back to chat input", async () => {
         const onProfile = vi.fn();
         const onReasoningEffort = vi.fn();
