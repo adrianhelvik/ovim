@@ -166,7 +166,7 @@ impl Motions {
             }
             // Check for C/C++/Java/Go style - identifier followed by ( at start of line
             // Look for pattern: word word( or word( at reasonable indent level
-            let indent = line.len() - line.trim_start().len();
+            let indent = line.chars().take_while(|c| c.is_whitespace()).count();
             if indent <= 8
                 && trimmed.contains('(')
                 && !trimmed.starts_with("if ")
@@ -199,7 +199,7 @@ impl Motions {
     fn is_method_end(buffer: &Buffer, line_idx: usize) -> bool {
         if let Some(line) = buffer.line_text(line_idx) {
             let trimmed = line.trim();
-            let indent = line.len() - line.trim_start().len();
+            let indent = line.chars().take_while(|c| c.is_whitespace()).count();
             // A method end is typically a } at indentation <= 4 (or 8 for nested classes)
             // and the line is just the closing brace (possibly with semicolon for C++)
             if indent <= 4 && (trimmed == "}" || trimmed == "};" || trimmed == "},") {
@@ -207,5 +207,30 @@ impl Motions {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn method_forward_counts_unicode_indentation_as_characters() {
+        let mut buffer = Buffer::new_from_str("start\n\u{3000}\u{3000}\u{3000}int run() {\ntail\n");
+
+        Motions::method_forward(&mut buffer, 1);
+
+        assert_eq!(buffer.cursor().line(), 1);
+        assert_eq!(buffer.cursor().col(), GraphemeCol(3));
+    }
+
+    #[test]
+    fn method_end_forward_counts_unicode_indentation_as_characters() {
+        let mut buffer = Buffer::new_from_str("start\nbody\n\u{3000}\u{3000}}\ntail\n");
+
+        Motions::method_end_forward(&mut buffer, 1);
+
+        assert_eq!(buffer.cursor().line(), 2);
+        assert_eq!(buffer.cursor().col(), GraphemeCol(2));
     }
 }
