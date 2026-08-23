@@ -17,6 +17,28 @@ export const Markdown = (props: { text: string }) => {
   return <div class="markdown" innerHTML={html()} />;
 };
 
+export const ChatActivityGroup = (props: { item: Extract<ChatTranscriptItem, { kind: "activity" }> }) => {
+  const [expanded, setExpanded] = createSignal(false);
+  return (
+    <details class="chat-activity" onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary>
+        <span classList={{ "thinking-spinner": props.item.live }} aria-label={props.item.live ? "Thinking" : undefined} />
+        <span><small>{props.item.live ? "Thinking" : "Activity"}</small><b>{activitySummary(props.item.entries)}</b></span>
+        <em>{props.item.entries.length} {props.item.entries.length === 1 ? "step" : "steps"}</em>
+      </summary>
+      <Show when={expanded()}><div class="chat-activity-history">
+        <For each={props.item.entries}>{(entry) => (
+          <section class={`chat-activity-entry ${entry.role}`}>
+            <header><b>{entry.role === "tool" ? entry.toolName || "Tool result" : entry.role}</b><small>{entry.live ? "live" : entry.model}</small></header>
+            <Show when={entry.content}><Markdown text={entry.content} /></Show>
+            <ToolCallList tools={entry.tools} />
+          </section>
+        )}</For>
+      </div></Show>
+    </details>
+  );
+};
+
 const WalkthroughDiscussion = (props: { discussion: GuiCodeExplanation["discussion"] }) => (
   <Show when={props.discussion.state !== "navigating" || props.discussion.latestQuestion}>
     <section class={`walkthrough-discussion ${props.discussion.state}`} aria-live={props.discussion.state === "answering" ? "polite" : "off"}>
@@ -113,6 +135,74 @@ export const ChatSetupCard = (props: { setup: NonNullable<GuiAiChat["setup"]>; o
 
 type GuiChatMessage = GuiAiChat["messages"][number];
 
+type ChatActivityEntry = GuiChatMessage & { live?: boolean };
+export type ChatTranscriptItem =
+  | { kind: "message"; id: string; message: GuiChatMessage }
+  | { kind: "activity"; id: string; entries: ChatActivityEntry[]; live: boolean };
+
+const isActivityMessage = (message: GuiChatMessage) =>
+  message.role === "thinking"
+  || message.role === "tool"
+  || (message.role === "assistant" && message.tools.length > 0 && !message.content.trim());
+
+export const chatTranscriptItems = (
+  messages: GuiChatMessage[],
+  streamingThinking?: string,
+  thinkingLive = false,
+): ChatTranscriptItem[] => {
+  const items: ChatTranscriptItem[] = [];
+  for (const message of messages) {
+    if (!isActivityMessage(message)) {
+      items.push({ kind: "message", id: message.id, message });
+      continue;
+    }
+    const previous = items.at(-1);
+    if (previous?.kind === "activity") {
+      previous.entries.push(message);
+    } else {
+      items.push({ kind: "activity", id: `activity:${message.id}`, entries: [message], live: false });
+    }
+  }
+  if (thinkingLive) {
+    const liveThinking: ChatActivityEntry = {
+      id: "streaming-thinking",
+      role: "thinking",
+      content: streamingThinking || "Thinking…",
+      tools: [],
+      live: true,
+    };
+    const previous = items.at(-1);
+    if (previous?.kind === "activity") {
+      previous.entries.push(liveThinking);
+      previous.live = true;
+    } else {
+      items.push({ kind: "activity", id: "activity:streaming-thinking", entries: [liveThinking], live: true });
+    }
+  }
+  return items;
+};
+
+const lastActivityEntry = (
+  entries: ChatActivityEntry[],
+  predicate: (entry: ChatActivityEntry) => boolean,
+) => {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (predicate(entries[index])) return entries[index];
+  }
+  return undefined;
+};
+
+export const activitySummary = (entries: ChatActivityEntry[]) => {
+  const latestThinking = lastActivityEntry(entries, (entry) => entry.role === "thinking" && Boolean(entry.content.trim()));
+  if (latestThinking) {
+    return latestThinking.content.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) || "Thinking…";
+  }
+  const latestToolCall = lastActivityEntry(entries, (entry) => entry.tools.length > 0);
+  if (latestToolCall) return `Calling ${latestToolCall.tools.join(", ")}`;
+  const latestTool = lastActivityEntry(entries, (entry) => entry.role === "tool");
+  return latestTool?.toolName ? `Completed ${latestTool.toolName}` : "Agent activity";
+};
+
 export const toolResultSummary = (content: string) => {
   const failed = /^\s*(error|failed|failure|denied|cancelled)\b/i.test(content.slice(0, 240));
   return `${failed ? "Failed" : "Completed"} · ${content.length.toLocaleString()} characters`;
@@ -159,6 +249,11 @@ export const ChatPanel = (props: { chat: GuiAiChat; focusInput: () => void; onSe
   const [following, setFollowing] = createSignal(true);
   let transcript!: HTMLDivElement;
   let messageCount = props.chat.messages.length;
+  const transcriptItems = createMemo(() => chatTranscriptItems(
+    props.chat.messages,
+    props.chat.streamingThinking,
+    props.chat.thinkingLive,
+  ));
 
   const jumpToLatest = () => {
     transcript.scrollTop = transcript.scrollHeight;
@@ -168,7 +263,7 @@ export const ChatPanel = (props: { chat: GuiAiChat; focusInput: () => void; onSe
   createEffect(() => {
     const messages = props.chat.messages;
     const latest = messages.at(-1);
-    const revision = `${messages.length}:${latest?.content.length ?? 0}:${props.chat.streaming?.length ?? 0}:${props.chat.approval?.length ?? 0}`;
+    const revision = `${messages.length}:${latest?.content.length ?? 0}:${props.chat.streaming?.length ?? 0}:${props.chat.streamingThinking?.length ?? 0}:${props.chat.approval?.length ?? 0}`;
     if (messages.length > messageCount && latest?.role === "user") setFollowing(true);
     messageCount = messages.length;
     void revision;
@@ -189,7 +284,11 @@ export const ChatPanel = (props: { chat: GuiAiChat; focusInput: () => void; onSe
           ref={transcript}
           onScroll={() => setFollowing(isNearChatBottom(transcript))}
         >
-          <Index each={props.chat.messages}>{(message) => <ChatMessageView message={message()} />}</Index>
+          <Index each={transcriptItems()}>{(item) => (
+            <Show when={item().kind === "activity" ? item() as Extract<ChatTranscriptItem, { kind: "activity" }> : undefined} fallback={<ChatMessageView message={(item() as Extract<ChatTranscriptItem, { kind: "message" }>).message} />}>
+              {(activity) => <ChatActivityGroup item={activity()} />}
+            </Show>
+          )}</Index>
           <Show when={props.chat.streaming}>{(content) => <article class="chat-message assistant streaming"><header><b>assistant</b><small>streaming</small></header><Markdown text={content()} /></article>}</Show>
         </div>
         <Show when={!following()}><button class="chat-jump" onClick={() => { jumpToLatest(); props.focusInput(); }}>↓ Jump to latest</button></Show>

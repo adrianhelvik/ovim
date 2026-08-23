@@ -3,7 +3,7 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { ChatComposer, ChatMessageView, ChatPanel, ChatSetupCard, CodeWalkthrough, Markdown, chatSelectionText, imageExtension, isNearChatBottom, toolResultSummary } from "./App";
+import App, { ChatActivityGroup, ChatComposer, ChatMessageView, ChatPanel, ChatSetupCard, CodeWalkthrough, Markdown, activitySummary, chatSelectionText, chatTranscriptItems, imageExtension, isNearChatBottom, toolResultSummary } from "./App";
 import { mockSnapshot } from "./mock";
 import type { GuiAiChat, GuiCodeExplanation } from "./types";
 
@@ -98,6 +98,7 @@ describe("Ovim Solid workbench", () => {
       inputCursor: 4,
       pendingImages: ["diagram.png"],
       messages: [],
+      thinkingLive: false,
     }} />);
 
     const caret = result.container.querySelector(".chat-caret");
@@ -127,7 +128,8 @@ describe("Ovim Solid workbench", () => {
       input: "",
       inputCursor: 0,
       pendingImages: [],
-      messages: [{ role: "assistant", content: "First response", model: "codex", tools: [] }],
+      messages: [{ id: "1:1", role: "assistant", content: "First response", model: "codex", tools: [] }],
+      thinkingLive: false,
     };
     const [chat, setChat] = createSignal(initial);
     const result = render(() => <ChatPanel chat={chat()} focusInput={() => {}} />);
@@ -167,7 +169,7 @@ describe("Ovim Solid workbench", () => {
   it("does not let stale editor overlays cover an active AI chat", () => {
     mockSnapshot.aiChat = {
       profile: "codex", reasoningEffort: "high", activity: "idle", waiting: false,
-      input: "visible draft", inputCursor: 13, pendingImages: [], messages: [],
+      input: "visible draft", inputCursor: 13, pendingImages: [], messages: [], thinkingLive: false,
     };
     mockSnapshot.picker = {
       title: "Stale picker", query: "", selected: 0, total: 1,
@@ -235,10 +237,36 @@ describe("Ovim Solid workbench", () => {
     expect(imageExtension("image/svg+xml")).toBeUndefined();
   });
 
+  it("groups contiguous thinking and tool activity behind one live summary", async () => {
+    const items = chatTranscriptItems([
+      { id: "1:1", role: "user", content: "Please inspect this", tools: [] },
+      { id: "1:2", role: "thinking", content: "Planning the inspection", model: "codex", tools: [] },
+      { id: "1:3", role: "assistant", content: "", model: "codex", tools: ["search_project"] },
+      { id: "1:4", role: "tool", content: "Found three matches", toolName: "search_project", tools: [] },
+      { id: "1:5", role: "assistant", content: "Here is the result", model: "codex", tools: [] },
+    ], "Inspecting the matching files", true);
+
+    expect(items.map((item) => item.kind)).toEqual(["message", "activity", "message", "activity"]);
+    const live = items.at(-1)!;
+    expect(live.kind).toBe("activity");
+    if (live.kind !== "activity") throw new Error("expected live activity");
+    expect(activitySummary(live.entries)).toBe("Inspecting the matching files");
+
+    const result = render(() => <ChatActivityGroup item={live} />);
+    expect(screen.getByText("Inspecting the matching files")).toBeTruthy();
+    expect(screen.getByLabelText("Thinking")).toBeTruthy();
+    expect(result.container.querySelector(".chat-activity-history")).toBeNull();
+    const details = result.container.querySelector<HTMLDetailsElement>("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    await Promise.resolve();
+    expect(result.container.querySelector(".chat-activity-history")).toBeTruthy();
+  });
+
   it("keeps tool results collapsed until their details are requested", async () => {
     const payload = "large tool payload that should start hidden";
     const result = render(() => <ChatMessageView message={{
-      role: "tool", content: payload, toolName: "search_project", tools: [],
+      id: "1:3", role: "tool", content: payload, toolName: "search_project", tools: [],
     }} />);
 
     expect(screen.getByText("search_project")).toBeTruthy();
@@ -254,7 +282,7 @@ describe("Ovim Solid workbench", () => {
 
   it("collapses assistant tool-call lists by default", () => {
     const result = render(() => <ChatMessageView message={{
-      role: "assistant", content: "I will inspect this.", model: "codex",
+      id: "1:4", role: "assistant", content: "I will inspect this.", model: "codex",
       tools: ["search_project", "read_file_at_path"],
     }} />);
 

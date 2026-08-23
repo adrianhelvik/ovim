@@ -59,8 +59,10 @@ export interface GuiAiChat {
     error?: string;
     actions: Array<{ label: string; key: string }>;
   };
-  messages: Array<{ role: string; content: string; model?: string; toolName?: string; tools: string[] }>;
+  messages: Array<{ id: string; role: string; content: string; model?: string; toolName?: string; tools: string[] }>;
   streaming?: string;
+  streamingThinking?: string;
+  thinkingLive: boolean;
   approval?: string;
   codeExplanation?: GuiCodeExplanation;
 }

@@ -441,6 +441,8 @@ pub struct GuiAiChat {
     pub setup: Option<GuiChatSetup>,
     pub messages: Vec<GuiChatMessage>,
     pub streaming: Option<String>,
+    pub streaming_thinking: Option<String>,
+    pub thinking_live: bool,
     pub approval: Option<String>,
     pub code_explanation: Option<GuiCodeExplanation>,
 }
@@ -493,6 +495,7 @@ pub enum GuiCodeExplanationDiscussion {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiChatMessage {
+    pub id: String,
     pub role: String,
     pub content: String,
     pub model: Option<String>,
@@ -1843,6 +1846,23 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
     (editor.mode() == Mode::AiChat).then(|| {
         let messages = editor.ai_chat_messages();
         let start = messages.len().saturating_sub(40);
+        let (conversation_instance, message_node_ids) = editor
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| {
+                editor
+                    .ai_state
+                    .conversations
+                    .get(&(chat.origin_buffer_id, chat.opts.name.clone()))
+            })
+            .map(|conversation| {
+                (
+                    conversation.instance_id(),
+                    conversation.node_ids_for_active_branch().to_vec(),
+                )
+            })
+            .unwrap_or_default();
         let tool_names = messages
             .iter()
             .flat_map(|message| message.tool_calls.iter())
@@ -1875,7 +1895,12 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             setup: chat_setup(editor),
             messages: messages[start..]
                 .iter()
-                .map(|message| GuiChatMessage {
+                .enumerate()
+                .map(|(offset, message)| GuiChatMessage {
+                    id: message_node_ids
+                        .get(start + offset)
+                        .map(|node_id| format!("{conversation_instance}:{node_id}"))
+                        .unwrap_or_else(|| format!("{conversation_instance}:{}", start + offset)),
                     role: match message.role {
                         ovim_core::ai::chat_types::ChatRole::User => "user",
                         ovim_core::ai::chat_types::ChatRole::Assistant => "assistant",
@@ -1903,6 +1928,11 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                 .ai_chat_streaming_content()
                 .filter(|content| !content.is_empty())
                 .map(|content| truncate_panel_text(content, 12_000)),
+            streaming_thinking: editor
+                .ai_chat_streaming_thinking()
+                .filter(|content| !content.is_empty())
+                .map(|content| truncate_panel_text(content, 12_000)),
+            thinking_live: editor.ai_chat_streaming_thinking().is_some(),
             approval: editor
                 .ai_chat_pending_tool_approval_summary()
                 .or_else(|| editor.ai_chat_pending_no_repo_folder_approval_summary()),
@@ -2350,12 +2380,20 @@ mod tests {
         );
         conversation.append_tool_result(call.id.clone(), "Walkthrough complete.".into());
         assert!(editor.replay_code_explanation(&call.id));
+        editor.ai_state.chat.as_mut().unwrap().streaming_thinking =
+            Some("Inspecting the walkthrough state".into());
 
-        let walkthrough = snapshot(&editor, 1)
-            .ai_chat
-            .unwrap()
-            .code_explanation
-            .expect("active walkthrough");
+        let chat_snapshot = snapshot(&editor, 1).ai_chat.unwrap();
+        assert!(chat_snapshot.thinking_live);
+        assert_eq!(
+            chat_snapshot.streaming_thinking.as_deref(),
+            Some("Inspecting the walkthrough state")
+        );
+        assert!(chat_snapshot
+            .messages
+            .iter()
+            .all(|message| message.id.split_once(':').is_some()));
+        let walkthrough = chat_snapshot.code_explanation.expect("active walkthrough");
         assert_eq!(walkthrough.current, 1);
         assert_eq!(walkthrough.total, 2);
         assert!(matches!(
