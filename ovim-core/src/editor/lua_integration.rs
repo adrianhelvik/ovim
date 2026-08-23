@@ -14,8 +14,8 @@ use anyhow::Result;
 #[cfg(feature = "lua")]
 use super::InputHandler;
 
-/// Sticky error toast for a failed config or plugin load. Lua errors carry a
-/// multi-line traceback; the toast shows the message line and points at the
+/// Transient error toast for a failed config or plugin load. Lua errors carry
+/// a multi-line traceback; the toast shows the message line and points at the
 /// log file, which has the full trace.
 #[cfg(feature = "lua")]
 fn lua_failure_toast(title: &str, error: &anyhow::Error) -> super::ToastRequest {
@@ -30,7 +30,6 @@ fn lua_failure_toast(title: &str, error: &anyhow::Error) -> super::ToastRequest 
         ),
     )
     .with_title(title)
-    .with_sticky(true)
 }
 
 #[cfg(feature = "lua")]
@@ -318,5 +317,19 @@ impl Editor {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "lua"))]
+mod tests {
+    use super::lua_failure_toast;
+    use std::time::Duration;
+
+    #[test]
+    fn lua_failure_toasts_expire_after_the_default_error_lifetime() {
+        let toast = lua_failure_toast("init.lua failed to load", &anyhow::anyhow!("boom"));
+
+        assert!(!toast.sticky);
+        assert_eq!(toast.ttl, Some(Duration::from_secs(8)));
     }
 }
