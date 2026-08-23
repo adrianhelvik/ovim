@@ -23,6 +23,7 @@ mod ai_comprehension;
 mod ai_durable_chat;
 pub(crate) mod ai_integration;
 mod ai_run_events;
+mod ai_session_temp;
 mod ai_shell_process;
 mod ai_skills;
 mod ai_state;

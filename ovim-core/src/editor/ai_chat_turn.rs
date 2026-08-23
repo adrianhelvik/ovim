@@ -743,6 +743,10 @@ impl Editor {
             );
             return;
         };
+        if self.current_session_authorizes_temp_shell_command(&command) {
+            self.execute_dynamic_tool_after_policy(turn, tool, call, response, None, false);
+            return;
+        }
         let request = ClassifierRequest::new(
             ShellProposal {
                 command,
@@ -1004,6 +1008,8 @@ impl Editor {
         let task_command = command.clone();
         let task_workdir = workdir.clone();
         let task = tokio::task::spawn_blocking(move || {
+            let temp_probe =
+                super::ai_session_temp::TempPathProbe::for_shell_command(&task_command);
             let observation = match crate::run_log::capture_workspace(&task_workdir, &artifact_store) {
                 Ok(before) => {
                     let result = super::ai_tool_execution::run_bash_program(
@@ -1018,12 +1024,14 @@ impl Editor {
                         Ok(after) => super::ai_chat_state::ShellExecutionObservation {
                             result,
                             delta: Some(before.diff(after)),
+                            created_temp_files: temp_probe.created_files(),
                             capture_error: None,
                             outcome_unknown: false,
                         },
                         Err(error) => super::ai_chat_state::ShellExecutionObservation {
                             result,
                             delta: None,
+                            created_temp_files: Vec::new(),
                             capture_error: Some(format!(
                                 "shell completed, but after-state capture failed: {error}"
                             )),
@@ -1036,6 +1044,7 @@ impl Editor {
                         "shell program was not executed because before-state capture failed: {error}"
                     )),
                     delta: None,
+                    created_temp_files: Vec::new(),
                     capture_error: Some(error),
                     outcome_unknown: false,
                 },
@@ -1104,6 +1113,7 @@ impl Editor {
                             "shell execution task stopped without a result".into(),
                         ),
                         delta: None,
+                        created_temp_files: Vec::new(),
                         capture_error: Some(
                             "shell execution and workspace result are unknown".into(),
                         ),
@@ -1119,6 +1129,9 @@ impl Editor {
             .and_then(|chat| chat.pending_shell_execution.take())
             .expect("pending shell exists");
         let observation = received.expect("shell result");
+        for path in &observation.created_temp_files {
+            self.record_current_session_temp_file(path);
+        }
         if let Some(chat) = self.ai_state.chat.as_mut() {
             let phase = if observation.outcome_unknown {
                 super::ai_chat_state::ShellTranscriptPhase::OutcomeUnknown
