@@ -22,6 +22,11 @@ import { splitAtUtf8Offset } from "./textEncoding";
 import { trapDialogFocus } from "./focus";
 import { anchoredOverlayPosition } from "./overlayPosition";
 import { retainProjection, shouldAcceptRevision } from "./stateProjection";
+import {
+    readWorkbenchLayout,
+    workspaceLayoutIdentity,
+    writeWorkbenchLayout,
+} from "./layoutPersistence";
 import type {
     GuiAiChat,
     GuiCodeExplanation,
@@ -1063,6 +1068,34 @@ function App() {
         tests: Boolean(view().testPanel),
         debug: Boolean(view().debug),
     };
+    let layoutWorkspace = "";
+
+    const layoutStorage = () => {
+        try {
+            return window.localStorage;
+        } catch {
+            return undefined;
+        }
+    };
+
+    createEffect(() => {
+        const workspace = workspaceLayoutIdentity(view());
+        if (workspace === layoutWorkspace) return;
+        layoutWorkspace = workspace;
+        const preference = readWorkbenchLayout(layoutStorage(), workspace);
+        if (!preference) return;
+        setActiveDock(preference.activeDock);
+        setActiveContextPanel(preference.activeContextPanel);
+    });
+
+    createEffect(() => {
+        const preference = {
+            activeDock: activeDock(),
+            activeContextPanel: activeContextPanel(),
+        };
+        if (!layoutWorkspace) return;
+        writeWorkbenchLayout(layoutStorage(), layoutWorkspace, preference);
+    });
 
     createEffect(() => {
         const hasContext = hasContextDock();

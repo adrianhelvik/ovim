@@ -30,6 +30,17 @@ class ResizeObserverMock {
 }
 
 beforeEach(() => {
+    const layoutStorage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+        getItem: (key: string) => layoutStorage.get(key) ?? null,
+        setItem: (key: string, value: string) => layoutStorage.set(key, value),
+        removeItem: (key: string) => layoutStorage.delete(key),
+        clear: () => layoutStorage.clear(),
+        key: (index: number) => [...layoutStorage.keys()][index] ?? null,
+        get length() {
+            return layoutStorage.size;
+        },
+    });
     vi.stubGlobal("ResizeObserver", ResizeObserverMock);
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
         callback(0);
