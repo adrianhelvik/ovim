@@ -261,6 +261,7 @@ pub struct GuiSnapshot {
     pub encoding: String,
     pub line_ending: String,
     pub modified: bool,
+    pub has_unsaved_changes: bool,
     pub read_only: bool,
     pub selection_text: Option<String>,
     pub cursor: GuiCursor,
@@ -459,6 +460,9 @@ pub struct GuiAiChat {
     pub reasoning_effort: String,
     pub reasoning_effort_selection: String,
     pub reasoning_efforts: Vec<String>,
+    pub yolo_mode: bool,
+    pub comprehension_policy: String,
+    pub comprehension_checkpoint: Option<String>,
     pub activity: String,
     pub waiting: bool,
     pub input: String,
@@ -692,6 +696,14 @@ enum GuiRequest {
     ManageQueuedChatInput {
         id: u64,
         action: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    AiPolicy {
+        action: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    EditorCommand {
+        command: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
     SelectChatAgent {
@@ -974,6 +986,16 @@ impl GuiBridge {
             .await
     }
 
+    pub async fn ai_policy(&self, action: String) -> Result<(), String> {
+        self.request(|reply| GuiRequest::AiPolicy { action, reply })
+            .await
+    }
+
+    pub async fn editor_command(&self, command: String) -> Result<(), String> {
+        self.request(|reply| GuiRequest::EditorCommand { command, reply })
+            .await
+    }
+
     pub async fn select_chat_agent(&self, agent_id: Option<String>) -> Result<(), String> {
         self.request(|reply| GuiRequest::SelectChatAgent { agent_id, reply })
             .await
@@ -1194,6 +1216,41 @@ async fn handle_request(
             if result.is_ok() {
                 refresh_after_input(editor);
             }
+            (reply, result)
+        }
+        GuiRequest::AiPolicy { action, reply } => {
+            let changed = match action.as_str() {
+                "toggle-yolo" => editor.set_ai_chat_yolo_mode(!editor.ai_chat_yolo_mode()),
+                "toggle-comprehension" => {
+                    editor.toggle_ai_chat_comprehension_policy();
+                    true
+                }
+                _ => false,
+            };
+            let result = changed.then_some(()).ok_or_else(|| {
+                anyhow::anyhow!("Unknown or unavailable AI policy action: {action}")
+            });
+            if result.is_ok() {
+                refresh_after_input(editor);
+                editor.dispatch_pending_intents().await;
+            }
+            (reply, result)
+        }
+        GuiRequest::EditorCommand { command, reply } => {
+            let result = match InputHandler::execute_command_api(editor, &command) {
+                ovim_core::CommandResult::Success(success) => {
+                    if let Some(message) = success.message {
+                        editor.set_status_message(message.into_owned());
+                    }
+                    Ok(())
+                }
+                ovim_core::CommandResult::Error(error) => {
+                    editor.set_status_message(error.error.clone());
+                    Err(anyhow::anyhow!(error.error))
+                }
+            };
+            refresh_after_input(editor);
+            editor.dispatch_pending_intents().await;
             (reply, result)
         }
         GuiRequest::SelectChatMessage { index, reply } => {
@@ -1566,6 +1623,7 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
         encoding: buffer.encoding().display_name().to_string(),
         line_ending: buffer.line_ending().display_name().to_string(),
         modified: buffer.is_modified(),
+        has_unsaved_changes: editor.any_buffer_modified(),
         read_only: buffer.is_read_only(),
         selection_text: editor.visual_selection_text(),
         cursor: GuiCursor {
@@ -2252,6 +2310,11 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                 .iter()
                 .map(|effort| (*effort).to_string())
                 .collect(),
+            yolo_mode: editor.ai_chat_yolo_mode(),
+            comprehension_policy: editor.ai_chat_comprehension_policy().as_str().to_string(),
+            comprehension_checkpoint: editor
+                .ai_chat_comprehension_checkpoint_summary()
+                .map(str::to_string),
             activity: editor.ai_chat_activity().as_str().to_string(),
             waiting: editor.ai_chat_waiting(),
             input: editor.ai_chat_input().to_string(),
@@ -3084,5 +3147,21 @@ mod tests {
             &updates,
         );
         assert!(receiver.borrow().is_none());
+    }
+
+    #[test]
+    fn snapshot_projects_ai_safety_controls() {
+        let mut editor = Editor::new();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        assert!(editor.set_ai_chat_yolo_mode(true));
+        assert!(editor
+            .set_ai_chat_comprehension_policy(ovim_core::editor::ComprehensionPolicy::Commit,));
+
+        let chat = snapshot(&editor, 1).ai_chat.expect("chat projection");
+        assert!(chat.yolo_mode);
+        assert_eq!(chat.comprehension_policy, "commit");
+        assert!(chat.comprehension_checkpoint.is_none());
     }
 }

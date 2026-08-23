@@ -178,6 +178,8 @@ describe("Ovim Solid workbench", () => {
             reasoningEffort: "medium",
             reasoningEffortSelection: "default",
             reasoningEfforts: ["default"],
+            yoloMode: false,
+            comprehensionPolicy: "off",
             activity: "idle",
             waiting: false,
             input: "",
@@ -267,6 +269,8 @@ describe("Ovim Solid workbench", () => {
                     reasoningEffort: "high",
                     reasoningEffortSelection: "default",
                     reasoningEfforts: ["default", "high"],
+                    yoloMode: false,
+                    comprehensionPolicy: "off",
                     activity: "idle",
                     waiting: false,
                     input: "a界b",
@@ -314,6 +318,8 @@ describe("Ovim Solid workbench", () => {
                     reasoningEffort: "medium",
                     reasoningEffortSelection: "default",
                     reasoningEfforts: ["default"],
+                    yoloMode: false,
+                    comprehensionPolicy: "off",
                     activity: "idle",
                     waiting: false,
                     input: "",
@@ -351,17 +357,25 @@ describe("Ovim Solid workbench", () => {
     });
 
     it("returns DOM focus to the editor input when AI chat is activated", () => {
-        render(() => <App />);
-        const input = screen.getByLabelText("Ovim editor input");
-        const focus = vi.mocked(HTMLElement.prototype.focus);
-        focus.mockClear();
+        const previousChat = mockSnapshot.aiChat;
+        mockSnapshot.aiChat = undefined;
+        try {
+            render(() => <App />);
+            const input = screen.getByLabelText("Ovim editor input");
+            const focus = vi.mocked(HTMLElement.prototype.focus);
+            focus.mockClear();
 
-        fireEvent.click(
-            document.querySelector<HTMLButtonElement>('[title^="AI chat"]')!,
-        );
+            fireEvent.click(
+                document.querySelector<HTMLButtonElement>(
+                    '[title^="AI chat"]',
+                )!,
+            );
 
-        expect(focus).toHaveBeenCalledWith({ preventScroll: true });
-        expect(focus.mock.instances).toContain(input);
+            expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+            expect(focus.mock.instances).toContain(input);
+        } finally {
+            mockSnapshot.aiChat = previousChat;
+        }
     });
 
     it("follows chat updates until the reader scrolls away from the bottom", async () => {
@@ -371,6 +385,8 @@ describe("Ovim Solid workbench", () => {
             reasoningEffort: "high",
             reasoningEffortSelection: "default",
             reasoningEfforts: ["default", "high"],
+            yoloMode: false,
+            comprehensionPolicy: "off",
             activity: "idle",
             waiting: false,
             input: "",
@@ -447,6 +463,8 @@ describe("Ovim Solid workbench", () => {
             reasoningEffort: "medium",
             reasoningEffortSelection: "default",
             reasoningEfforts: ["default"],
+            yoloMode: false,
+            comprehensionPolicy: "off",
             activity: "idle",
             waiting: false,
             input: "",
@@ -492,6 +510,8 @@ describe("Ovim Solid workbench", () => {
         const onProfile = vi.fn();
         const onReasoningEffort = vi.fn();
         const onQueuedAction = vi.fn();
+        const onYolo = vi.fn();
+        const onComprehension = vi.fn();
         const focusInput = vi.fn();
         const chat: GuiAiChat = {
             profile: "codex",
@@ -502,6 +522,8 @@ describe("Ovim Solid workbench", () => {
             reasoningEffort: "medium",
             reasoningEffortSelection: "default",
             reasoningEfforts: ["default", "low", "medium", "high"],
+            yoloMode: false,
+            comprehensionPolicy: "off",
             activity: "idle",
             waiting: false,
             input: "preserved",
@@ -529,6 +551,8 @@ describe("Ovim Solid workbench", () => {
                 focusInput={focusInput}
                 onProfile={onProfile}
                 onReasoningEffort={onReasoningEffort}
+                onYolo={onYolo}
+                onComprehension={onComprehension}
                 onQueuedAction={onQueuedAction}
             />
         ));
@@ -558,6 +582,12 @@ describe("Ovim Solid workbench", () => {
         fireEvent.click(screen.getByRole("button", { name: "high" }));
         await Promise.resolve();
         expect(onReasoningEffort).toHaveBeenCalledWith("high");
+        fireEvent.click(screen.getByRole("button", { name: "YOLO OFF" }));
+        fireEvent.click(
+            screen.getByRole("button", { name: "COMPREHENSION OFF" }),
+        );
+        expect(onYolo).toHaveBeenCalledOnce();
+        expect(onComprehension).toHaveBeenCalledOnce();
         expect(screen.getByText("Queued message")).toBeTruthy();
         expect(screen.getByText("Check the remaining tests")).toBeTruthy();
         expect(screen.getByText("1 image")).toBeTruthy();
@@ -581,6 +611,8 @@ describe("Ovim Solid workbench", () => {
             reasoningEffort: "medium",
             reasoningEffortSelection: "default",
             reasoningEfforts: ["default"],
+            yoloMode: false,
+            comprehensionPolicy: "off",
             activity: "idle",
             waiting: false,
             input: "ship this",
@@ -642,6 +674,8 @@ describe("Ovim Solid workbench", () => {
             reasoningEffort: "high",
             reasoningEffortSelection: "default",
             reasoningEfforts: ["default", "high"],
+            yoloMode: false,
+            comprehensionPolicy: "off",
             activity: "idle",
             waiting: false,
             input: "",
@@ -719,6 +753,8 @@ describe("Ovim Solid workbench", () => {
             reasoningEffort: "high",
             reasoningEffortSelection: "default",
             reasoningEfforts: ["default", "high"],
+            yoloMode: false,
+            comprehensionPolicy: "off",
             activity: "idle",
             waiting: false,
             input: "visible draft",
@@ -1153,6 +1189,8 @@ describe("Ovim Solid workbench", () => {
             reasoningEffort: "medium",
             reasoningEffortSelection: "default",
             reasoningEfforts: ["default"],
+            yoloMode: false,
+            comprehensionPolicy: "off",
             activity: "idle",
             waiting: false,
             input: "",
@@ -1228,5 +1266,27 @@ describe("Ovim Solid workbench", () => {
             )!;
         expect(details.open).toBe(false);
         expect(screen.getByText("2 tool calls")).toBeTruthy();
+    });
+    it("confirms application quit while unsaved buffers exist", async () => {
+        const result = render(() => <App />);
+        fireEvent.keyDown(window, { key: "q", metaKey: true, ctrlKey: true });
+        expect(
+            screen.getByRole("dialog", {
+                name: "Save changes before leaving?",
+            }),
+        ).toBeTruthy();
+        expect(
+            screen.getByRole("button", { name: "Save All and Quit" }),
+        ).toBeTruthy();
+        expect(
+            screen.getByRole("button", { name: "Quit Without Saving" }),
+        ).toBeTruthy();
+        fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+        expect(
+            screen.queryByRole("dialog", {
+                name: "Save changes before leaving?",
+            }),
+        ).toBeNull();
+        result.unmount();
     });
 });

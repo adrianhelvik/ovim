@@ -9,6 +9,7 @@ import {
     onMount,
 } from "solid-js";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { mockSnapshot } from "./mock";
@@ -757,6 +758,8 @@ export const ChatPanel = (props: {
     onRemoveImage?: (index: number) => void;
     onProfile?: (profile: string) => void;
     onReasoningEffort?: (effort: string) => void;
+    onYolo?: () => void;
+    onComprehension?: () => void;
     onMessage?: (index: number) => void;
     onAgent?: (agentId?: string) => void;
     onQueuedAction?: (
@@ -850,13 +853,45 @@ export const ChatPanel = (props: {
                         focusInput={props.focusInput}
                     />
                 </div>
-                <span
-                    classList={{ working: props.chat.activity !== "idle" }}
-                    role="status"
-                    aria-live="polite"
-                >
-                    {props.chat.activity.replaceAll("_", " ")}
-                </span>
+                <div class="chat-policy-controls">
+                    <button
+                        type="button"
+                        classList={{ enabled: props.chat.yoloMode }}
+                        aria-pressed={props.chat.yoloMode}
+                        title={
+                            props.chat.yoloMode
+                                ? "Disable approval bypass for this chat"
+                                : "Bypass Terra and interactive approvals for this chat"
+                        }
+                        onClick={() => {
+                            props.onYolo?.();
+                            queueMicrotask(props.focusInput);
+                        }}
+                    >
+                        YOLO {props.chat.yoloMode ? "ON" : "OFF"}
+                    </button>
+                    <button
+                        type="button"
+                        classList={{
+                            enabled: props.chat.comprehensionPolicy !== "off",
+                        }}
+                        aria-pressed={props.chat.comprehensionPolicy !== "off"}
+                        title={
+                            props.chat.comprehensionCheckpoint
+                                ? `Checkpoint: ${props.chat.comprehensionCheckpoint}`
+                                : "Require demonstrated comprehension at the configured boundary"
+                        }
+                        onClick={() => {
+                            props.onComprehension?.();
+                            queueMicrotask(props.focusInput);
+                        }}
+                    >
+                        COMPREHENSION
+                        {props.chat.comprehensionPolicy === "off"
+                            ? " OFF"
+                            : `: ${props.chat.comprehensionPolicy.toUpperCase()}`}
+                    </button>
+                </div>
             </header>
             <Show when={props.chat.agents.length}>
                 <section class="chat-agents" aria-label="Agent navigation">
@@ -1052,6 +1087,9 @@ function App() {
     const [error, setError] = createSignal("");
     const [connected, setConnected] = createSignal(!native);
     const [composition, setComposition] = createSignal("");
+    const [pendingExit, setPendingExit] = createSignal<
+        "close" | "quit" | undefined
+    >();
     const [compactDocks, setCompactDocks] = createSignal(
         compactDockQuery?.matches ?? false,
     );
@@ -1193,7 +1231,7 @@ function App() {
         if (chatOpened) queueMicrotask(focusChatInput);
         if (chatClosed) queueMicrotask(focusEditorInput);
         if (coreDialogClosed) queueMicrotask(focusEditorInput);
-        if (snapshot.shouldQuit && native) void windowAction("close");
+        if (snapshot.shouldQuit && native) void windowAction("close-approved");
     };
 
     const mutateStrict = async (
@@ -1250,6 +1288,90 @@ function App() {
             await invoke<void>("gui_window_action", { action });
         } catch (reason) {
             setError(String(reason));
+        }
+    };
+
+    const editorCommand = (command: string) =>
+        mutateStrict("gui_editor_command", { command });
+
+    const requestExit = (kind: "close" | "quit") => {
+        if (kind === "quit" || view().hasUnsavedChanges) {
+            setPendingExit(kind);
+            return;
+        }
+        void editorCommand("qa");
+    };
+
+    const saveAndExit = async () => {
+        try {
+            await editorCommand("wa");
+            setPendingExit();
+            await editorCommand("qa");
+        } catch {
+            // Keep the confirmation open; the status line explains the save failure.
+        }
+    };
+
+    const discardAndExit = () => {
+        setPendingExit();
+        void editorCommand("qa!");
+    };
+
+    const selectAllEditorText = async () => {
+        focusEditorInput();
+        await sendKey({
+            key: "Escape",
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+        });
+        await sendLiteral("ggVG");
+    };
+
+    const performMenuAction = (action: string) => {
+        const active = document.activeElement;
+        const nativeEditor =
+            active instanceof HTMLTextAreaElement && active !== inputSink;
+        switch (action) {
+            case "file.save":
+                void editorCommand("w");
+                break;
+            case "file.save-all":
+                void editorCommand("wa");
+                break;
+            case "file.close":
+                requestExit("close");
+                break;
+            case "app.quit":
+                requestExit("quit");
+                break;
+            case "edit.undo":
+                if (nativeEditor) document.execCommand("undo");
+                else void editorCommand("undo");
+                break;
+            case "edit.redo":
+                if (nativeEditor) document.execCommand("redo");
+                else void editorCommand("redo");
+                break;
+            case "edit.select-all":
+                if (
+                    active instanceof HTMLInputElement ||
+                    active instanceof HTMLTextAreaElement
+                )
+                    active.select();
+                else void selectAllEditorText();
+                break;
+            case "edit.find":
+                focusEditorInput();
+                void sendKey({
+                    key: "/",
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: false,
+                });
+                break;
         }
     };
 
@@ -1326,15 +1448,50 @@ function App() {
         )
             return;
         const target = event.target as Element | null;
+        const primaryModifier = /Mac|iPhone|iPad/.test(navigator.platform)
+            ? event.metaKey
+            : event.ctrlKey;
+        if (primaryModifier && event.key.toLowerCase() === "s") {
+            event.preventDefault();
+            performMenuAction(event.altKey ? "file.save-all" : "file.save");
+            return;
+        }
+        if (primaryModifier && event.key.toLowerCase() === "w") {
+            event.preventDefault();
+            requestExit("close");
+            return;
+        }
+        if (primaryModifier && event.key.toLowerCase() === "q") {
+            event.preventDefault();
+            requestExit("quit");
+            return;
+        }
+        const nativeControl =
+            target !== inputSink &&
+            Boolean(
+                target?.closest?.(
+                    "a[href], button, input, select, textarea, [contenteditable='true'], [data-gui-native-control]",
+                ),
+            );
+        if (primaryModifier && !nativeControl) {
+            const key = event.key.toLowerCase();
+            if (key === "z" || key === "a" || key === "f") {
+                event.preventDefault();
+                performMenuAction(
+                    key === "z"
+                        ? event.shiftKey
+                            ? "edit.redo"
+                            : "edit.undo"
+                        : key === "a"
+                          ? "edit.select-all"
+                          : "edit.find",
+                );
+                return;
+            }
+        }
         if (event.key === "Tab" && target?.closest?.("[data-gui-core-dialog]"))
             return;
-        if (
-            target !== inputSink &&
-            target?.closest?.(
-                "a[href], button, input, select, textarea, [contenteditable='true'], [data-gui-native-control]",
-            )
-        )
-            return;
+        if (nativeControl) return;
         const clipboardModifier = /Mac|iPhone|iPad/.test(navigator.platform)
             ? event.metaKey
             : event.ctrlKey && event.shiftKey;
@@ -1783,6 +1940,14 @@ function App() {
                     }
                     onReasoningEffort={(effort) =>
                         void mutate("gui_select_reasoning_effort", { effort })
+                    }
+                    onYolo={() =>
+                        void mutate("gui_ai_policy", { action: "toggle-yolo" })
+                    }
+                    onComprehension={() =>
+                        void mutate("gui_ai_policy", {
+                            action: "toggle-comprehension",
+                        })
                     }
                     onMessage={(index) =>
                         void mutate("gui_select_chat_message", { index })
@@ -2393,7 +2558,9 @@ function App() {
         window.addEventListener("paste", handlePaste);
         window.addEventListener("copy", handleCopy);
         window.addEventListener("cut", handleCut);
-        const restoreInputFocus = () => focusPrimaryInput();
+        const restoreInputFocus = () => {
+            if (!pendingExit()) focusPrimaryInput();
+        };
         window.addEventListener("focus", restoreInputFocus);
         const updateCompactDocks = (event: MediaQueryListEvent) =>
             setCompactDocks(event.matches);
@@ -2401,7 +2568,19 @@ function App() {
         editorBody.addEventListener("wheel", handleWheel, { passive: false });
         const observer = new ResizeObserver(syncDimensions);
         observer.observe(editorBody);
+        let unlistenMenu: (() => void) | undefined;
+        let unlistenClose: (() => void) | undefined;
         if (native) {
+            void listen<string>("ovim://menu-action", (event) =>
+                performMenuAction(event.payload),
+            ).then((unlisten) => {
+                unlistenMenu = unlisten;
+            });
+            void listen<string>("ovim://close-requested", (event) =>
+                requestExit(event.payload === "quit" ? "quit" : "close"),
+            ).then((unlisten) => {
+                unlistenClose = unlisten;
+            });
             const snapshots = new Channel<GuiSnapshot>();
             snapshots.onmessage = accept;
             lastDimensions = dimensions();
@@ -2422,6 +2601,8 @@ function App() {
             compactDockQuery?.removeEventListener("change", updateCompactDocks);
             editorBody.removeEventListener("wheel", handleWheel);
             observer.disconnect();
+            unlistenMenu?.();
+            unlistenClose?.();
         });
     });
 
@@ -3141,6 +3322,82 @@ function App() {
                     </footer>
                 </section>
             </section>
+            <Show when={pendingExit()}>
+                {(kind) => (
+                    <div class="exit-confirmation-layer">
+                        <section
+                            class="exit-confirmation"
+                            role="dialog"
+                            aria-modal="true"
+                            aria-labelledby="exit-confirmation-title"
+                            data-gui-core-dialog
+                            tabIndex={-1}
+                            ref={(dialog) =>
+                                queueMicrotask(() =>
+                                    dialog.focus({ preventScroll: true }),
+                                )
+                            }
+                            onKeyDown={(event) => {
+                                if (event.key === "Escape") {
+                                    event.preventDefault();
+                                    setPendingExit();
+                                    queueMicrotask(focusPrimaryInput);
+                                    return;
+                                }
+                                void trapDialogFocus(
+                                    event,
+                                    event.currentTarget,
+                                );
+                            }}
+                        >
+                            <small>
+                                {kind() === "quit"
+                                    ? "Quit Ovim"
+                                    : "Close window"}
+                            </small>
+                            <h2 id="exit-confirmation-title">
+                                {view().hasUnsavedChanges
+                                    ? "Save changes before leaving?"
+                                    : "Quit Ovim?"}
+                            </h2>
+                            <p>
+                                {view().hasUnsavedChanges
+                                    ? "Unsaved changes exist in one or more buffers."
+                                    : "The current editing session will end."}
+                            </p>
+                            <footer>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setPendingExit();
+                                        queueMicrotask(focusPrimaryInput);
+                                    }}
+                                >
+                                    Cancel
+                                </button>
+                                <Show when={view().hasUnsavedChanges}>
+                                    <button
+                                        type="button"
+                                        onClick={() => void saveAndExit()}
+                                    >
+                                        Save All and{" "}
+                                        {kind() === "quit" ? "Quit" : "Close"}
+                                    </button>
+                                </Show>
+                                <button
+                                    type="button"
+                                    class="danger"
+                                    onClick={discardAndExit}
+                                >
+                                    {view().hasUnsavedChanges
+                                        ? `${kind() === "quit" ? "Quit" : "Close"} Without Saving`
+                                        : "Quit"}
+                                </button>
+                            </footer>
+                        </section>
+                    </div>
+                )}
+            </Show>
             <div class="minimum-window-notice" role="status">
                 <Icon name="maximize" size={20} />
                 <b>More room required</b>

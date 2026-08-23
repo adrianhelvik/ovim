@@ -3,8 +3,16 @@
 use super::{GuiBridge, GuiKeyInput, GuiSnapshot};
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tauri::ipc::{Channel, InvokeBody, Request};
-use tauri::{DragDropEvent, Manager, RunEvent, State, WebviewWindow, WindowEvent};
+use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
+use tauri::{DragDropEvent, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
+
+#[derive(Clone, Default)]
+struct GuiExitGate(Arc<AtomicBool>);
 
 #[tauri::command]
 async fn gui_snapshot(
@@ -134,6 +142,16 @@ async fn gui_select_reasoning_effort(
 }
 
 #[tauri::command]
+async fn gui_ai_policy(bridge: State<'_, GuiBridge>, action: String) -> Result<(), String> {
+    bridge.ai_policy(action).await
+}
+
+#[tauri::command]
+async fn gui_editor_command(bridge: State<'_, GuiBridge>, command: String) -> Result<(), String> {
+    bridge.editor_command(command).await
+}
+
+#[tauri::command]
 async fn gui_select_chat_message(bridge: State<'_, GuiBridge>, index: usize) -> Result<(), String> {
     bridge.select_chat_message(index).await
 }
@@ -213,7 +231,11 @@ async fn gui_select_debug_frame(bridge: State<'_, GuiBridge>, index: usize) -> R
 }
 
 #[tauri::command]
-fn gui_window_action(window: WebviewWindow, action: String) -> Result<(), String> {
+fn gui_window_action(
+    window: WebviewWindow,
+    exit_gate: State<'_, GuiExitGate>,
+    action: String,
+) -> Result<(), String> {
     match action.as_str() {
         "minimize" => window.minimize(),
         "toggle-maximize" => window.is_maximized().and_then(|maximized| {
@@ -224,6 +246,10 @@ fn gui_window_action(window: WebviewWindow, action: String) -> Result<(), String
             }
         }),
         "close" => window.close(),
+        "close-approved" => {
+            exit_gate.0.store(true, Ordering::SeqCst);
+            window.close()
+        }
         _ => return Err(format!("Unknown window action: {action}")),
     }
     .map_err(|error| error.to_string())
@@ -251,6 +277,68 @@ fn gui_open_external(url: String) -> Result<(), String> {
 }
 
 /// Run the native application on the calling thread until its last window closes.
+fn install_menu(app: &tauri::App) -> Result<()> {
+    let save = MenuItem::with_id(app, "file.save", "Save", true, Some("CmdOrCtrl+S"))?;
+    let save_all = MenuItem::with_id(
+        app,
+        "file.save-all",
+        "Save All",
+        true,
+        Some("CmdOrCtrl+Alt+S"),
+    )?;
+    let close = MenuItem::with_id(app, "file.close", "Close Window", true, Some("CmdOrCtrl+W"))?;
+    let quit = MenuItem::with_id(app, "app.quit", "Quit Ovim", true, Some("CmdOrCtrl+Q"))?;
+    let undo = MenuItem::with_id(app, "edit.undo", "Undo", true, Some("CmdOrCtrl+Z"))?;
+    let redo = MenuItem::with_id(app, "edit.redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?;
+    let select_all = MenuItem::with_id(
+        app,
+        "edit.select-all",
+        "Select All",
+        true,
+        Some("CmdOrCtrl+A"),
+    )?;
+    let find = MenuItem::with_id(app, "edit.find", "Find", true, Some("CmdOrCtrl+F"))?;
+
+    let app_menu = SubmenuBuilder::new(app, "Ovim")
+        .about(None)
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .item(&quit)
+        .build()?;
+    let file_menu = SubmenuBuilder::new(app, "File")
+        .item(&save)
+        .item(&save_all)
+        .separator()
+        .item(&close)
+        .build()?;
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .item(&undo)
+        .item(&redo)
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .item(&select_all)
+        .separator()
+        .item(&find)
+        .build()?;
+    let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
+    let window_menu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .maximize()
+        .separator()
+        .bring_all_to_front()
+        .build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu])
+        .build()?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
     // Keep Tauri's patchable bundle marker linked even without the updater
     // plugin. The bundler uses it to distinguish deb/AppImage/MSI installs.
@@ -260,8 +348,12 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
 
     let bridge = GuiBridge::spawn(file, resume)?;
     let shutdown_bridge = bridge.clone();
+    let exit_gate = GuiExitGate::default();
+    let setup_exit_gate = exit_gate.clone();
+    let run_exit_gate = exit_gate.clone();
     let application = tauri::Builder::default()
         .manage(bridge)
+        .manage(exit_gate)
         .invoke_handler(tauri::generate_handler![
             gui_snapshot,
             gui_subscribe,
@@ -275,6 +367,8 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_remove_chat_image,
             gui_select_ai_profile,
             gui_select_reasoning_effort,
+            gui_ai_policy,
+            gui_editor_command,
             gui_select_chat_message,
             gui_manage_queued_chat_input,
             gui_select_chat_agent,
@@ -289,32 +383,49 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_window_action,
             gui_open_external,
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            install_menu(app)?;
             if let Some(window) = app.get_webview_window("main") {
                 window
                     .set_title("Ovim")
                     .context("Failed to set the GUI window title")?;
                 let drop_bridge = app.state::<GuiBridge>().inner().clone();
-                window.on_window_event(move |event| {
-                    let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event else {
-                        return;
-                    };
-                    let bridge = drop_bridge.clone();
-                    let paths = paths.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = bridge.attach_images(paths).await;
-                    });
+                let close_window = window.clone();
+                let close_gate = setup_exit_gate.clone();
+                window.on_window_event(move |event| match event {
+                    WindowEvent::CloseRequested { api, .. }
+                        if !close_gate.0.load(Ordering::SeqCst) =>
+                    {
+                        api.prevent_close();
+                        let _ = close_window.emit("ovim://close-requested", "close");
+                    }
+                    WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) => {
+                        let bridge = drop_bridge.clone();
+                        let paths = paths.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = bridge.attach_images(paths).await;
+                        });
+                    }
+                    _ => {}
                 });
             }
             Ok(())
         })
+        .on_menu_event(|app, event| {
+            let _ = app.emit("ovim://menu-action", event.id().as_ref());
+        })
         .build(tauri::generate_context!())
         .context("Failed to build the Ovim GUI")?;
 
-    application.run(move |_handle, event| {
-        if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
-            shutdown_bridge.shutdown();
+    application.run(move |handle, event| match event {
+        RunEvent::ExitRequested { api, .. } if !run_exit_gate.0.load(Ordering::SeqCst) => {
+            api.prevent_exit();
+            if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.emit("ovim://close-requested", "quit");
+            }
         }
+        RunEvent::Exit => shutdown_bridge.shutdown(),
+        _ => {}
     });
     Ok(())
 }

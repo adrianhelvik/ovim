@@ -60,6 +60,9 @@ export interface GuiAiChat {
     reasoningEffort: string;
     reasoningEffortSelection: string;
     reasoningEfforts: string[];
+    yoloMode: boolean;
+    comprehensionPolicy: "off" | "publish" | "commit";
+    comprehensionCheckpoint?: string;
     activity: string;
     waiting: boolean;
     input: string;
@@ -233,6 +236,7 @@ export interface GuiSnapshot {
     encoding: string;
     lineEnding: string;
     modified: boolean;
+    hasUnsavedChanges: boolean;
     readOnly: boolean;
     selectionText?: string;
     cursor: { line: number; column: number; displayColumn: number };
