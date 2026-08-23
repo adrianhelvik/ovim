@@ -1089,8 +1089,14 @@ function App() {
             });
         }
     };
-    const windowAction = (action: string) =>
-        invoke<void>("gui_window_action", { action });
+    const windowAction = async (action: string) => {
+        if (!native) return;
+        try {
+            await invoke<void>("gui_window_action", { action });
+        } catch (reason) {
+            setError(String(reason));
+        }
+    };
 
     const toggleExplorer = () => {
         if (
@@ -1946,7 +1952,15 @@ function App() {
             classList={{ "walkthrough-open": Boolean(walkthrough()) }}
             style={themeVars()}
         >
-            <header class="titlebar" data-tauri-drag-region>
+            <header
+                class="titlebar"
+                data-tauri-drag-region
+                onDblClick={(event) => {
+                    if ((event.target as Element).closest(".window-actions"))
+                        return;
+                    void windowAction("toggle-maximize");
+                }}
+            >
                 <div class="brand" data-tauri-drag-region>
                     <span class="brand-mark">O</span>
                     <span>ovim</span>
