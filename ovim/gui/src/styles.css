@@ -883,10 +883,9 @@ button:focus-visible {
 .chat-agents button.selected {
     color: var(--text-primary);
 }
-.chat-agents button.followed::before {
-    content: "●";
+.chat-agents button.followed > svg {
+    flex: 0 0 auto;
     color: var(--success);
-    font-size: 7px;
 }
 .chat-agents button span {
     min-width: 0;

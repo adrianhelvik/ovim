@@ -908,6 +908,13 @@ export const ChatPanel = (props: {
                                     queueMicrotask(props.focusInput);
                                 }}
                             >
+                                <Show
+                                    when={
+                                        props.chat.followedAgentId === agent.id
+                                    }
+                                >
+                                    <Icon name="status-success" size={16} />
+                                </Show>
                                 <span>
                                     <b>{agent.taskName}</b>
                                     <small>{agent.model}</small>
