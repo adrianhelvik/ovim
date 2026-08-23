@@ -8,6 +8,7 @@
     "build": "vite build",
     "check": "tsc --noEmit",
     "test": "vitest run",
+    "icons:generate": "node scripts/generate-icons.mjs",
     "bundle": "npm run build && cd .. && cargo build --release --bin ovim-gui && tauri bundle"
   },
   "dependencies": {

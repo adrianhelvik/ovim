@@ -1,5 +1,6 @@
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { GuiAiProfileOption } from "./types";
+import { Icon } from "./Icon";
 
 type Props = {
   profile: string;
@@ -57,7 +58,7 @@ export default function ChatModelPicker(props: Props) {
     >
       <span><b>{props.profile}</b><small>{selected()?.provider}/{selected()?.model}</small></span>
       <em>{props.reasoningEffortSelection === "default" ? `default · ${props.reasoningEffort}` : props.reasoningEffort}</em>
-      <i aria-hidden="true">⌄</i>
+      <Icon name="chevron-down" size={16} />
     </button>
     <Show when={open()}>
       <section class="chat-run-popover" role="dialog" aria-label="AI run settings" onKeyDown={(event) => {

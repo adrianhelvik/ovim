@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg">
+  <symbol id="agent" viewBox="0 0 24 24">
+    <path id="link-top" d="M12 8 L12 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="link-left" d="M8 13 L4 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="link-right" d="M16 13 L20 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="core" d="M8 10 A2 2 0 0 1 10 8 L14 8 A2 2 0 0 1 16 10 L16 14 A2 2 0 0 1 14 16 L10 16 A2 2 0 0 1 8 14Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="node-top" d="M12 2 C13.1046 2, 14 2.89543, 14 4 C14 5.10457, 13.1046 6, 12 6 C10.8954 6, 10 5.10457, 10 4 C10 2.89543, 10.8954 2, 12 2Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="node-left" d="M4 16 C5.10457 16, 6 16.8954, 6 18 C6 19.1046, 5.10457 20, 4 20 C2.89543 20, 2 19.1046, 2 18 C2 16.8954, 2.89543 16, 4 16Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="node-right" d="M20 16 C21.1046 16, 22 16.8954, 22 18 C22 19.1046, 21.1046 20, 20 20 C18.8954 20, 18 19.1046, 18 18 C18 16.8954, 18.8954 16, 20 16Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="ai-spark" viewBox="0 0 24 24">
+    <path id="primary" d="M13 2 L15 9 L22 11 L15 13 L13 20 L11 13 L4 11 L11 9Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="satellite" d="M5 2 L6 4 L5 6 L4 4Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="attach" viewBox="0 0 24 24">
+    <path id="clip" d="M21.44 11.05 L12.25 20.24 A6 6 0 0 1 3.76 11.75 L12.95 2.56 A4 4 0 0 1 18.61 8.22 L9.41 17.41 A2 2 0 0 1 6.58 14.58 L15.07 6.1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="chevron-down" viewBox="0 0 24 24">
+    <path id="chevron" d="M4 8 L12 16 L20 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="chevron-right" viewBox="0 0 24 24">
+    <path id="chevron" d="M8 4 L16 12 L8 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="close" viewBox="0 0 24 24">
+    <path id="slash-a" d="M7 7 L17 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="slash-b" d="M17 7 L7 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="command" viewBox="0 0 24 24">
+    <path id="frame" d="M3 5 C3 4.44772, 3.44772 4, 4 4 L20 4 C20.5523 4, 21 4.44772, 21 5 L21 19 C21 19.5523, 20.5523 20, 20 20 L4 20 C3.44772 20, 3 19.5523, 3 19Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="prompt" d="M7 8 L11 12 L7 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="caret" d="M13 16 L18 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="debug" viewBox="0 0 24 24">
+    <path id="body" d="M7 8 C7 6.89543, 7.89543 6, 9 6 L15 6 C16.1046 6, 17 6.89543, 17 8 L17 17 C17 18.1046, 16.1046 19, 15 19 L9 19 C7.89543 19, 7 18.1046, 7 17Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="antenna-l" d="M9 6 L7 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="antenna-r" d="M15 6 L17 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="leg-l1" d="M7 10 L3 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="leg-r1" d="M17 10 L21 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="leg-l2" d="M7 15 L3 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="leg-r2" d="M17 15 L21 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="eye-l" d="M9 9 L11 9 L11 11 L9 11Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="eye-r" d="M13 9 L15 9 L15 11 L13 11Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="explorer" viewBox="0 0 24 24">
+    <path id="frame" d="M3 4 A1 1 0 0 1 4 3 L20 3 A1 1 0 0 1 21 4 L21 20 A1 1 0 0 1 20 21 L4 21 A1 1 0 0 1 3 20Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="divider" d="M9 3 L9 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="node-0" d="M5 6.5 A0.5 0.5 0 0 1 5.5 6 L6.5 6 A0.5 0.5 0 0 1 7 6.5 L7 7.5 A0.5 0.5 0 0 1 6.5 8 L5.5 8 A0.5 0.5 0 0 1 5 7.5Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="node-1" d="M5 11.5 A0.5 0.5 0 0 1 5.5 11 L6.5 11 A0.5 0.5 0 0 1 7 11.5 L7 12.5 A0.5 0.5 0 0 1 6.5 13 L5.5 13 A0.5 0.5 0 0 1 5 12.5Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="node-2" d="M5 16.5 A0.5 0.5 0 0 1 5.5 16 L6.5 16 A0.5 0.5 0 0 1 7 16.5 L7 17.5 A0.5 0.5 0 0 1 6.5 18 L5.5 18 A0.5 0.5 0 0 1 5 17.5Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="branch-a" d="M11 7 L18 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="branch-b" d="M11 12 L18 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="branch-c" d="M11 17 L16 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="file" viewBox="0 0 24 24">
+    <path id="page" d="M5 2 L15 2 L20 7 L20 22 L5 22Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="fold" d="M15 2 L15 7 L20 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="line-a" d="M8 12 L17 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="line-b" d="M8 16 L15 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="folder" viewBox="0 0 24 24">
+    <path id="folder" d="M2 6 L9 6 L11 9 L22 9 L20 21 L4 21Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="seam" d="M3 10 L21 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="maximize" viewBox="0 0 24 24">
+    <path id="frame" d="M6 6 L18 6 L18 18 L6 18Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="minimize" viewBox="0 0 24 24">
+    <path id="rail" d="M6 15 L18 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="problems" viewBox="0 0 24 24">
+    <path id="frame" d="M3 5 C3 4.44772, 3.44772 4, 4 4 L20 4 C20.5523 4, 21 4.44772, 21 5 L21 19 C21 19.5523, 20.5523 20, 20 20 L4 20 C3.44772 20, 3 19.5523, 3 19Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="marker-a" d="M6 7.5 A0.5 0.5 0 0 1 6.5 7 L8.5 7 A0.5 0.5 0 0 1 9 7.5 L9 9.5 A0.5 0.5 0 0 1 8.5 10 L6.5 10 A0.5 0.5 0 0 1 6 9.5Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" transform="matrix(0.7071067811865476, 0.7071067811865475, -0.7071067811865475, 0.7071067811865476, 8.207106781186546, -2.8137084989847594)" />
+        <path id="marker-b" d="M6 14.5 A0.5 0.5 0 0 1 6.5 14 L8.5 14 A0.5 0.5 0 0 1 9 14.5 L9 16.5 A0.5 0.5 0 0 1 8.5 17 L6.5 17 A0.5 0.5 0 0 1 6 16.5Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" transform="matrix(0.7071067811865476, 0.7071067811865475, -0.7071067811865475, 0.7071067811865476, 13.15685424949238, -0.763455967290593)" />
+        <path id="row-a" d="M11 8.5 L18 8.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="row-b" d="M11 15.5 L18 15.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="restore" viewBox="0 0 24 24">
+    <path id="hidden-edge" d="M9 6 L9 4 L19 4 L19 14 L17 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="foreground" d="M5 8 L16 8 L16 19 L5 19Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="search" viewBox="0 0 24 24">
+    <path id="lens" d="M9.5 3 C13.0899 3, 16 5.91015, 16 9.5 C16 13.0899, 13.0899 16, 9.5 16 C5.91015 16, 3 13.0899, 3 9.5 C3 5.91015, 5.91015 3, 9.5 3Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="handle" d="M14 14 L21 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="glint" d="M7 6 L9 6 L9 8 L7 8Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="send" viewBox="0 0 24 24">
+    <path id="plane" d="M22 3 L15 21 L11 14 L3 10Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="settings" viewBox="0 0 24 24">
+    <path id="rail-0" d="M3 6 L21 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="rail-1" d="M3 12 L21 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="rail-2" d="M3 18 L21 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="knob-a" d="M7 4 C7 3.44772, 7.44772 3, 8 3 L10 3 C10.5523 3, 11 3.44772, 11 4 L11 8 C11 8.55228, 10.5523 9, 10 9 L8 9 C7.44772 9, 7 8.55228, 7 8Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="knob-b" d="M14 10 C14 9.44772, 14.4477 9, 15 9 L17 9 C17.5523 9, 18 9.44772, 18 10 L18 14 C18 14.5523, 17.5523 15, 17 15 L15 15 C14.4477 15, 14 14.5523, 14 14Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="knob-c" d="M5 16 C5 15.4477, 5.44772 15, 6 15 L8 15 C8.55228 15, 9 15.4477, 9 16 L9 20 C9 20.5523, 8.55228 21, 8 21 L6 21 C5.44772 21, 5 20.5523, 5 20Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="source-control" viewBox="0 0 24 24">
+    <path id="rail" d="M6 5 L6 14 L15 14 L15 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="spur" d="M6 9 L15 9 L15 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="node-a" d="M6 2 C7.10457 2, 8 2.89543, 8 4 C8 5.10457, 7.10457 6, 6 6 C4.89543 6, 4 5.10457, 4 4 C4 2.89543, 4.89543 2, 6 2Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="node-b" d="M15 2 C16.1046 2, 17 2.89543, 17 4 C17 5.10457, 16.1046 6, 15 6 C13.8954 6, 13 5.10457, 13 4 C13 2.89543, 13.8954 2, 15 2Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="node-c" d="M15 18 C16.1046 18, 17 18.8954, 17 20 C17 21.1046, 16.1046 22, 15 22 C13.8954 22, 13 21.1046, 13 20 C13 18.8954, 13.8954 18, 15 18Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="status-error" viewBox="0 0 24 24">
+    <path id="ring" d="M12 3 C16.9706 3, 21 7.02944, 21 12 C21 16.9706, 16.9706 21, 12 21 C7.02944 21, 3 16.9706, 3 12 C3 7.02944, 7.02944 3, 12 3Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="slash-a" d="M8 8 L16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="slash-b" d="M16 8 L8 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="status-info" viewBox="0 0 24 24">
+    <path id="ring" d="M12 3 C16.9706 3, 21 7.02944, 21 12 C21 16.9706, 16.9706 21, 12 21 C7.02944 21, 3 16.9706, 3 12 C3 7.02944, 7.02944 3, 12 3Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="stem" d="M12 10 L12 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="dot" d="M11 6 L13 6 L13 8 L11 8Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="status-success" viewBox="0 0 24 24">
+    <path id="ring" d="M12 3 C16.9706 3, 21 7.02944, 21 12 C21 16.9706, 16.9706 21, 12 21 C7.02944 21, 3 16.9706, 3 12 C3 7.02944, 7.02944 3, 12 3Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="check" d="M7 12 L11 16 L18 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="status-warning" viewBox="0 0 24 24">
+    <path id="triangle" d="M12 3 L22 20 L2 20Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="stem" d="M12 8 L12 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="dot" d="M11 17 L13 17 L13 19 L11 19Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="stop" viewBox="0 0 24 24">
+    <path id="stop" d="M6 7 A1 1 0 0 1 7 6 L17 6 A1 1 0 0 1 18 7 L18 17 A1 1 0 0 1 17 18 L7 18 A1 1 0 0 1 6 17Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="terminal" viewBox="0 0 24 24">
+    <path id="frame" d="M3 4 A1 1 0 0 1 4 3 L20 3 A1 1 0 0 1 21 4 L21 20 A1 1 0 0 1 20 21 L4 21 A1 1 0 0 1 3 20Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="header" d="M3 7 L21 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="prompt" d="M7 9 L10 12 L7 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="caret" d="M13 15 L17 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+  <symbol id="test" viewBox="0 0 24 24">
+    <path id="flask" d="M8 3 L16 3 L14 9 L20 18 L18 21 L6 21 L4 18 L10 9Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="liquid" d="M6 13 L18 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+        <path id="check" d="M8 16 L11 18 L16 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+  </symbol>
+</svg>

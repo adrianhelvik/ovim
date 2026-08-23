@@ -1,5 +1,6 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { guiKeyInput } from "./guiInput";
+import { Icon } from "./Icon";
 import type { GuiAiChat, GuiKeyInput } from "./types";
 
 const FALLBACK_CELL_WIDTH = 8.15;
@@ -141,7 +142,7 @@ export default function ChatComposer(props: {
   return <div class="chat-composer" classList={{ waiting: props.chat.waiting }}>
     <Show when={props.chat.pendingImages.length}>
       <div class="chat-attachments" aria-label="Pending image attachments">
-        <For each={props.chat.pendingImages}>{(name) => <span title={name}>▧ {name}</span>}</For>
+        <For each={props.chat.pendingImages}>{(name) => <span title={name}><Icon name="attach" size={16} />{name}</span>}</For>
       </div>
     </Show>
     <textarea

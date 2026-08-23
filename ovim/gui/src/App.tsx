@@ -6,6 +6,7 @@ import { mockSnapshot } from "./mock";
 import ChatModelPicker from "./ChatModelPicker";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
 import { guiKeyInput } from "./guiInput";
+import { Icon, IconButton, type IconTone } from "./Icon";
 import type { GuiAiChat, GuiCodeExplanation, GuiKeyInput, GuiLayoutNode, GuiPane, GuiSnapshot } from "./types";
 
 export { default as ChatComposer } from "./ChatComposer";
@@ -56,6 +57,7 @@ export const ChatActivityGroup = (props: { item: Extract<ChatTranscriptItem, { k
   return (
     <details class="chat-activity" classList={{ live: props.item.live, selected: props.item.entries.some((entry) => entry.selected) }} data-selected={props.item.entries.some((entry) => entry.selected) || undefined} onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary>
+        <Icon name="chevron-right" size={16} />
         <span classList={{ "thinking-spinner": props.item.live }} aria-label={props.item.live ? "Working" : undefined} />
         <span><small>{props.item.live ? "Working" : "Activity"}</small><b>{activitySummary(props.item.entries)}</b></span>
         <em>{props.item.entries.length} {props.item.entries.length === 1 ? "step" : "steps"}</em>
@@ -117,8 +119,8 @@ export const CodeWalkthrough = (props: { walkthrough: GuiCodeExplanation; onKey:
         <WalkthroughDiscussion discussion={props.walkthrough.discussion} />
         <footer>
           <div class="walkthrough-pages">
-            <button disabled={props.walkthrough.current === 1 || composing()} onClick={() => props.onKey("ArrowLeft")}>← Previous</button>
-            <button disabled={props.walkthrough.current === props.walkthrough.total || composing()} onClick={() => props.onKey("ArrowRight")}>Next →</button>
+            <button disabled={props.walkthrough.current === 1 || composing()} onClick={() => props.onKey("ArrowLeft")}>Previous</button>
+            <button disabled={props.walkthrough.current === props.walkthrough.total || composing()} onClick={() => props.onKey("ArrowRight")}>Next<Icon name="chevron-right" size={16} /></button>
           </div>
           <div class="walkthrough-actions">
             <button disabled={answering()} onClick={() => props.onKey(composing() ? "Escape" : " ")}>{composing() ? "Cancel question" : "Ask a question"}</button>
@@ -259,7 +261,7 @@ export const toolResultSummary = (content: string) => {
 export const ToolCallList = (props: { tools: string[] }) => (
   <Show when={props.tools.length}>
     <details class="tool-call-list">
-      <summary>{props.tools.length} tool {props.tools.length === 1 ? "call" : "calls"}</summary>
+      <summary><Icon name="chevron-right" size={16} />{props.tools.length} tool {props.tools.length === 1 ? "call" : "calls"}</summary>
       <div class="tool-chips"><For each={props.tools}>{(tool) => <span>{tool}</span>}</For></div>
     </details>
   </Show>
@@ -293,7 +295,7 @@ export const ChatMessageView = (props: { message: GuiChatMessage; onSelect?: (in
         <ToolCallList tools={props.message.tools} />
       </>}>
         <details ref={disclosure} class="tool-result" onToggle={(event) => setExpanded(event.currentTarget.open)}>
-          <summary><span><b>{props.message.toolName || "Tool result"}</b><small>{toolResultSummary(props.message.content)}</small></span><em>Details</em></summary>
+          <summary><Icon name="chevron-right" size={16} /><span><b>{props.message.toolName || "Tool result"}</b><small>{toolResultSummary(props.message.content)}</small></span><em>Details</em></summary>
           <Show when={expanded()}><Markdown text={props.message.content} /></Show>
         </details>
       </Show>
@@ -390,7 +392,7 @@ export const ChatPanel = (props: {
           <Show when={props.chat.streaming}>{(content) => <article class="chat-message assistant streaming"><header><b>assistant</b><small>streaming</small></header><Markdown text={content()} /></article>}</Show>
           <For each={props.chat.queuedInputs}>{(item) => <QueuedChatMessage item={item} onAction={props.onQueuedAction} />}</For>
         </div>
-        <Show when={!following()}><button class="chat-jump" onClick={() => { jumpToLatest(); props.focusInput(); }}>{props.chat.activity !== "idle" ? "New activity ↓" : "New messages ↓"}</button></Show>
+        <Show when={!following()}><button class="chat-jump" onClick={() => { jumpToLatest(); props.focusInput(); }}>{props.chat.activity !== "idle" ? "New activity" : "New messages"}<Icon name="chevron-down" size={16} /></button></Show>
       </div>
       <Show when={props.chat.approval}>{(approval) => <div class="approval-card"><b>Approval required</b><span>{approval()}</span><small>Use the keyboard choices shown by Ovim.</small></div>}</Show>
       <Show when={props.chat.setup}>{(setup) => <ChatSetupCard setup={setup()} onKey={props.onSetupKey} />}</Show>
@@ -412,20 +414,6 @@ const splitAtUtf8Offset = (text: string, offset: number) => {
   return [text.slice(0, codeUnits), text.slice(codeUnits)] as const;
 };
 
-
-const Icon = (props: { name: "files" | "search" | "branch" | "spark" | "gear" | "close" | "min" | "max" }) => {
-  const paths: Record<string, string> = {
-    files: "M4 3.5h6l2 2H20v15H4z M8 1.5h6l2 2",
-    search: "m20 20-4.5-4.5 M10.5 17a6.5 6.5 0 1 1 0-13 6.5 6.5 0 0 1 0 13",
-    branch: "M6 3v12a4 4 0 0 0 4 4h5 M6 7h7a4 4 0 0 0 4-4v12 M3.5 3A2.5 2.5 0 1 0 8.5 3 2.5 2.5 0 0 0 3.5 3 M14.5 19a2.5 2.5 0 1 0 5 0 2.5 2.5 0 0 0-5 0",
-    spark: "m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z",
-    gear: "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7 M19 13.5v-3l-2.1-.7-.7-1.6 1-2-2.1-2.1-2 1-1.6-.7L10.5 2h-3l-.7 2.1-1.6.7-2-1L1.1 5.9l1 2-.7 1.6-2.1.7v3l2.1.7.7 1.6-1 2 2.1 2.1 2-1 1.6.7.7 2.1h3l.7-2.1 1.6-.7 2 1 2.1-2.1-1-2 .7-1.6z",
-    close: "m7 7 10 10M17 7 7 17",
-    min: "M6 12h12",
-    max: "M7 7h10v10H7z",
-  };
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[props.name]} /></svg>;
-};
 
 function App() {
   const native = isTauri();
@@ -673,6 +661,12 @@ function App() {
     return Boolean(focused && page?.kind === "code" && line >= page.startLine && line <= page.endLine);
   };
 
+  const diagnosticIcon = (severity: string): { name: "status-error" | "status-warning" | "status-info"; tone: IconTone } => {
+    if (severity === "error") return { name: "status-error", tone: "error" };
+    if (severity === "warning") return { name: "status-warning", tone: "warning" };
+    return { name: "status-info", tone: "information" };
+  };
+
   const PaneView = (props: { pane: GuiPane }) => (
     <section
       class="editor-pane"
@@ -696,7 +690,12 @@ function App() {
             walkthrough: lineIsInWalkthrough(line.number, props.pane.focused),
           }}>
             <span class={`change-mark ${line.git || ""}`} />
-            <span class={`diagnostic-mark ${line.diagnostic || ""}`}>{line.diagnostic ? (line.diagnostic === "error" ? "×" : "•") : ""}</span>
+            <span class={`diagnostic-mark ${line.diagnostic || ""}`}>
+              <Show when={line.diagnostic}>{(severity) => {
+                const status = diagnosticIcon(severity());
+                return <Icon name={status.name} tone={status.tone} size={16} />;
+              }}</Show>
+            </span>
             <span class="line-number">{line.continuation ? "" : line.number}</span>
             <span
               class="line-content"
@@ -817,7 +816,7 @@ function App() {
       <div class="overlay-shade lsp-overlay">
         <section class="lsp-panel">
           <header><div><b>Language servers</b><small>Install, inspect, and manage language intelligence</small></div><kbd>esc</kbd></header>
-          <div class="lsp-filter">⌕ {manager.filter || "Filter languages"}</div>
+          <div class="lsp-filter"><Icon name="search" size={16} />{manager.filter || "Filter languages"}</div>
           <div class="lsp-list"><For each={manager.items}>{(item) => (
             <button
               classList={{ selected: item.index === manager.selected }}
@@ -876,21 +875,21 @@ function App() {
           <span class="title-project">— {view().projectName}</span>
         </div>
         <div class="window-actions">
-          <button aria-label="Minimize" onClick={() => void windowAction("minimize")}><Icon name="min" /></button>
-          <button aria-label="Maximize" onClick={() => void windowAction("toggle-maximize")}><Icon name="max" /></button>
-          <button class="window-close" aria-label="Close" onClick={() => void windowAction("close")}><Icon name="close" /></button>
+          <IconButton icon="minimize" label="Minimize" onClick={() => void windowAction("minimize")} />
+          <IconButton icon="maximize" label="Maximize or restore" onClick={() => void windowAction("toggle-maximize")} />
+          <IconButton class="window-close" icon="close" label="Close" onClick={() => void windowAction("close")} />
         </div>
       </header>
 
       <section class="workbench">
         <nav class="activity-bar" aria-label="Primary navigation">
           <div class="activity-main">
-            <button classList={{ active: Boolean(view().fileTree) }} title="Explorer  –" onClick={() => void sendLiteral("-")}><Icon name="files" /></button>
-            <button title="Search project  Space s g" onClick={() => void sendLiteral(" sg")}><Icon name="search" /></button>
-            <button title="Source control"><Icon name="branch" /></button>
-            <button title="AI chat  Space Space" onClick={() => { focusPrimaryInput(); void sendLiteral("  "); }}><Icon name="spark" /></button>
+            <IconButton icon="explorer" label="Explorer" shortcut="-" selected={Boolean(view().fileTree)} onClick={() => void sendLiteral("-")} />
+            <IconButton icon="search" label="Search project" shortcut="Space S G" onClick={() => void sendLiteral(" sg")} />
+            <IconButton icon="source-control" label="Source control" shortcut="Unavailable" disabled />
+            <IconButton icon="ai-spark" label="AI chat" shortcut="Space Space" selected={Boolean(view().aiChat)} onClick={() => { focusPrimaryInput(); void sendLiteral("  "); }} />
           </div>
-          <button title="Settings  :set" onClick={() => void sendLiteral(":set")}><Icon name="gear" /></button>
+          <IconButton icon="settings" label="Settings" shortcut=":set" onClick={() => void sendLiteral(":set")} />
         </nav>
 
         <Show when={view().fileTree} keyed>
@@ -907,8 +906,8 @@ function App() {
                     onClick={() => void mutate("gui_select_file_tree", { index: item.index, activate: false })}
                     onDblClick={() => void mutate("gui_select_file_tree", { index: item.index, activate: true })}
                   >
-                    <span class={`tree-chevron ${item.directory ? "directory" : "file"}`}>{item.directory ? (item.expanded ? "⌄" : "›") : ""}</span>
-                    <span class={`file-dot ${item.directory ? "folder" : item.name.split(".").pop() || "file"}`} />
+                    <span class={`tree-chevron ${item.directory ? "directory" : "file"}`}><Show when={item.directory}><Icon name={item.expanded ? "chevron-down" : "chevron-right"} size={16} /></Show></span>
+                    <Icon name={item.directory ? "folder" : "file"} size={16} tone={item.directory ? "warning" : "muted"} />
                     <span>{item.name}</span>
                   </button>
                 )}</For>
@@ -921,7 +920,7 @@ function App() {
           <div class="tabs">
             <For each={view().tabs}>{(tab) => (
               <button class="tab" classList={{ active: tab.active }} onClick={() => void mutate("gui_select_tab", { index: tab.index })}>
-                <span class="tab-language">{tab.title.endsWith(".rs") ? "Rs" : "◇"}</span>
+                <Icon name="file" size={16} tone={tab.active ? "accent" : "muted"} />
                 <span>{tab.title}</span>
                 <Show when={tab.modified}><span class="modified-dot" /></Show>
               </button>
@@ -930,7 +929,7 @@ function App() {
           </div>
 
           <div class="breadcrumbs">
-            <For each={breadcrumbs()}>{(part, index) => <><span>{part}</span><Show when={index() < breadcrumbs().length - 1}><b>›</b></Show></>}</For>
+            <For each={breadcrumbs()}>{(part, index) => <><span>{part}</span><Show when={index() < breadcrumbs().length - 1}><Icon name="chevron-right" size={16} tone="muted" /></Show></>}</For>
             <Show when={view().readOnly}><span class="readonly">read only</span></Show>
           </div>
 
@@ -976,7 +975,7 @@ function App() {
               <div class="completion-popover" style={{ top: `${Math.min(58, (view().cursor.line - view().firstLine + 1) * LINE_HEIGHT + 6)}px`, left: `${Math.min(70, (view().cursor.displayColumn - view().horizontalOffset) * cellWidth + 76)}px` }}>
                 <For each={menu.items}>{(item) => (
                   <div class="completion-item" classList={{ selected: item.index === menu.selected }}>
-                    <span class="completion-kind">{item.kind?.slice(0, 1) || "◇"}</span><strong>{item.label}</strong><small>{item.detail}</small>
+                    <span class="completion-kind"><Icon name="command" size={16} /></span><strong>{item.label}</strong><small>{item.detail}</small>
                   </div>
                 )}</For>
               </div>
@@ -994,7 +993,7 @@ function App() {
                   <div class="picker-results">
                     <For each={picker.items}>{(item) => (
                       <button classList={{ selected: item.index === picker.selected }} onClick={() => void mutate("gui_select_picker", { index: item.index })}>
-                        <span class="picker-icon">◇</span>
+                        <span class="picker-icon"><Icon name="file" size={16} /></span>
                         <span class="picker-copy">
                           <strong><For each={pickerChars(item.display, item.matched)}>{(part) => <span classList={{ matched: part.matched }}>{part.char}</span>}</For></strong>
                           <small>{item.detail || item.location}</small>
@@ -1019,9 +1018,9 @@ function App() {
           <footer class="statusbar">
             <div class="mode-chip">{view().mode}</div>
             <div class="status-left">
-              <Show when={view().gitBranch}><span><Icon name="branch" />{view().gitBranch}</span></Show>
+              <Show when={view().gitBranch}><span><Icon name="source-control" />{view().gitBranch}</span></Show>
               <span class="git-counts"><b>+{view().gitChanges.added}</b><i>~{view().gitChanges.modified}</i><em>−{view().gitChanges.removed}</em></span>
-              <span classList={{ has: view().diagnostics.errors > 0 }} class="problems">× {view().diagnostics.errors}&nbsp;&nbsp; △ {view().diagnostics.warnings}</span>
+              <span classList={{ has: view().diagnostics.errors > 0 }} class="problems"><Icon name="status-error" tone="error" />{view().diagnostics.errors}<Icon name="status-warning" tone="warning" />{view().diagnostics.warnings}</span>
             </div>
             <div class="status-right">
               <span>{view().language}</span><span>{view().encoding}</span><span>{view().lineEnding}</span><span>{view().cursor.line + 1}:{view().cursor.column + 1}</span>

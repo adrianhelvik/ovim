@@ -46,7 +46,7 @@ describe("Ovim Solid workbench", () => {
 
     expect(screen.getByRole("dialog", { name: "Two layers of history" })).toBeTruthy();
     expect(screen.getByText("separate").tagName).toBe("STRONG");
-    fireEvent.click(screen.getByRole("button", { name: "Next →" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
     fireEvent.click(screen.getByRole("button", { name: "Ask a question" }));
     expect(onKey).toHaveBeenNthCalledWith(1, "ArrowRight");
     expect(onKey).toHaveBeenNthCalledWith(2, " ");
@@ -106,7 +106,7 @@ describe("Ovim Solid workbench", () => {
       focus: "textInput", agents: [], agentCursor: 0,
     }} />);
 
-    expect(screen.getByText("▧ diagram.png")).toBeTruthy();
+    expect(screen.getByText("diagram.png")).toBeTruthy();
     const input = screen.getByLabelText("AI chat input") as HTMLTextAreaElement;
     await Promise.resolve();
     expect(input.value).toBe("a界b");
@@ -199,12 +199,12 @@ describe("Ovim Solid workbench", () => {
 
     transcript.scrollTop = 100;
     fireEvent.scroll(transcript);
-    expect(screen.getByRole("button", { name: "New messages ↓" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New messages" })).toBeTruthy();
     setChat({ ...initial, streaming: "More streaming content" });
     await Promise.resolve();
     expect(transcript.scrollTop).toBe(100);
 
-    fireEvent.click(screen.getByRole("button", { name: "New messages ↓" }));
+    fireEvent.click(screen.getByRole("button", { name: "New messages" }));
     expect(transcript.scrollTop).toBe(700);
   });
 
