@@ -3,9 +3,9 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { ChatComposer, ChatMessageView, ChatPanel, ChatSetupCard, Markdown, chatSelectionText, imageExtension, isNearChatBottom, toolResultSummary } from "./App";
+import App, { ChatComposer, ChatMessageView, ChatPanel, ChatSetupCard, CodeWalkthrough, Markdown, chatSelectionText, imageExtension, isNearChatBottom, toolResultSummary } from "./App";
 import { mockSnapshot } from "./mock";
-import type { GuiAiChat } from "./types";
+import type { GuiAiChat, GuiCodeExplanation } from "./types";
 
 class ResizeObserverMock {
   observe() {}
@@ -33,6 +33,41 @@ afterEach(() => {
 });
 
 describe("Ovim Solid workbench", () => {
+  it("renders an interactive concept walkthrough from projected core state", () => {
+    const onKey = vi.fn();
+    const walkthrough: GuiCodeExplanation = {
+      current: 1,
+      total: 2,
+      page: { kind: "concept", title: "Two layers of history", body: "Input recall and conversation navigation are **separate** concerns." },
+      discussion: { state: "navigating", questionCount: 0, latestFailed: false },
+    };
+
+    render(() => <CodeWalkthrough walkthrough={walkthrough} onKey={onKey} />);
+
+    expect(screen.getByRole("dialog", { name: "Two layers of history" })).toBeTruthy();
+    expect(screen.getByText("separate").tagName).toBe("STRONG");
+    fireEvent.click(screen.getByRole("button", { name: "Next →" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ask a question" }));
+    expect(onKey).toHaveBeenNthCalledWith(1, "ArrowRight");
+    expect(onKey).toHaveBeenNthCalledWith(2, " ");
+  });
+
+  it("renders code location and live answer state", () => {
+    const walkthrough: GuiCodeExplanation = {
+      current: 2,
+      total: 2,
+      page: { kind: "code", path: "src/main.rs", startLine: 12, endLine: 14, comment: "This branch owns the handoff." },
+      discussion: { state: "answering", question: "Why here?", answer: "Because it owns the boundary.", questionCount: 1 },
+    };
+
+    render(() => <CodeWalkthrough walkthrough={walkthrough} onKey={() => {}} />);
+
+    expect(screen.getByRole("dialog", { name: "src/main.rs:12–14" })).toBeTruthy();
+    expect(screen.getByLabelText("Answering")).toBeTruthy();
+    expect(screen.getByText("Because it owns the boundary.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Finish" }).hasAttribute("disabled")).toBe(true);
+  });
+
   it("renders a keyboard-accessible editor projection from the snapshot", () => {
     const result = render(() => <App />);
 

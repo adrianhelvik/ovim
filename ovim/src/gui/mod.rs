@@ -442,6 +442,52 @@ pub struct GuiAiChat {
     pub messages: Vec<GuiChatMessage>,
     pub streaming: Option<String>,
     pub approval: Option<String>,
+    pub code_explanation: Option<GuiCodeExplanation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiCodeExplanation {
+    pub current: usize,
+    pub total: usize,
+    pub page: GuiCodeExplanationPage,
+    pub discussion: GuiCodeExplanationDiscussion,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum GuiCodeExplanationPage {
+    Concept {
+        title: String,
+        body: String,
+    },
+    Code {
+        path: String,
+        start_line: usize,
+        end_line: usize,
+        comment: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum GuiCodeExplanationDiscussion {
+    Navigating {
+        question_count: usize,
+        latest_question: Option<String>,
+        latest_answer: Option<String>,
+        latest_failed: bool,
+    },
+    Composing {
+        input: String,
+        cursor: usize,
+        question_count: usize,
+    },
+    Answering {
+        question: String,
+        answer: String,
+        question_count: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1860,7 +1906,65 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             approval: editor
                 .ai_chat_pending_tool_approval_summary()
                 .or_else(|| editor.ai_chat_pending_no_repo_folder_approval_summary()),
+            code_explanation: code_explanation(editor),
         }
+    })
+}
+
+fn code_explanation(editor: &Editor) -> Option<GuiCodeExplanation> {
+    let view = editor.ai_code_explanation_view()?;
+    let page = match view.page {
+        ovim_core::editor::CodeExplanationPageView::Concept { title, body } => {
+            GuiCodeExplanationPage::Concept { title, body }
+        }
+        ovim_core::editor::CodeExplanationPageView::Code {
+            path,
+            start_line,
+            end_line,
+            comment,
+        } => GuiCodeExplanationPage::Code {
+            path,
+            start_line,
+            end_line,
+            comment,
+        },
+    };
+    let discussion = match view.discussion {
+        ovim_core::editor::CodeExplanationDiscussionView::Navigating {
+            question_count,
+            latest_question,
+            latest_answer,
+            latest_failed,
+        } => GuiCodeExplanationDiscussion::Navigating {
+            question_count,
+            latest_question,
+            latest_answer,
+            latest_failed,
+        },
+        ovim_core::editor::CodeExplanationDiscussionView::Composing {
+            input,
+            cursor,
+            question_count,
+        } => GuiCodeExplanationDiscussion::Composing {
+            input,
+            cursor,
+            question_count,
+        },
+        ovim_core::editor::CodeExplanationDiscussionView::Answering {
+            question,
+            answer,
+            question_count,
+        } => GuiCodeExplanationDiscussion::Answering {
+            question,
+            answer,
+            question_count,
+        },
+    };
+    Some(GuiCodeExplanation {
+        current: view.current,
+        total: view.total,
+        page,
+        discussion,
     })
 }
 
@@ -2202,6 +2306,87 @@ mod tests {
             .iter()
             .flat_map(|line| &line.segments)
             .any(|span| span.cursor));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_projects_active_code_walkthrough() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let file = dir.path().join("demo.rs");
+        std::fs::write(&file, "fn demo() {}\n").unwrap();
+        let mut editor = Editor::default();
+        editor.open_file(&file).unwrap();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        let call = ovim_core::ai::chat_types::ToolCallInfo {
+            id: "gui-walkthrough".into(),
+            name: "explain_with_codebase".into(),
+            arguments: serde_json::json!({
+                "steps": [
+                    {
+                        "type": "concept",
+                        "title": "The entry point",
+                        "body": "Start with the user-visible behavior."
+                    },
+                    {
+                        "type": "code",
+                        "path": "demo.rs",
+                        "start_line": 1,
+                        "comment": "This function is the entry point."
+                    }
+                ]
+            }),
+        };
+        let key = {
+            let chat = editor.ai_state.chat.as_ref().unwrap();
+            (chat.origin_buffer_id, chat.opts.name.clone())
+        };
+        let conversation = editor.ai_state.conversations.get_mut(&key).unwrap();
+        conversation.append_assistant_message_with_tools(
+            String::new(),
+            "test".into(),
+            vec![call.clone()],
+        );
+        conversation.append_tool_result(call.id.clone(), "Walkthrough complete.".into());
+        assert!(editor.replay_code_explanation(&call.id));
+
+        let walkthrough = snapshot(&editor, 1)
+            .ai_chat
+            .unwrap()
+            .code_explanation
+            .expect("active walkthrough");
+        assert_eq!(walkthrough.current, 1);
+        assert_eq!(walkthrough.total, 2);
+        assert!(matches!(
+            walkthrough.page,
+            GuiCodeExplanationPage::Concept { ref title, ref body }
+                if title == "The entry point" && body.contains("user-visible")
+        ));
+        assert!(matches!(
+            walkthrough.discussion,
+            GuiCodeExplanationDiscussion::Navigating {
+                question_count: 0,
+                ..
+            }
+        ));
+
+        assert!(editor.move_code_explanation(true));
+        let code_page = snapshot(&editor, 2)
+            .ai_chat
+            .unwrap()
+            .code_explanation
+            .expect("code walkthrough page");
+        assert_eq!(code_page.current, 2);
+        assert!(matches!(
+            code_page.page,
+            GuiCodeExplanationPage::Code {
+                ref path,
+                start_line: 1,
+                end_line: 1,
+                ref comment,
+            } if path == "demo.rs" && comment.contains("entry point")
+        ));
     }
 
     #[test]

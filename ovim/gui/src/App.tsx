@@ -3,7 +3,7 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { mockSnapshot } from "./mock";
-import type { GuiAiChat, GuiKeyInput, GuiLayoutNode, GuiPane, GuiSnapshot } from "./types";
+import type { GuiAiChat, GuiCodeExplanation, GuiKeyInput, GuiLayoutNode, GuiPane, GuiSnapshot } from "./types";
 
 const LINE_HEIGHT = 22;
 const FALLBACK_CELL_WIDTH = 8.15;
@@ -15,6 +15,63 @@ export const Markdown = (props: { text: string }) => {
     { USE_PROFILES: { html: true } },
   ));
   return <div class="markdown" innerHTML={html()} />;
+};
+
+const WalkthroughDiscussion = (props: { discussion: GuiCodeExplanation["discussion"] }) => (
+  <Show when={props.discussion.state !== "navigating" || props.discussion.latestQuestion}>
+    <section class={`walkthrough-discussion ${props.discussion.state}`} aria-live={props.discussion.state === "answering" ? "polite" : "off"}>
+      <Show when={props.discussion.state === "composing" ? props.discussion : undefined}>{(active) => {
+        const parts = createMemo(() => splitAtUtf8Offset(active().input, active().cursor));
+        return <><small>Ask about this page</small><pre class="walkthrough-question"><span>{parts()[0]}</span><i class="chat-caret" aria-hidden="true" /><span>{parts()[1] || "Type your question…"}</span></pre></>;
+      }}</Show>
+      <Show when={props.discussion.state === "answering" ? props.discussion : undefined}>{(active) => <>
+        <small>Answering “{active().question}”</small>
+        <div class="walkthrough-answer"><span class="walkthrough-spinner" aria-label="Answering" /><Markdown text={active().answer || "Thinking…"} /></div>
+      </>}</Show>
+      <Show when={props.discussion.state === "navigating" && props.discussion.latestQuestion ? props.discussion : undefined}>{(active) => {
+        return <><small>{active().latestFailed ? "Answer failed" : `Question ${active().questionCount}`}: {active().latestQuestion}</small><div class="walkthrough-answer"><Markdown text={active().latestAnswer || ""} /></div></>;
+      }}</Show>
+    </section>
+  </Show>
+);
+
+export const CodeWalkthrough = (props: { walkthrough: GuiCodeExplanation; onKey: (key: string) => void }) => {
+  const page = () => props.walkthrough.page;
+  const title = () => {
+    const active = page();
+    if (active.kind === "concept") return active.title;
+    return `${active.path}:${active.startLine}${active.endLine !== active.startLine ? `–${active.endLine}` : ""}`;
+  };
+  const teaching = () => {
+    const active = page();
+    return active.kind === "concept" ? active.body : active.comment;
+  };
+  const composing = () => props.walkthrough.discussion.state === "composing";
+  const answering = () => props.walkthrough.discussion.state === "answering";
+  return (
+    <div class={`walkthrough-layer ${page().kind}`} aria-label="Code walkthrough">
+      <section class="walkthrough-card" role="dialog" aria-modal="true" aria-labelledby="walkthrough-title">
+        <header>
+          <div><small>{page().kind === "concept" ? "Concept" : "Code walkthrough"} · {props.walkthrough.current} of {props.walkthrough.total}</small>
+            <b id="walkthrough-title">{title()}</b>
+          </div>
+          <button aria-label="Dismiss walkthrough" onClick={() => props.onKey("Escape")}>Esc</button>
+        </header>
+        <div class="walkthrough-teaching"><Markdown text={teaching()} /></div>
+        <WalkthroughDiscussion discussion={props.walkthrough.discussion} />
+        <footer>
+          <div class="walkthrough-pages">
+            <button disabled={props.walkthrough.current === 1 || composing()} onClick={() => props.onKey("ArrowLeft")}>← Previous</button>
+            <button disabled={props.walkthrough.current === props.walkthrough.total || composing()} onClick={() => props.onKey("ArrowRight")}>Next →</button>
+          </div>
+          <div class="walkthrough-actions">
+            <button disabled={answering()} onClick={() => props.onKey(composing() ? "Escape" : " ")}>{composing() ? "Cancel question" : "Ask a question"}</button>
+            <button class="primary" disabled={answering()} onClick={() => props.onKey("Enter")}>{composing() ? "Send question" : props.walkthrough.current === props.walkthrough.total ? "Finish" : "Continue"}</button>
+          </div>
+        </footer>
+      </section>
+    </div>
+  );
 };
 
 export const imageExtension = (mimeType: string) => ({
@@ -199,6 +256,7 @@ function App() {
   let ignoreNextInput = false;
   let wheelRemainder = 0;
   let lastDimensions = { columns: 0, rows: 0 };
+  const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
 
   const dimensions = () => {
     const paneTree = editorBody?.querySelector<HTMLElement>(".pane-tree");
@@ -390,6 +448,11 @@ function App() {
     return Array.from(text).map((char, index) => ({ char, matched: selected.has(index) }));
   };
 
+  const lineIsInWalkthrough = (line: number, focused: boolean) => {
+    const page = walkthrough()?.page;
+    return Boolean(focused && page?.kind === "code" && line >= page.startLine && line <= page.endLine);
+  };
+
   const PaneView = (props: { pane: GuiPane }) => (
     <section
       class="editor-pane"
@@ -408,7 +471,10 @@ function App() {
       </Show>
       <div class="code-viewport">
         <For each={props.pane.lines}>{(line) => (
-          <div class="code-line" classList={{ current: line.current && props.pane.focused }}>
+          <div class="code-line" classList={{
+            current: line.current && props.pane.focused,
+            walkthrough: lineIsInWalkthrough(line.number, props.pane.focused),
+          }}>
             <span class={`change-mark ${line.git || ""}`} />
             <span class={`diagnostic-mark ${line.diagnostic || ""}`}>{line.diagnostic ? (line.diagnostic === "error" ? "×" : "•") : ""}</span>
             <span class="line-number">{line.continuation ? "" : line.number}</span>
@@ -490,7 +556,7 @@ function App() {
   );
 
   const SideDock = () => (
-    <Show when={view().aiChat || view().testPanel || view().debug}>
+    <Show when={!walkthrough() && (view().aiChat || view().testPanel || view().debug)}>
       <aside class="side-dock"><AiPanel /><TestPanel /><DebugPanel /></aside>
     </Show>
   );
@@ -570,7 +636,7 @@ function App() {
   });
 
   return (
-    <main class="app" style={themeVars()}>
+    <main class="app" classList={{ "walkthrough-open": Boolean(walkthrough()) }} style={themeVars()}>
       <header class="titlebar" data-tauri-drag-region>
         <div class="brand" data-tauri-drag-region><span class="brand-mark">O</span><span>ovim</span></div>
         <div class="window-title" data-tauri-drag-region>
@@ -669,6 +735,10 @@ function App() {
                 <ProblemPanel />
               </div>
             </Show>
+
+            <Show when={walkthrough()} keyed>{(active) => (
+              <CodeWalkthrough walkthrough={active} onKey={(key) => void sendKey({ key, shift: false, control: false, alt: false, meta: false })} />
+            )}</Show>
 
             <Show when={!view().aiChat ? view().completion : undefined} keyed>{(menu) => (
               <div class="completion-popover" style={{ top: `${Math.min(58, (view().cursor.line - view().firstLine + 1) * LINE_HEIGHT + 6)}px`, left: `${Math.min(70, (view().cursor.displayColumn - view().horizontalOffset) * cellWidth + 76)}px` }}>

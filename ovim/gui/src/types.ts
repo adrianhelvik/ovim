@@ -62,6 +62,19 @@ export interface GuiAiChat {
   messages: Array<{ role: string; content: string; model?: string; toolName?: string; tools: string[] }>;
   streaming?: string;
   approval?: string;
+  codeExplanation?: GuiCodeExplanation;
+}
+
+export interface GuiCodeExplanation {
+  current: number;
+  total: number;
+  page:
+    | { kind: "concept"; title: string; body: string }
+    | { kind: "code"; path: string; startLine: number; endLine: number; comment: string };
+  discussion:
+    | { state: "navigating"; questionCount: number; latestQuestion?: string; latestAnswer?: string; latestFailed: boolean }
+    | { state: "composing"; input: string; cursor: number; questionCount: number }
+    | { state: "answering"; question: string; answer: string; questionCount: number };
 }
 
 export interface GuiTestPanel {
