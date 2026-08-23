@@ -238,11 +238,13 @@ pub enum InstallMethod {
     /// Download from GitHub release
     Github {
         repo: String,
-        /// Asset name pattern with optional `{os}` and `{arch}` placeholders
+        /// Asset name pattern with optional `{os}`, `{arch}`, and `{ext}` placeholders.
+        /// `{ext}` expands to `gz` on Unix and `zip` on Windows.
         asset_pattern: String,
         install_path: String,
         /// Path to the binary within an archive (e.g. "bin/lua-language-server").
-        /// For non-archive assets, this is ignored.
+        /// For a standalone `.gz`, this is the output filename under `install_path`.
+        /// For an uncompressed binary asset, this is ignored.
         #[serde(default)]
         binary_name: Option<String>,
     },
@@ -1069,6 +1071,34 @@ mod tests {
             .find(|companion| companion.id == "tailwindcss")
             .expect("embedded Tailwind companion config");
         assert!(tailwind.applies_to.iter().any(|id| id == "astro"));
+    }
+
+    #[test]
+    fn embedded_rust_lsp_uses_managed_github_install() {
+        let (languages, _companions) =
+            LanguageRegistry::parse_configs(include_str!("../languages.toml"), None).unwrap();
+        let rust = languages
+            .iter()
+            .find(|language| language.id == "rust")
+            .expect("embedded Rust language config");
+        let auto_install = rust
+            .lsp
+            .as_ref()
+            .and_then(|lsp| lsp.auto_install.as_ref())
+            .expect("Rust LSP auto-install config");
+
+        assert!(matches!(
+            &auto_install.method,
+            InstallMethod::Github {
+                repo,
+                asset_pattern,
+                install_path,
+                binary_name: Some(binary_name),
+            } if repo == "rust-lang/rust-analyzer"
+                && asset_pattern == "rust-analyzer-{arch}-*{os}*.{ext}"
+                && install_path == "~/.local/share/ovim/lsp/rust-analyzer/bin"
+                && binary_name == "rust-analyzer"
+        ));
     }
 
     #[test]

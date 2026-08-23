@@ -10,7 +10,7 @@ These languages have full LSP support and will auto-install the language server 
 
 | Language | Extensions | LSP Server | Install Method |
 |----------|------------|------------|----------------|
-| Rust | `.rs` | rust-analyzer | rustup |
+| Rust | `.rs` | rust-analyzer | GitHub release |
 | TypeScript | `.ts`, `.tsx`, `.mts`, `.cts` | typescript-language-server | npm |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs`, `.es`, `.es6`, `.es7` | typescript-language-server | npm |
 | Python | `.py`, `.pyw`, `.pyi` | pyright-langserver | npm |
@@ -147,7 +147,7 @@ method = { type = "npm", package = "pyright", bin = "pyright-langserver" }
 [language.lsp.auto_install]
 method = { type = "cargo", package = "taplo-cli", bin = "taplo", features = ["lsp"] }
 
-# GitHub release (supports archives)
+# GitHub release (supports archives and standalone gzip binaries)
 [language.lsp.auto_install]
 method = { type = "github", repo = "zigtools/zls", asset_pattern = "zls-*-{arch}-{os}*", install_path = "~/.local/bin/zls", binary_name = "zls" }
 
@@ -156,7 +156,10 @@ method = { type = "github", repo = "zigtools/zls", asset_pattern = "zls-*-{arch}
 method = { type = "shell", command = "gem install solargraph" }
 ```
 
-Asset patterns support `{os}` (linux/darwin/macos) and `{arch}` (x86_64/aarch64/amd64/arm64) placeholders.
+Asset patterns support `{os}` (linux/darwin/macos), `{arch}`
+(x86_64/aarch64/amd64/arm64), and `{ext}` (`gz` on Unix, `zip` on Windows)
+placeholders. For a standalone gzip binary, `install_path` is its destination
+directory and `binary_name` is the decompressed filename.
 
 ## Troubleshooting
 

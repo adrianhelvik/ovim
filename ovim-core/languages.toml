@@ -32,10 +32,10 @@ fallback_commands = [
     "~/.rustup/toolchains/stable-x86_64-apple-darwin/bin/rust-analyzer",
 ]
 root_markers = ["Cargo.toml", "Cargo.lock"]
-install_hint = "Install with: rustup component add rust-analyzer"
+install_hint = "Install with your Rust toolchain or system package manager"
 
 [language.lsp.auto_install]
-method = { type = "shell", command = "rustup component add rust-analyzer" }
+method = { type = "github", repo = "rust-lang/rust-analyzer", asset_pattern = "rust-analyzer-{arch}-*{os}*.{ext}", install_path = "~/.local/share/ovim/lsp/rust-analyzer/bin", binary_name = "rust-analyzer" }
 
 # ============================================================================
 # TypeScript
