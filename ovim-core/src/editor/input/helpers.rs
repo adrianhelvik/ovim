@@ -814,18 +814,21 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
             } else {
                 // Line paste - insert after current line
                 let rope_line = editor.buffer().rope().line(line_idx);
-                let line_char_len = rope_line.len_chars();
+                let raw_line_len = rope_line.len_chars();
                 let has_trailing_newline =
-                    line_char_len > 0 && rope_line.char(line_char_len - 1) == '\n';
+                    raw_line_len > 0 && rope_line.char(raw_line_len - 1) == '\n';
+                let line_content_len = editor.buffer().line_content_len(line_idx);
 
                 let text_clone = text.clone();
                 let ((), edits) = editor.buffer_mut().record(|buf| {
                     if has_trailing_newline {
-                        buf.insert_text_at(line_idx, CharCol(line_char_len), &text_clone);
+                        // Columns address visible line content, so the point
+                        // after a terminator is the start of the next line.
+                        buf.insert_text_at(line_idx + 1, CharCol::ZERO, &text_clone);
                     } else {
                         // No trailing newline on current line — prepend \n
                         let insert_text = format!("\n{}", text_clone);
-                        buf.insert_text_at(line_idx, CharCol(line_char_len), &insert_text);
+                        buf.insert_text_at(line_idx, CharCol(line_content_len), &insert_text);
                     }
                 });
 
@@ -984,15 +987,11 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
             }
         }
         RegisterType::Line => {
-            // Line paste before - insert at end of previous line (newline splits correctly)
-            // For first line, insert at (0, 0) as there's no previous line
+            // Line paste before starts at the current line. This avoids
+            // representing the same point as a column beyond the previous
+            // line's visible content when that line has a terminator.
             let ((), edits) = editor.buffer_mut().record(|buf| {
-                if line_idx > 0 {
-                    let prev_line_len = buf.rope().line(line_idx - 1).len_chars();
-                    buf.insert_text_at(line_idx - 1, CharCol(prev_line_len), &text);
-                } else {
-                    buf.insert_text_at(0, CharCol::ZERO, &text);
-                }
+                buf.insert_text_at(line_idx, CharCol::ZERO, &text);
             });
 
             // Vim: cursor on first non-blank of the pasted line

@@ -11,6 +11,10 @@ use crate::unicode::{
 impl Buffer {
     /// Inserts text at a specific position (line, col)
     pub fn insert_text_at(&mut self, line: usize, col: CharCol, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+
         // Track buffer edit metrics
         crate::metrics::BUFFER_EDITS_TOTAL.inc();
 
@@ -21,15 +25,16 @@ impl Buffer {
         }
 
         let line_start = self.rope.line_to_char(line);
-        let insert_pos = line_start + col.0;
-
-        // Clamp to valid position
-        let insert_pos = insert_pos.min(self.rope.len_chars());
+        // Clamp to this line's visible content, not the entire rope. Clamping
+        // `line_start + col` to `rope.len_chars()` lets an oversized column on
+        // an early line jump across newlines and insert into a later line (or
+        // at EOF). The phantom line after a trailing newline has length zero,
+        // so it still correctly resolves to EOF.
+        let col_clamped = col.0.min(self.line_len(line));
+        let insert_pos = line_start + col_clamped;
         // Convert char col to byte col for highlighting (cache stores byte offsets)
-        let line_start_char = self.rope.line_to_char(line);
-        let col_clamped = col.0.min(self.rope.len_chars() - line_start_char);
-        let byte_col = self.rope.char_to_byte(line_start_char + col_clamped)
-            - self.rope.char_to_byte(line_start_char);
+        let byte_col =
+            self.rope.char_to_byte(line_start + col_clamped) - self.rope.char_to_byte(line_start);
 
         // Create tree-sitter edit BEFORE modifying rope (needs old state)
         let ts_edit = self.create_ts_insert_edit(line, byte_col, text);
@@ -88,8 +93,9 @@ impl Buffer {
         col: CharCol,
         text: &str,
     ) -> bool {
+        let insertion_col = CharCol(col.0.min(self.line_len(line)));
         let version_before = self.version();
-        self.insert_text_at(line, col, text);
+        self.insert_text_at(line, insertion_col, text);
         if self.version() == version_before {
             return false;
         }
@@ -97,7 +103,7 @@ impl Buffer {
         // chars (not graphemes), matching the legacy `calculate_end_position`
         // on `Change`; `set_cursor_char_col` converts to grapheme space.
         let mut end_line = line;
-        let mut end_col = col.0;
+        let mut end_col = insertion_col.0;
         for ch in text.chars() {
             if ch == '\n' {
                 end_line += 1;
