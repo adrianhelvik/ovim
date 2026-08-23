@@ -1734,11 +1734,21 @@ mod tests {
         open_test_chat(&mut editor);
         let turn = editor.begin_ai_runtime_turn("run the gated check").unwrap();
         let run_id = turn.run_id.clone();
+        let shell_quote = |path: &std::path::Path| {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
+        };
+        let release_gate = dir.path().join("release-gate");
+        let agent_marker = dir.path().join("agent-marker");
+        let release_gate_arg = shell_quote(&release_gate);
+        let command = format!(
+            "attempts=0; while [ ! -f {release_gate_arg} ] && [ \"$attempts\" -lt 500 ]; do sleep 0.01; attempts=$((attempts + 1)); done; [ -f {release_gate_arg} ] || exit 124; touch {}; echo completed",
+            shell_quote(&agent_marker)
+        );
         let call = ToolCallInfo {
             id: "gated-shell".into(),
             name: "bash".into(),
             arguments: serde_json::json!({
-                "command": "while [ ! -f release-gate ]; do sleep 0.01; done; touch agent-marker; echo completed"
+                "command": command
             }),
         };
         let tool = editor.ai_runtime_record_tool_intent(&turn, &call).unwrap();
@@ -1784,7 +1794,7 @@ mod tests {
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
 
-        std::fs::write(dir.path().join("release-gate"), "go").unwrap();
+        std::fs::write(release_gate, "go").unwrap();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
         while editor
             .ai_state
