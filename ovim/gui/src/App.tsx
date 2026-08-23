@@ -21,7 +21,7 @@ import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
 import { trapDialogFocus } from "./focus";
 import { anchoredOverlayPosition } from "./overlayPosition";
-import { shouldAcceptRevision } from "./stateProjection";
+import { retainProjection, shouldAcceptRevision } from "./stateProjection";
 import type {
     GuiAiChat,
     GuiCodeExplanation,
@@ -1135,7 +1135,7 @@ function App() {
             Boolean(view().picker || view().lspManager) &&
             !snapshot.picker &&
             !snapshot.lspManager;
-        setView(snapshot);
+        setView((previous) => retainProjection(previous, snapshot));
         setConnected(true);
         setError("");
         requestAnimationFrame(syncDimensions);
@@ -1233,6 +1233,27 @@ function App() {
     const runEditorShortcut = async (keys: string) => {
         focusEditorInput();
         await sendLiteral(keys);
+    };
+
+    const handleTabNavigation = (event: KeyboardEvent, position: number) => {
+        const tabs = view().tabs;
+        if (tabs.length < 2) return;
+        let next = position;
+        if (event.key === "ArrowRight") next = (position + 1) % tabs.length;
+        else if (event.key === "ArrowLeft")
+            next = (position - 1 + tabs.length) % tabs.length;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = tabs.length - 1;
+        else return;
+        event.preventDefault();
+        void mutate("gui_select_tab", { index: tabs[next].index });
+        queueMicrotask(() =>
+            document
+                .querySelector<HTMLElement>(
+                    `[data-tab-index="${tabs[next].index}"]`,
+                )
+                ?.focus({ preventScroll: true }),
+        );
     };
 
     const themeVars = createMemo(() => ({
@@ -1832,41 +1853,44 @@ function App() {
         </Show>
     );
 
-    const contextPanels = createMemo<ContextPanelDefinition[]>(() => {
-        if (walkthrough()) return [];
-        const panels: ContextPanelDefinition[] = [];
-        const chat = view().aiChat;
-        const tests = view().testPanel;
-        const debug = view().debug;
-        if (chat) {
-            panels.push({
-                id: "ai",
-                label: "AI chat",
-                state: chat.activity.replaceAll("_", " "),
-                icon: "ai-spark",
-                component: AiPanel,
-            });
-        }
-        if (tests) {
-            panels.push({
-                id: "tests",
-                label: "Tests",
-                state: tests.status,
-                icon: "test",
-                component: TestPanel,
-            });
-        }
-        if (debug) {
-            panels.push({
-                id: "debug",
-                label: "Debug",
-                state: debug.running ? "running" : "paused",
-                icon: "debug",
-                component: DebugPanel,
-            });
-        }
-        return panels;
-    });
+    const contextPanels = createMemo<ContextPanelDefinition[]>(
+        (previous = []) => {
+            if (walkthrough()) return [];
+            const panels: ContextPanelDefinition[] = [];
+            const chat = view().aiChat;
+            const tests = view().testPanel;
+            const debug = view().debug;
+            if (chat) {
+                panels.push({
+                    id: "ai",
+                    label: "AI chat",
+                    state: chat.activity.replaceAll("_", " "),
+                    icon: "ai-spark",
+                    component: AiPanel,
+                });
+            }
+            if (tests) {
+                panels.push({
+                    id: "tests",
+                    label: "Tests",
+                    state: tests.status,
+                    icon: "test",
+                    component: TestPanel,
+                });
+            }
+            if (debug) {
+                panels.push({
+                    id: "debug",
+                    label: "Debug",
+                    state: debug.running ? "running" : "paused",
+                    icon: "debug",
+                    component: DebugPanel,
+                });
+            }
+            return retainProjection(previous, panels);
+        },
+        [],
+    );
 
     const SideDock = () => (
         <ContextDock
@@ -2456,43 +2480,47 @@ function App() {
 
                 <section class="editor-stack">
                     <div class="tabs" role="tablist" aria-label="Open files">
-                        <For each={view().tabs}>
-                            {(tab) => (
+                        <Index each={view().tabs}>
+                            {(tab, position) => (
                                 <button
                                     type="button"
                                     role="tab"
-                                    aria-selected={tab.active}
+                                    aria-selected={tab().active}
                                     aria-controls="editor-surface"
-                                    tabIndex={tab.active ? 0 : -1}
+                                    tabIndex={tab().active ? 0 : -1}
+                                    data-tab-index={tab().index}
                                     class="tab"
-                                    classList={{ active: tab.active }}
+                                    classList={{ active: tab().active }}
                                     aria-label={
-                                        tab.title +
-                                        (tab.modified ? ", modified" : "")
+                                        tab().title +
+                                        (tab().modified ? ", modified" : "")
                                     }
                                     title={
-                                        tab.title +
-                                        (tab.modified ? " · modified" : "")
+                                        tab().title +
+                                        (tab().modified ? " · modified" : "")
                                     }
                                     onClick={() => {
                                         void mutate("gui_select_tab", {
-                                            index: tab.index,
+                                            index: tab().index,
                                         });
                                         queueMicrotask(focusEditorInput);
                                     }}
+                                    onKeyDown={(event) =>
+                                        handleTabNavigation(event, position)
+                                    }
                                 >
                                     <Icon
                                         name="file"
                                         size={16}
-                                        tone={tab.active ? "accent" : "muted"}
+                                        tone={tab().active ? "accent" : "muted"}
                                     />
-                                    <span>{tab.title}</span>
-                                    <Show when={tab.modified}>
+                                    <span>{tab().title}</span>
+                                    <Show when={tab().modified}>
                                         <span class="modified-dot" />
                                     </Show>
                                 </button>
                             )}
-                        </For>
+                        </Index>
                         <span class="tabs-fill" role="presentation" />
                     </div>
 

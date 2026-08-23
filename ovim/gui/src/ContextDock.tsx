@@ -1,5 +1,5 @@
 import {
-    For,
+    Index,
     Show,
     createEffect,
     createMemo,
@@ -86,29 +86,31 @@ export default function ContextDock(props: {
                             role="tablist"
                             aria-label="Context panels"
                         >
-                            <For each={props.panels}>
+                            <Index each={props.panels}>
                                 {(panel) => (
                                     <button
-                                        id={`context-tab-${panel.id}`}
+                                        id={`context-tab-${panel().id}`}
                                         type="button"
                                         role="tab"
-                                        aria-label={panel.label}
-                                        aria-selected={active().id === panel.id}
-                                        aria-controls={`context-panel-${panel.id}`}
-                                        tabIndex={
-                                            active().id === panel.id ? 0 : -1
+                                        aria-label={panel().label}
+                                        aria-selected={
+                                            active().id === panel().id
                                         }
-                                        onClick={() => selectPanel(panel.id)}
+                                        aria-controls={`context-panel-${panel().id}`}
+                                        tabIndex={
+                                            active().id === panel().id ? 0 : -1
+                                        }
+                                        onClick={() => selectPanel(panel().id)}
                                         onKeyDown={(event) =>
-                                            moveFocus(event, panel)
+                                            moveFocus(event, panel())
                                         }
                                     >
-                                        <Icon name={panel.icon} size={16} />
-                                        <span>{panel.label}</span>
-                                        <small>{panel.state}</small>
+                                        <Icon name={panel().icon} size={16} />
+                                        <span>{panel().label}</span>
+                                        <small>{panel().state}</small>
                                     </button>
                                 )}
-                            </For>
+                            </Index>
                         </div>
                     </Show>
                     <div

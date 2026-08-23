@@ -151,6 +151,12 @@ describe("Ovim Solid workbench", () => {
         expect(focus.mock.instances).toContain(
             screen.getByLabelText("Ovim editor input"),
         );
+
+        focus.mockClear();
+        const tabs = screen.getAllByRole("tab");
+        fireEvent.keyDown(tabs[0], { key: "ArrowRight" });
+        await Promise.resolve();
+        expect(focus.mock.instances).toContain(tabs[1]);
     });
 
     it("switches existing compact docks without toggling their core state", () => {

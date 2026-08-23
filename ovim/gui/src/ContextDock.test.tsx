@@ -95,11 +95,13 @@ describe("ContextDock", () => {
                 state: "idle",
                 component: StablePanel,
             },
+            panel("tests", "Tests"),
         ]);
         render(() => <ContextDock panels={panels()} />);
         const input = screen.getByRole("textbox", {
             name: "Persistent input",
         });
+        const tab = screen.getByRole("tab", { name: "AI chat" });
 
         setPanels([
             {
@@ -107,11 +109,13 @@ describe("ContextDock", () => {
                 state: "streaming",
                 component: StablePanel,
             },
+            panel("tests", "Tests"),
         ]);
 
         expect(screen.getByRole("textbox", { name: "Persistent input" })).toBe(
             input,
         );
+        expect(screen.getByRole("tab", { name: "AI chat" })).toBe(tab);
         expect(mounts).toBe(1);
     });
 });
