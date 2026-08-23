@@ -89,7 +89,8 @@ describe("Ovim Solid workbench", () => {
   });
 
   it("renders the chat caret at the core UTF-8 cursor and pending images", () => {
-    const result = render(() => <ChatComposer chat={{
+    const onCursor = vi.fn();
+    const result = render(() => <ChatComposer onCursor={onCursor} chat={{
       profile: "codex",
       reasoningEffort: "high",
       activity: "idle",
@@ -105,6 +106,11 @@ describe("Ovim Solid workbench", () => {
     expect(caret?.previousSibling?.textContent).toBe("a界");
     expect(caret?.nextSibling?.textContent).toBe("b");
     expect(screen.getByText("▧ diagram.png")).toBeTruthy();
+    const firstText = screen.getByLabelText("AI chat input").querySelector("span")!.firstChild!;
+    (document as any).caretPositionFromPoint = () => ({ offsetNode: firstText, offset: 1 });
+    fireEvent.mouseDown(screen.getByLabelText("AI chat input"), { clientX: 1, clientY: 1 });
+    expect(onCursor).toHaveBeenCalledWith(1);
+    delete (document as any).caretPositionFromPoint;
   });
 
   it("returns DOM focus to the editor input when AI chat is activated", () => {

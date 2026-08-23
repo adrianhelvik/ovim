@@ -83,6 +83,22 @@ async fn gui_set_cursor(
 }
 
 #[tauri::command]
+async fn gui_set_chat_input_cursor(
+    bridge: State<'_, GuiBridge>,
+    offset: usize,
+) -> Result<(), String> {
+    bridge.set_chat_input_cursor(offset).await
+}
+
+#[tauri::command]
+async fn gui_set_chat_input_width(
+    bridge: State<'_, GuiBridge>,
+    columns: usize,
+) -> Result<(), String> {
+    bridge.set_chat_input_width(columns).await
+}
+
+#[tauri::command]
 async fn gui_select_tab(bridge: State<'_, GuiBridge>, index: usize) -> Result<(), String> {
     bridge.select_tab(index).await
 }
@@ -161,6 +177,8 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_paste,
             gui_attach_image,
             gui_set_cursor,
+            gui_set_chat_input_cursor,
+            gui_set_chat_input_width,
             gui_select_tab,
             gui_focus_pane,
             gui_select_picker,

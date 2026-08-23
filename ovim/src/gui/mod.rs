@@ -608,6 +608,14 @@ enum GuiRequest {
         input: GuiKeyInput,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    SetChatInputCursor {
+        offset: usize,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    SetChatInputWidth {
+        columns: usize,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     Paste {
         text: String,
         reply: oneshot::Sender<Result<(), String>>,
@@ -731,6 +739,16 @@ impl GuiBridge {
 
     pub async fn paste(&self, text: String) -> Result<(), String> {
         self.request(|reply| GuiRequest::Paste { text, reply })
+            .await
+    }
+
+    pub async fn set_chat_input_cursor(&self, offset: usize) -> Result<(), String> {
+        self.request(|reply| GuiRequest::SetChatInputCursor { offset, reply })
+            .await
+    }
+
+    pub async fn set_chat_input_width(&self, columns: usize) -> Result<(), String> {
+        self.request(|reply| GuiRequest::SetChatInputWidth { columns, reply })
             .await
     }
 
@@ -939,6 +957,21 @@ fn publish_if_changed(
     updates.send_replace(Some(next));
 }
 
+fn set_gui_chat_input_cursor(editor: &mut Editor, offset: usize) -> Result<()> {
+    if editor.mode() != Mode::AiChat {
+        anyhow::bail!("AI chat is not active");
+    }
+    let Some(chat) = editor.ai_state.chat.as_mut() else {
+        anyhow::bail!("AI chat is not open");
+    };
+    if offset > chat.input.len() || !chat.input.is_char_boundary(offset) {
+        anyhow::bail!("Chat cursor offset is not a UTF-8 boundary");
+    }
+    chat.input_cursor = offset;
+    chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
+    Ok(())
+}
+
 async fn handle_request(
     request: GuiRequest,
     editor: &mut Editor,
@@ -1024,6 +1057,24 @@ async fn handle_request(
             editor.update_scroll_offset();
             refresh_after_input(editor);
             (reply, Ok(()))
+        }
+        GuiRequest::SetChatInputCursor { offset, reply } => {
+            let result = set_gui_chat_input_cursor(editor, offset);
+            if result.is_ok() {
+                refresh_after_input(editor);
+            }
+            (reply, result)
+        }
+        GuiRequest::SetChatInputWidth { columns, reply } => {
+            let result = if editor.mode() != Mode::AiChat {
+                Err(anyhow::anyhow!("AI chat is not active"))
+            } else if columns == 0 || columns > 4096 {
+                Err(anyhow::anyhow!("Chat input width is out of range"))
+            } else {
+                editor.render_cache.ai_chat_input_content_width = columns;
+                Ok(())
+            };
+            (reply, result)
         }
         GuiRequest::SelectTab { index, reply } => {
             editor.goto_tab(index);
@@ -1873,7 +1924,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             reasoning_effort: editor.ai_chat_reasoning_effort(),
             activity: editor.ai_chat_activity().as_str().to_string(),
             waiting: editor.ai_chat_waiting(),
-            input: truncate_panel_text(editor.ai_chat_input(), 12_000),
+            input: editor.ai_chat_input().to_string(),
             input_cursor: editor.ai_chat_input_cursor(),
             pending_images: editor
                 .ai_chat_pending_images()
@@ -2336,6 +2387,28 @@ mod tests {
             .iter()
             .flat_map(|line| &line.segments)
             .any(|span| span.cursor));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn gui_chat_cursor_accepts_only_full_draft_utf8_boundaries() {
+        let mut editor = Editor::with_content("");
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "a界b".into();
+        chat.input_cursor = chat.input.len();
+
+        assert!(set_gui_chat_input_cursor(&mut editor, 1).is_ok());
+        assert_eq!(editor.ai_chat_input_cursor(), 1);
+        assert!(set_gui_chat_input_cursor(&mut editor, 2).is_err());
+        assert_eq!(editor.ai_chat_input_cursor(), 1);
+        assert!(set_gui_chat_input_cursor(&mut editor, 4).is_ok());
+        assert_eq!(editor.ai_chat_input_cursor(), 4);
+        assert_eq!(
+            editor.ai_chat_focus(),
+            ovim_core::ai::chat_types::ChatFocus::TextInput
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

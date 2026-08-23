@@ -245,7 +245,13 @@ export const ChatMessageView = (props: { message: GuiChatMessage }) => {
   );
 };
 
-export const ChatPanel = (props: { chat: GuiAiChat; focusInput: () => void; onSetupKey?: (key: string) => void }) => {
+export const ChatPanel = (props: {
+  chat: GuiAiChat;
+  focusInput: () => void;
+  onSetupKey?: (key: string) => void;
+  onInputCursor?: (offset: number) => void;
+  onInputWidth?: (columns: number) => void;
+}) => {
   const [following, setFollowing] = createSignal(true);
   let transcript!: HTMLDivElement;
   let messageCount = props.chat.messages.length;
@@ -295,7 +301,7 @@ export const ChatPanel = (props: { chat: GuiAiChat; focusInput: () => void; onSe
       </div>
       <Show when={props.chat.approval}>{(approval) => <div class="approval-card"><b>Approval required</b><span>{approval()}</span><small>Use the keyboard choices shown by Ovim.</small></div>}</Show>
       <Show when={props.chat.setup}>{(setup) => <ChatSetupCard setup={setup()} onKey={props.onSetupKey} />}</Show>
-      <div onMouseDown={props.focusInput}><ChatComposer chat={props.chat} /></div>
+      <div onMouseDown={props.focusInput}><ChatComposer chat={props.chat} onCursor={props.onInputCursor} onWidth={props.onInputWidth} /></div>
     </section>
   );
 };
@@ -313,8 +319,62 @@ const splitAtUtf8Offset = (text: string, offset: number) => {
   return [text.slice(0, codeUnits), text.slice(codeUnits)] as const;
 };
 
-export const ChatComposer = (props: { chat: GuiAiChat }) => {
+export const chatInputOffsetAtPoint = (root: HTMLElement, x: number, y: number) => {
+  const caretDocument = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  const position = caretDocument.caretPositionFromPoint?.(x, y);
+  const fallback = !position ? caretDocument.caretRangeFromPoint?.(x, y) : undefined;
+  const node = position?.offsetNode ?? fallback?.startContainer;
+  const offset = position?.offset ?? fallback?.startOffset;
+  if (!node || offset === undefined || (node !== root && !root.contains(node))) return 0;
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  range.setEnd(node, offset);
+  return new TextEncoder().encode(range.toString()).length;
+};
+
+const chatInputColumns = (root: HTMLElement) => {
+  const style = getComputedStyle(root);
+  const usableWidth = root.clientWidth
+    - (Number.parseFloat(style.paddingLeft) || 0)
+    - (Number.parseFloat(style.paddingRight) || 0);
+  if (usableWidth <= 0) return 0;
+  const probe = document.createElement("span");
+  probe.textContent = "M".repeat(32);
+  probe.style.cssText = `position:fixed;visibility:hidden;white-space:pre;font:${style.font};`;
+  document.body.append(probe);
+  const measured = probe.getBoundingClientRect().width / 32;
+  probe.remove();
+  return Math.max(1, Math.floor(usableWidth / (measured || FALLBACK_CELL_WIDTH)));
+};
+
+export const ChatComposer = (props: { chat: GuiAiChat; onCursor?: (offset: number) => void; onWidth?: (columns: number) => void }) => {
   const parts = createMemo(() => splitAtUtf8Offset(props.chat.input, props.chat.inputCursor));
+  let input!: HTMLPreElement;
+  onMount(() => {
+    if (!props.onWidth) return;
+    let previous = 0;
+    const report = () => {
+      const columns = chatInputColumns(input);
+      if (columns > 0 && columns !== previous) {
+        previous = columns;
+        props.onWidth?.(columns);
+      }
+    };
+    const observer = new ResizeObserver(report);
+    observer.observe(input);
+    report();
+    onCleanup(() => observer.disconnect());
+  });
+  const placeCursor = (event: MouseEvent) => {
+    if (!props.onCursor) return;
+    event.preventDefault();
+    const requested = chatInputOffsetAtPoint(input, event.clientX, event.clientY);
+    const maximum = new TextEncoder().encode(props.chat.input).length;
+    props.onCursor(Math.min(requested, maximum));
+  };
   return (
     <div class="chat-composer" classList={{ waiting: props.chat.waiting }}>
       <Show when={props.chat.pendingImages.length}>
@@ -322,7 +382,7 @@ export const ChatComposer = (props: { chat: GuiAiChat }) => {
           <For each={props.chat.pendingImages}>{(name) => <span title={name}>▧ {name}</span>}</For>
         </div>
       </Show>
-      <pre aria-label="AI chat input"><Show when={props.chat.input} fallback={<><i class="chat-caret" aria-hidden="true" /><span class="chat-placeholder">Ask Ovim about this code…</span></>}><span>{parts()[0]}</span><i class="chat-caret" aria-hidden="true" /><span>{parts()[1]}</span></Show></pre>
+      <pre ref={input!} aria-label="AI chat input" onMouseDown={placeCursor}><Show when={props.chat.input} fallback={<><i class="chat-caret" aria-hidden="true" /><span class="chat-placeholder">Ask Ovim about this code…</span></>}><span>{parts()[0]}</span><i class="chat-caret" aria-hidden="true" /><span>{parts()[1]}</span></Show></pre>
       <footer><span>{props.chat.waiting ? "working" : "Enter to send · drop images to attach · Esc to return"}</span><b>{props.chat.reasoningEffort}</b></footer>
     </div>
   );
@@ -626,6 +686,8 @@ function App() {
         chat={chat()}
         focusInput={() => inputSink.focus({ preventScroll: true })}
         onSetupKey={(key) => void sendKey({ key, shift: false, control: false, alt: false, meta: false })}
+        onInputCursor={(offset) => void mutate("gui_set_chat_input_cursor", { offset })}
+        onInputWidth={(columns) => void mutate("gui_set_chat_input_width", { columns })}
       />
     )}</Show>
   );
