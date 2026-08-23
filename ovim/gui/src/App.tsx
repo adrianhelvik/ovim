@@ -1914,112 +1914,235 @@ function App() {
 
     const LspOverlay = () => (
         <Show when={!view().aiChat ? view().lspManager : undefined}>
-            {(manager) => (
-                <div class="overlay-shade lsp-overlay">
-                    <section
-                        ref={(element) => {
-                            lspDialog = element;
-                            queueMicrotask(() =>
-                                element.focus({ preventScroll: true }),
-                            );
-                        }}
-                        class="lsp-panel"
-                        role="dialog"
-                        aria-labelledby="lsp-manager-title"
-                        data-gui-core-dialog
-                        tabIndex={-1}
-                        onKeyDown={(event) =>
-                            void trapDialogFocus(event, event.currentTarget)
-                        }
-                    >
-                        <header>
-                            <div>
-                                <b id="lsp-manager-title">Language servers</b>
-                                <small>
-                                    Install, inspect, and manage language
-                                    intelligence
-                                </small>
-                            </div>
-                            <kbd>esc</kbd>
-                        </header>
-                        <div class="lsp-filter">
-                            <Icon name="search" size={16} />
-                            {manager().filter || "Filter languages"}
-                        </div>
-                        <div
-                            class="lsp-list"
-                            role="listbox"
-                            aria-label="Language servers"
+            {(manager) => {
+                const selected = () =>
+                    manager().items.find(
+                        (item) => item.index === manager().selected,
+                    );
+                const refocus = () =>
+                    queueMicrotask(() =>
+                        lspDialog?.focus({ preventScroll: true }),
+                    );
+                return (
+                    <div class="overlay-shade lsp-overlay">
+                        <section
+                            ref={(element) => {
+                                lspDialog = element;
+                                queueMicrotask(() =>
+                                    element.focus({ preventScroll: true }),
+                                );
+                            }}
+                            class="lsp-panel"
+                            role="dialog"
+                            aria-labelledby="lsp-manager-title"
+                            data-gui-core-dialog
+                            tabIndex={-1}
+                            onKeyDown={(event) =>
+                                void trapDialogFocus(event, event.currentTarget)
+                            }
                         >
-                            <For each={manager().items}>
-                                {(item) => (
+                            <header>
+                                <div>
+                                    <b id="lsp-manager-title">
+                                        Language servers
+                                    </b>
+                                    <small>
+                                        Install, inspect, and manage language
+                                        intelligence
+                                    </small>
+                                </div>
+                                <div class="lsp-header-actions">
                                     <button
                                         type="button"
-                                        role="option"
-                                        aria-selected={
-                                            item.index === manager().selected
-                                        }
-                                        classList={{
-                                            selected:
-                                                item.index ===
-                                                manager().selected,
-                                        }}
+                                        aria-pressed={manager().showDetail}
                                         onClick={() => {
-                                            void mutate("gui_select_lsp", {
-                                                index: item.index,
-                                                activate: false,
+                                            void sendKey({
+                                                key: "K",
+                                                shift: true,
+                                                control: false,
+                                                alt: false,
+                                                meta: false,
                                             });
-                                            queueMicrotask(() =>
-                                                lspDialog?.focus({
-                                                    preventScroll: true,
-                                                }),
-                                            );
-                                        }}
-                                        onDblClick={() => {
-                                            void mutate("gui_select_lsp", {
-                                                index: item.index,
-                                                activate: true,
-                                            });
-                                            queueMicrotask(() =>
-                                                lspDialog?.focus({
-                                                    preventScroll: true,
-                                                }),
-                                            );
-                                        }}
-                                        onKeyDown={(event) => {
-                                            if (event.key !== "Enter") return;
-                                            event.preventDefault();
-                                            void mutate("gui_select_lsp", {
-                                                index: item.index,
-                                                activate: true,
-                                            });
-                                            queueMicrotask(() =>
-                                                lspDialog?.focus({
-                                                    preventScroll: true,
-                                                }),
-                                            );
+                                            refocus();
                                         }}
                                     >
-                                        <span
-                                            class={`server-dot ${item.section.toLowerCase().replaceAll(" ", "-")}`}
-                                        />
-                                        <strong>{item.language}</strong>
-                                        <small>
-                                            {item.command ||
-                                                "syntax highlighting"}
-                                        </small>
-                                        <em>
-                                            {item.installing ||
-                                                item.state ||
-                                                item.section}
-                                        </em>
+                                        Details
                                     </button>
-                                )}
-                            </For>
-                        </div>
-                    </section>
-                </div>
-            )}
+                                    <kbd>esc</kbd>
+                                </div>
+                            </header>
+                            <div class="lsp-filter">
+                                <Icon name="search" size={16} />
+                                {manager().filter || "Filter languages"}
+                            </div>
+                            <div
+                                class="lsp-content"
+                                classList={{
+                                    "has-detail": manager().showDetail,
+                                }}
+                            >
+                                <div
+                                    class="lsp-list"
+                                    role="listbox"
+                                    aria-label="Language servers"
+                                >
+                                    <For
+                                        each={manager().items}
+                                        fallback={
+                                            <p class="lsp-empty">
+                                                No matching language servers
+                                            </p>
+                                        }
+                                    >
+                                        {(item) => (
+                                            <button
+                                                type="button"
+                                                role="option"
+                                                aria-selected={
+                                                    item.index ===
+                                                    manager().selected
+                                                }
+                                                classList={{
+                                                    selected:
+                                                        item.index ===
+                                                        manager().selected,
+                                                }}
+                                                onClick={() => {
+                                                    void mutate(
+                                                        "gui_select_lsp",
+                                                        {
+                                                            index: item.index,
+                                                            activate: false,
+                                                        },
+                                                    );
+                                                    refocus();
+                                                }}
+                                                onDblClick={() => {
+                                                    void mutate(
+                                                        "gui_select_lsp",
+                                                        {
+                                                            index: item.index,
+                                                            activate: true,
+                                                        },
+                                                    );
+                                                    refocus();
+                                                }}
+                                                onKeyDown={(event) => {
+                                                    if (event.key !== "Enter")
+                                                        return;
+                                                    event.preventDefault();
+                                                    void mutate(
+                                                        "gui_select_lsp",
+                                                        {
+                                                            index: item.index,
+                                                            activate: true,
+                                                        },
+                                                    );
+                                                    refocus();
+                                                }}
+                                            >
+                                                <span
+                                                    class={`server-dot ${item.section.toLowerCase().replaceAll(" ", "-")}`}
+                                                />
+                                                <strong>{item.language}</strong>
+                                                <small>
+                                                    {item.command ||
+                                                        "syntax highlighting"}
+                                                </small>
+                                                <em>
+                                                    {item.installing ||
+                                                        item.state ||
+                                                        item.section}
+                                                </em>
+                                            </button>
+                                        )}
+                                    </For>
+                                </div>
+                                <Show when={manager().showDetail && selected()}>
+                                    {(item) => (
+                                        <aside
+                                            class="lsp-detail"
+                                            aria-label={`${item().language} details`}
+                                        >
+                                            <header>
+                                                <small>{item().section}</small>
+                                                <b>{item().language}</b>
+                                                <span>
+                                                    {item().installing ||
+                                                        item().state ||
+                                                        "Not running"}
+                                                </span>
+                                            </header>
+                                            <dl>
+                                                <Show when={item().command}>
+                                                    <div>
+                                                        <dt>Command</dt>
+                                                        <dd>
+                                                            {item().command}
+                                                        </dd>
+                                                    </div>
+                                                </Show>
+                                                <Show
+                                                    when={
+                                                        item().extensions.length
+                                                    }
+                                                >
+                                                    <div>
+                                                        <dt>Extensions</dt>
+                                                        <dd>
+                                                            {item().extensions.join(
+                                                                ", ",
+                                                            )}
+                                                        </dd>
+                                                    </div>
+                                                </Show>
+                                                <Show
+                                                    when={
+                                                        item().rootMarkers
+                                                            .length
+                                                    }
+                                                >
+                                                    <div>
+                                                        <dt>Project markers</dt>
+                                                        <dd>
+                                                            {item().rootMarkers.join(
+                                                                ", ",
+                                                            )}
+                                                        </dd>
+                                                    </div>
+                                                </Show>
+                                                <Show
+                                                    when={
+                                                        item().capabilities
+                                                            .length
+                                                    }
+                                                >
+                                                    <div>
+                                                        <dt>Capabilities</dt>
+                                                        <dd>
+                                                            {item().capabilities.join(
+                                                                ", ",
+                                                            )}
+                                                        </dd>
+                                                    </div>
+                                                </Show>
+                                                <Show when={item().installHint}>
+                                                    <div>
+                                                        <dt>Install</dt>
+                                                        <dd>
+                                                            {item().installHint}
+                                                        </dd>
+                                                    </div>
+                                                </Show>
+                                            </dl>
+                                        </aside>
+                                    )}
+                                </Show>
+                            </div>
+                        </section>
+                    </div>
+                );
+            }}
         </Show>
     );
 

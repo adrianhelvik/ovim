@@ -760,6 +760,43 @@ describe("Ovim Solid workbench", () => {
         }
     });
 
+    it("renders the selected language server detail projected by the core", () => {
+        mockSnapshot.lspManager = {
+            filter: "",
+            selected: 4,
+            showDetail: true,
+            items: [
+                {
+                    index: 4,
+                    language: "Rust",
+                    section: "RUNNING",
+                    command: "rust-analyzer",
+                    state: "ready",
+                    extensions: ["rs"],
+                    rootMarkers: ["Cargo.toml"],
+                    capabilities: ["hover", "completion"],
+                },
+            ],
+        };
+
+        try {
+            render(() => <App />);
+            const detail = screen.getByRole("complementary", {
+                name: "Rust details",
+            });
+            expect(detail.textContent).toContain("rust-analyzer");
+            expect(detail.textContent).toContain("Cargo.toml");
+            expect(detail.textContent).toContain("hover, completion");
+            expect(
+                screen
+                    .getByRole("button", { name: "Details" })
+                    .getAttribute("aria-pressed"),
+            ).toBe("true");
+        } finally {
+            delete mockSnapshot.lspManager;
+        }
+    });
+
     it("shows blocking chat setup inline with masked input and working actions", () => {
         const onKey = vi.fn();
         render(() => (

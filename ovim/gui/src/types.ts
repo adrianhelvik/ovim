@@ -181,6 +181,10 @@ export interface GuiLspManager {
         command?: string;
         state?: string;
         installing?: string;
+        installHint?: string;
+        extensions: string[];
+        rootMarkers: string[];
+        capabilities: string[];
     }>;
 }
 

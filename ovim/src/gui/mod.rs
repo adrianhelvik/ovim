@@ -595,6 +595,10 @@ pub struct GuiLspEntry {
     pub command: Option<String>,
     pub state: Option<String>,
     pub installing: Option<String>,
+    pub install_hint: Option<String>,
+    pub extensions: Vec<String>,
+    pub root_markers: Vec<String>,
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2503,6 +2507,10 @@ fn lsp_manager(editor: &Editor) -> Option<GuiLspManager> {
                     InstallStatus::Failed(error) => format!("failed: {error}"),
                 }
             }),
+            install_hint: entry.install_hint.clone(),
+            extensions: entry.extensions.clone(),
+            root_markers: entry.root_markers.clone(),
+            capabilities: entry.capabilities.clone(),
         })
         .collect();
     Some(GuiLspManager {

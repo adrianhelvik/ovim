@@ -1627,6 +1627,25 @@ button:focus-visible {
     color: var(--text-secondary);
     font-size: var(--text-micro);
 }
+.lsp-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.lsp-header-actions button {
+    min-height: 28px;
+    padding: 0 9px;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-2);
+    background: transparent;
+    font-size: var(--text-micro);
+}
+.lsp-header-actions button[aria-pressed="true"] {
+    color: var(--text-primary);
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
 .lsp-panel kbd {
     color: var(--text-secondary);
 }
@@ -1641,12 +1660,27 @@ button:focus-visible {
     background: color-mix(in srgb, var(--canvas) 65%, transparent);
     font: 10.5px/1 var(--editor-font);
 }
+.lsp-content {
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+}
+.lsp-content.has-detail {
+    grid-template-columns: minmax(260px, 0.9fr) minmax(280px, 1.1fr);
+}
 .lsp-list {
     min-height: 0;
     overflow: auto;
     padding: 5px 8px 12px;
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
+}
+.lsp-empty {
+    margin: 24px 12px;
+    color: var(--text-secondary);
+    text-align: center;
+    font-size: var(--text-control);
 }
 .lsp-list button {
     width: 100%;
@@ -1699,6 +1733,60 @@ button:focus-visible {
 }
 .server-dot.available {
     border-color: var(--accent);
+}
+.lsp-detail {
+    min-width: 0;
+    min-height: 0;
+    padding: 18px;
+    overflow: auto;
+    border-left: 1px solid var(--border);
+    background: color-mix(in srgb, var(--canvas) 38%, transparent);
+}
+.lsp-detail > header {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+}
+.lsp-detail > header small,
+.lsp-detail dt {
+    color: var(--text-secondary);
+    font: 700 var(--text-micro)/1.3 var(--editor-font);
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+.lsp-detail > header b {
+    font-size: var(--text-heading);
+}
+.lsp-detail > header span {
+    color: var(--info);
+    font-size: var(--text-control);
+}
+.lsp-detail dl {
+    margin: 0;
+}
+.lsp-detail dl > div {
+    padding: 13px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+.lsp-detail dd {
+    margin: 5px 0 0;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+    font: var(--text-control)/1.55 var(--editor-font);
+}
+
+@media (max-width: 760px) {
+    .lsp-content.has-detail {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .lsp-content.has-detail .lsp-list {
+        display: none;
+    }
+    .lsp-detail {
+        border-left: 0;
+    }
 }
 
 .message-line {
