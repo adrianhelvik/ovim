@@ -768,6 +768,10 @@ export const ChatPanel = (props: {
             ),
         [],
     );
+    const transcriptEmpty = () =>
+        transcriptItems().length === 0 &&
+        !props.chat.streaming &&
+        props.chat.queuedInputs.length === 0;
 
     createEffect(() => {
         const selected = props.chat.messages.find(
@@ -910,6 +914,16 @@ export const ChatPanel = (props: {
                     ref={transcript}
                     onScroll={() => setFollowing(isNearChatBottom(transcript))}
                 >
+                    <Show when={transcriptEmpty()}>
+                        <div class="panel-empty chat-empty">
+                            <Icon name="ai-spark" size={20} tone="accent" />
+                            <b>Start a conversation</b>
+                            <span>
+                                Ask about the current file, selection, or
+                                workspace.
+                            </span>
+                        </div>
+                    </Show>
                     <Index each={transcriptItems()}>
                         {(item) => (
                             <Show
@@ -1732,7 +1746,14 @@ function App() {
                         <Show when={test().truncated}>
                             <i>… {test().truncated} earlier lines</i>
                         </Show>
-                        <For each={test().lines}>
+                        <For
+                            each={test().lines}
+                            fallback={
+                                <span class="output-empty">
+                                    No test output yet
+                                </span>
+                            }
+                        >
                             {(line) => <span>{line}</span>}
                         </For>
                     </pre>
@@ -1751,7 +1772,12 @@ function App() {
                     <header class="side-panel-header">
                         <div>
                             <b>Debugger</b>
-                            <small>{debug().reason || "session active"}</small>
+                            <small>
+                                {debug().reason ||
+                                    (debug().executionLine
+                                        ? `stopped at line ${debug().executionLine}`
+                                        : "session active")}
+                            </small>
                         </div>
                         <span>{debug().running ? "running" : "paused"}</span>
                     </header>
@@ -1760,7 +1786,14 @@ function App() {
                         role="listbox"
                         aria-label="Stack frames"
                     >
-                        <For each={debug().stack}>
+                        <For
+                            each={debug().stack}
+                            fallback={
+                                <p class="panel-empty compact">
+                                    No stack frames available
+                                </p>
+                            }
+                        >
                             {(frame) => (
                                 <button
                                     type="button"
@@ -1783,7 +1816,14 @@ function App() {
                         </For>
                     </div>
                     <pre class="output-lines">
-                        <For each={debug().output}>
+                        <For
+                            each={debug().output}
+                            fallback={
+                                <span class="output-empty">
+                                    No debugger output yet
+                                </span>
+                            }
+                        >
                             {(line) => <span>{line}</span>}
                         </For>
                     </pre>
@@ -1848,7 +1888,14 @@ function App() {
                         <span>{problems().total} items</span>
                     </header>
                     <div role="listbox" aria-label="Problem entries">
-                        <For each={problems().items}>
+                        <For
+                            each={problems().items}
+                            fallback={
+                                <p class="panel-empty compact">
+                                    No problems in this list
+                                </p>
+                            }
+                        >
                             {(item) => (
                                 <button
                                     type="button"
@@ -2300,7 +2347,14 @@ function App() {
                                 role="tree"
                                 aria-label="Project files"
                             >
-                                <For each={tree().items}>
+                                <For
+                                    each={tree().items}
+                                    fallback={
+                                        <p class="panel-empty compact">
+                                            This workspace is empty
+                                        </p>
+                                    }
+                                >
                                     {(item) => (
                                         <button
                                             type="button"
@@ -2559,7 +2613,14 @@ function App() {
                                         ),
                                     )}
                                 >
-                                    <For each={menu().items}>
+                                    <For
+                                        each={menu().items}
+                                        fallback={
+                                            <p class="panel-empty compact">
+                                                No completions available
+                                            </p>
+                                        }
+                                    >
                                         {(item) => (
                                             <button
                                                 type="button"
@@ -2676,7 +2737,14 @@ function App() {
                                             role="listbox"
                                             aria-label="Command results"
                                         >
-                                            <For each={picker().items}>
+                                            <For
+                                                each={picker().items}
+                                                fallback={
+                                                    <p class="panel-empty compact">
+                                                        No matching results
+                                                    </p>
+                                                }
+                                            >
                                                 {(item) => (
                                                     <button
                                                         type="button"
