@@ -73,7 +73,7 @@ Ovim currently hard-codes grammar access in `ovim-core/src/syntax/languages.rs`.
 4. Return the Strøk highlight query from `get_highlight_query`.
 5. Add the grammar crate to `ovim-core/Cargo.toml`.
 6. Add a `[[language]]` entry for Strøk to the shipped `languages.toml` configuration.
-7. Update the authoritative embedded configuration, `ovim-core/languages.toml`. The root and `ovim/languages.toml` copies are currently divergent and should be consolidated separately rather than treated as equivalent sources.
+7. Update the authoritative embedded configuration, `ovim-core/languages.toml`.
 
 An illustrative configuration entry is below; the dependency name and exported query constant must be verified against the grammar crate once it exists:
 
