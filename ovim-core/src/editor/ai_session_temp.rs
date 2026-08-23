@@ -9,7 +9,16 @@ use std::path::{Path, PathBuf};
 /// recorded path does not inherit the session's authority.
 #[derive(Debug, Default)]
 pub(super) struct SessionTempFiles {
-    files: HashMap<PathBuf, TempFileIdentity>,
+    files: HashMap<PathBuf, SessionTempFile>,
+}
+
+#[derive(Debug)]
+struct SessionTempFile {
+    identity: TempFileIdentity,
+    // Keeping the original inode open prevents Unix filesystems from recycling
+    // it for a replacement at the same path while the session still trusts it.
+    #[cfg(unix)]
+    _guard: std::fs::File,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +32,10 @@ struct TempFileIdentity {
 impl TempFileIdentity {
     fn read(path: &Path) -> Option<Self> {
         let metadata = std::fs::metadata(path).ok()?;
+        Self::from_metadata(&metadata)
+    }
+
+    fn from_metadata(metadata: &std::fs::Metadata) -> Option<Self> {
         if !metadata.is_file() {
             return None;
         }
@@ -44,15 +57,35 @@ impl TempFileIdentity {
     }
 }
 
+impl SessionTempFile {
+    fn open(path: &Path) -> Option<Self> {
+        #[cfg(unix)]
+        {
+            let guard = std::fs::File::open(path).ok()?;
+            let identity = TempFileIdentity::from_metadata(&guard.metadata().ok()?)?;
+            Some(Self {
+                identity,
+                _guard: guard,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Some(Self {
+                identity: TempFileIdentity::read(path)?,
+            })
+        }
+    }
+}
+
 impl SessionTempFiles {
     pub(super) fn record(&mut self, path: &Path) -> bool {
         let Some(path) = canonical_temp_file(path) else {
             return false;
         };
-        let Some(identity) = TempFileIdentity::read(&path) else {
+        let Some(file) = SessionTempFile::open(&path) else {
             return false;
         };
-        self.files.insert(path, identity);
+        self.files.insert(path, file);
         true
     }
 
@@ -63,7 +96,7 @@ impl SessionTempFiles {
         let Some(expected) = self.files.get(&path) else {
             return false;
         };
-        TempFileIdentity::read(&path).as_ref() == Some(expected)
+        TempFileIdentity::read(&path).as_ref() == Some(&expected.identity)
     }
 
     /// Return true for the narrow shell forms needed to make or run a
