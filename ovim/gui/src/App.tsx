@@ -18,6 +18,7 @@ import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
+import { splitAtUtf8Offset } from "./textEncoding";
 import type {
     GuiAiChat,
     GuiCodeExplanation,
@@ -649,6 +650,7 @@ export const ChatPanel = (props: {
     onInputUpdate?: (update: ChatInputUpdate) => Promise<void>;
     onSetupKey?: (key: string) => void;
     onInputWidth?: (columns: number) => void;
+    onRemoveImage?: (index: number) => void;
     onProfile?: (profile: string) => void;
     onReasoningEffort?: (effort: string) => void;
     onMessage?: (index: number) => void;
@@ -872,25 +874,10 @@ export const ChatPanel = (props: {
                 bindInput={props.bindInput}
                 onUpdate={props.onInputUpdate}
                 onWidth={props.onInputWidth}
+                onRemoveImage={props.onRemoveImage}
             />
         </section>
     );
-};
-
-const splitAtUtf8Offset = (text: string, offset: number) => {
-    const limit = Math.max(
-        0,
-        Math.min(offset, new TextEncoder().encode(text).length),
-    );
-    let bytes = 0;
-    let codeUnits = 0;
-    for (const character of text) {
-        const next = bytes + new TextEncoder().encode(character).length;
-        if (next > limit) break;
-        bytes = next;
-        codeUnits += character.length;
-    }
-    return [text.slice(0, codeUnits), text.slice(codeUnits)] as const;
 };
 
 function App() {
@@ -1520,6 +1507,9 @@ function App() {
                     }
                     onInputWidth={(columns) =>
                         void mutate("gui_set_chat_input_width", { columns })
+                    }
+                    onRemoveImage={(index) =>
+                        void mutate("gui_remove_chat_image", { index })
                     }
                     onProfile={(profile) =>
                         void mutate("gui_select_ai_profile", { profile })

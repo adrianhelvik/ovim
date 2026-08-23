@@ -7,26 +7,11 @@ import {
     onMount,
 } from "solid-js";
 import { guiKeyInput } from "./guiInput";
-import { Icon } from "./Icon";
+import { Icon, IconButton } from "./Icon";
+import { utf16OffsetFromUtf8, utf8OffsetFromTextArea } from "./textEncoding";
 import type { GuiAiChat, GuiKeyInput } from "./types";
 
 const FALLBACK_CELL_WIDTH = 8.15;
-
-const splitAtUtf8Offset = (text: string, offset: number) => {
-    const limit = Math.max(
-        0,
-        Math.min(offset, new TextEncoder().encode(text).length),
-    );
-    let bytes = 0;
-    let codeUnits = 0;
-    for (const character of text) {
-        const next = bytes + new TextEncoder().encode(character).length;
-        if (next > limit) break;
-        bytes = next;
-        codeUnits += character.length;
-    }
-    return [text.slice(0, codeUnits), text.slice(codeUnits)] as const;
-};
 
 const chatInputColumns = (root: HTMLElement) => {
     const style = getComputedStyle(root);
@@ -55,11 +40,7 @@ export type ChatInputUpdate = {
     action?: GuiKeyInput;
 };
 
-export const utf8OffsetFromTextArea = (text: string, utf16Offset: number) =>
-    new TextEncoder().encode(text.slice(0, utf16Offset)).length;
-
-export const utf16OffsetFromUtf8 = (text: string, utf8Offset: number) =>
-    splitAtUtf8Offset(text, utf8Offset)[0].length;
+export { utf16OffsetFromUtf8, utf8OffsetFromTextArea } from "./textEncoding";
 
 export default function ChatComposer(props: {
     chat: GuiAiChat;
@@ -67,6 +48,7 @@ export default function ChatComposer(props: {
     bindInput?: (input: HTMLTextAreaElement | undefined) => void;
     onUpdate?: (update: ChatInputUpdate) => Promise<void>;
     onWidth?: (columns: number) => void;
+    onRemoveImage?: (index: number) => void;
 }) {
     const [draft, setDraft] = createSignal(props.chat.input);
     let input!: HTMLTextAreaElement;
@@ -81,6 +63,8 @@ export default function ChatComposer(props: {
           }
         | undefined;
     let mutations = Promise.resolve();
+    const hasActiveRun = () =>
+        props.chat.waiting || props.chat.activity !== "idle";
 
     const resize = () => {
         if (!input) return;
@@ -181,10 +165,19 @@ export default function ChatComposer(props: {
                     aria-label="Pending image attachments"
                 >
                     <For each={props.chat.pendingImages}>
-                        {(name) => (
-                            <span title={name}>
+                        {(name, index) => (
+                            <span class="chat-attachment" title={name}>
                                 <Icon name="attach" size={16} />
-                                {name}
+                                <span>{name}</span>
+                                <IconButton
+                                    icon="close"
+                                    size={16}
+                                    label={`Remove ${name}`}
+                                    onClick={() => {
+                                        props.onRemoveImage?.(index());
+                                        queueMicrotask(() => input.focus());
+                                    }}
+                                />
                             </span>
                         )}
                     </For>
@@ -235,11 +228,37 @@ export default function ChatComposer(props: {
             />
             <footer>
                 <span>
-                    {props.chat.waiting
+                    {hasActiveRun()
                         ? "working"
                         : "Enter to send · drop images to attach · Esc to return"}
                 </span>
-                <b>{props.chat.reasoningEffort}</b>
+                <span class="chat-composer-actions">
+                    <b>{props.chat.reasoningEffort}</b>
+                    <IconButton
+                        class="chat-submit"
+                        icon={hasActiveRun() ? "stop" : "send"}
+                        size={16}
+                        label={
+                            hasActiveRun() ? "Stop generation" : "Send message"
+                        }
+                        disabled={
+                            !hasActiveRun() &&
+                            !draft().trim() &&
+                            props.chat.pendingImages.length === 0
+                        }
+                        onClick={() => {
+                            const key = hasActiveRun() ? "Escape" : "Enter";
+                            void publish(input.value, input.selectionStart, {
+                                key,
+                                shift: false,
+                                control: false,
+                                alt: false,
+                                meta: false,
+                            });
+                            queueMicrotask(() => input.focus());
+                        }}
+                    />
+                </span>
             </footer>
         </div>
     );

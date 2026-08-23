@@ -195,11 +195,22 @@ impl Editor {
 
     /// Backspace on an empty composer removes the most recently attached image.
     pub fn remove_last_ai_chat_image(&mut self) -> bool {
-        self.ai_state
-            .chat
-            .as_mut()
-            .and_then(|chat| chat.pending_images.pop())
-            .is_some()
+        let Some(last) = self.ai_chat_pending_images().len().checked_sub(1) else {
+            return false;
+        };
+        self.remove_ai_chat_image(last)
+    }
+
+    /// Removes a pending composer image by its displayed index.
+    pub fn remove_ai_chat_image(&mut self, index: usize) -> bool {
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        if index >= chat.pending_images.len() {
+            return false;
+        }
+        chat.pending_images.remove(index);
+        true
     }
 }
 
@@ -348,5 +359,25 @@ mod tests {
         assert_eq!(editor.ai_chat_image_modal_path(), Some(path.as_path()));
         assert!(editor.close_ai_chat_image_modal());
         assert!(editor.ai_chat_image_modal_path().is_none());
+    }
+
+    #[test]
+    fn pending_images_can_be_removed_by_displayed_index() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        for name in ["first.png", "second.png"] {
+            chat.pending_images.push(ImageAttachment {
+                path: PathBuf::from(name),
+                mime_type: "image/png".into(),
+                data: vec![],
+            });
+        }
+
+        assert!(editor.remove_ai_chat_image(0));
+        assert_eq!(editor.ai_chat_pending_images()[0].file_name(), "second.png");
+        assert!(!editor.remove_ai_chat_image(1));
+        assert!(editor.remove_last_ai_chat_image());
+        assert!(editor.ai_chat_pending_images().is_empty());
     }
 }

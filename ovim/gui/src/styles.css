@@ -1391,10 +1391,12 @@ button:focus-visible {
     flex-wrap: wrap;
     gap: 5px;
 }
-.chat-attachments span {
+.chat-attachment {
     max-width: 100%;
     padding: 4px 6px;
-    overflow: hidden;
+    display: flex;
+    align-items: center;
+    gap: 4px;
     color: var(--info);
     border: 1px solid color-mix(in srgb, var(--info) 28%, var(--border));
     border-radius: var(--radius-2);
@@ -1402,6 +1404,27 @@ button:focus-visible {
     text-overflow: ellipsis;
     white-space: nowrap;
     font: var(--text-micro)/1 var(--editor-font);
+}
+.chat-attachment > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.chat-attachment button {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    color: var(--text-secondary);
+    border: 0;
+    border-radius: var(--radius-1);
+    background: transparent;
+}
+.chat-attachment button:hover {
+    color: var(--text-primary);
+    background: color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 .chat-composer footer {
     height: 25px;
@@ -1416,6 +1439,31 @@ button:focus-visible {
 .chat-composer footer b {
     color: var(--accent);
     font-weight: 550;
+}
+.chat-composer-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.chat-submit {
+    width: 21px;
+    height: 21px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    color: var(--accent);
+    border: 0;
+    border-radius: var(--radius-2);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.chat-submit:hover:not(:disabled) {
+    color: var(--accent-foreground);
+    background: var(--accent);
+}
+.chat-submit:disabled {
+    color: var(--text-secondary);
+    background: transparent;
+    opacity: 0.55;
 }
 .test-panel {
     grid-template-rows: auto auto minmax(0, 1fr) auto;
@@ -2298,7 +2346,7 @@ kbd {
 }
 
 .chat-jump,
-.chat-attachments span,
+.chat-attachment,
 .walkthrough-pages button {
     display: flex;
     align-items: center;

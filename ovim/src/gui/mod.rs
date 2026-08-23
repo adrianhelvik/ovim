@@ -664,6 +664,10 @@ enum GuiRequest {
         columns: usize,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    RemoveChatImage {
+        index: usize,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     SelectAiProfile {
         profile: String,
         reply: oneshot::Sender<Result<(), String>>,
@@ -846,6 +850,11 @@ impl GuiBridge {
 
     pub async fn set_chat_input_width(&self, columns: usize) -> Result<(), String> {
         self.request(|reply| GuiRequest::SetChatInputWidth { columns, reply })
+            .await
+    }
+
+    pub async fn remove_chat_image(&self, index: usize) -> Result<(), String> {
+        self.request(|reply| GuiRequest::RemoveChatImage { index, reply })
             .await
     }
 
@@ -1270,6 +1279,16 @@ async fn handle_request(
                 editor.render_cache.ai_chat_input_content_width = columns;
                 Ok(())
             };
+            (reply, result)
+        }
+        GuiRequest::RemoveChatImage { index, reply } => {
+            let result = editor
+                .remove_ai_chat_image(index)
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("Unknown pending chat image: {index}"));
+            if result.is_ok() {
+                refresh_after_input(editor);
+            }
             (reply, result)
         }
         GuiRequest::SelectAiProfile { profile, reply } => {

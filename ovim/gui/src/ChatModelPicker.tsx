@@ -1,6 +1,7 @@
 import {
     For,
     Show,
+    createEffect,
     createMemo,
     createSignal,
     onCleanup,
@@ -23,6 +24,7 @@ type Props = {
 export default function ChatModelPicker(props: Props) {
     const [open, setOpen] = createSignal(false);
     const [query, setQuery] = createSignal("");
+    const [activeOption, setActiveOption] = createSignal(0);
     let root!: HTMLDivElement;
     let trigger!: HTMLButtonElement;
     let search!: HTMLInputElement;
@@ -39,6 +41,29 @@ export default function ChatModelPicker(props: Props) {
                 .includes(needle),
         );
     });
+
+    createEffect(() => {
+        const last = Math.max(0, filtered().length - 1);
+        if (activeOption() > last) setActiveOption(last);
+    });
+
+    const focusOption = (index: number) => {
+        if (!filtered().length) return;
+        const next = Math.max(0, Math.min(index, filtered().length - 1));
+        setActiveOption(next);
+        queueMicrotask(() =>
+            document.getElementById(`chat-model-option-${next}`)?.focus(),
+        );
+    };
+
+    const moveOption = (event: KeyboardEvent, index: number) => {
+        if (event.key === "ArrowDown") focusOption(index + 1);
+        else if (event.key === "ArrowUp") focusOption(index - 1);
+        else if (event.key === "Home") focusOption(0);
+        else if (event.key === "End") focusOption(filtered().length - 1);
+        else return;
+        event.preventDefault();
+    };
 
     const close = (returnToComposer = false) => {
         setOpen(false);
@@ -68,6 +93,10 @@ export default function ChatModelPicker(props: Props) {
                 onClick={() => {
                     setOpen((value) => !value);
                     if (!open()) return;
+                    const current = filtered().findIndex(
+                        (profile) => profile.id === props.profile,
+                    );
+                    setActiveOption(Math.max(0, current));
                     queueMicrotask(() => search.focus());
                 }}
             >
@@ -104,9 +133,19 @@ export default function ChatModelPicker(props: Props) {
                             value={query()}
                             placeholder="Filter profiles…"
                             autocomplete="off"
-                            onInput={(event) =>
-                                setQuery(event.currentTarget.value)
-                            }
+                            onInput={(event) => {
+                                setQuery(event.currentTarget.value);
+                                setActiveOption(0);
+                            }}
+                            onKeyDown={(event) => {
+                                if (event.key === "ArrowDown") {
+                                    event.preventDefault();
+                                    focusOption(0);
+                                } else if (event.key === "ArrowUp") {
+                                    event.preventDefault();
+                                    focusOption(filtered().length - 1);
+                                }
+                            }}
                         />
                     </label>
                     <div
@@ -118,11 +157,19 @@ export default function ChatModelPicker(props: Props) {
                             each={filtered()}
                             fallback={<p>No matching profiles</p>}
                         >
-                            {(profile) => (
+                            {(profile, index) => (
                                 <button
+                                    id={`chat-model-option-${index()}`}
                                     type="button"
                                     role="option"
                                     aria-selected={profile.id === props.profile}
+                                    tabIndex={
+                                        index() === activeOption() ? 0 : -1
+                                    }
+                                    onFocus={() => setActiveOption(index())}
+                                    onKeyDown={(event) =>
+                                        moveOption(event, index())
+                                    }
                                     onClick={() => {
                                         props.onProfile?.(profile.id);
                                         close(true);

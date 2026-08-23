@@ -113,6 +113,11 @@ async fn gui_set_chat_input_width(
 }
 
 #[tauri::command]
+async fn gui_remove_chat_image(bridge: State<'_, GuiBridge>, index: usize) -> Result<(), String> {
+    bridge.remove_chat_image(index).await
+}
+
+#[tauri::command]
 async fn gui_select_ai_profile(
     bridge: State<'_, GuiBridge>,
     profile: String,
@@ -246,6 +251,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_set_chat_input_cursor,
             gui_update_chat_input,
             gui_set_chat_input_width,
+            gui_remove_chat_image,
             gui_select_ai_profile,
             gui_select_reasoning_effort,
             gui_select_chat_message,

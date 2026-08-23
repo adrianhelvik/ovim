@@ -440,6 +440,13 @@ describe("Ovim Solid workbench", () => {
         });
         fireEvent.click(trigger);
         const search = screen.getByLabelText("Model profile");
+        const focus = vi.mocked(HTMLElement.prototype.focus);
+        focus.mockClear();
+        fireEvent.keyDown(search, { key: "ArrowDown" });
+        await Promise.resolve();
+        expect(focus.mock.instances).toContain(
+            screen.getByRole("option", { name: /codex.*gpt-test/i }),
+        );
         fireEvent.input(search, { target: { value: "qwen" } });
         expect(screen.queryByRole("option", { name: /codex/i })).toBeNull();
         fireEvent.click(
@@ -465,6 +472,67 @@ describe("Ovim Solid workbench", () => {
             [7, "recall"],
             [7, "remove"],
         ]);
+    });
+
+    it("exposes send, stop, and attachment removal as working controls", async () => {
+        const onUpdate = vi.fn().mockResolvedValue(undefined);
+        const onRemoveImage = vi.fn();
+        const chat: GuiAiChat = {
+            profile: "codex",
+            profiles: [],
+            reasoningEffort: "medium",
+            reasoningEffortSelection: "default",
+            reasoningEfforts: ["default"],
+            activity: "idle",
+            waiting: false,
+            input: "ship this",
+            inputCursor: 9,
+            queuedInputs: [],
+            pendingImages: ["diagram.png"],
+            messages: [],
+            thinkingLive: false,
+            focus: "textInput",
+            agents: [],
+            agentCursor: 0,
+        };
+        const result = render(() => (
+            <ChatComposer
+                chat={chat}
+                onUpdate={onUpdate}
+                onRemoveImage={onRemoveImage}
+            />
+        ));
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Remove diagram.png" }),
+        );
+        expect(onRemoveImage).toHaveBeenCalledWith(0);
+        fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+        await waitFor(() => expect(onUpdate).toHaveBeenCalled());
+        expect(onUpdate).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                input: "ship this",
+                action: expect.objectContaining({ key: "Enter" }),
+            }),
+        );
+        result.unmount();
+
+        const onStop = vi.fn().mockResolvedValue(undefined);
+        render(() => (
+            <ChatComposer
+                chat={{ ...chat, activity: "streaming", waiting: true }}
+                onUpdate={onStop}
+            />
+        ));
+        fireEvent.click(
+            screen.getByRole("button", { name: "Stop generation" }),
+        );
+        await waitFor(() => expect(onStop).toHaveBeenCalled());
+        expect(onStop).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                action: expect.objectContaining({ key: "Escape" }),
+            }),
+        );
     });
 
     it("shows and activates core history and agent navigation state", () => {
