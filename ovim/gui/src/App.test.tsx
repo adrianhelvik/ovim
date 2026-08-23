@@ -130,6 +130,53 @@ describe("Ovim Solid workbench", () => {
         ).toBeTruthy();
     });
 
+    it("switches existing compact docks without toggling their core state", () => {
+        const previousChat = mockSnapshot.aiChat;
+        mockSnapshot.aiChat = {
+            profile: "codex",
+            profiles: [],
+            reasoningEffort: "medium",
+            reasoningEffortSelection: "default",
+            reasoningEfforts: ["default"],
+            activity: "idle",
+            waiting: false,
+            input: "",
+            inputCursor: 0,
+            pendingImages: [],
+            queuedInputs: [],
+            messages: [],
+            thinkingLive: false,
+            focus: "textInput",
+            agents: [],
+            agentCursor: 0,
+        };
+        vi.stubGlobal(
+            "matchMedia",
+            vi.fn(() => ({
+                matches: true,
+                addEventListener: vi.fn(),
+                removeEventListener: vi.fn(),
+            })),
+        );
+
+        const result = render(() => <App />);
+        try {
+            const workbench = result.container.querySelector(".workbench")!;
+            expect(workbench.classList).toContain("active-context-dock");
+
+            fireEvent.click(screen.getByRole("button", { name: "Explorer" }));
+            expect(workbench.classList).toContain("active-explorer-dock");
+            expect(mockSnapshot.fileTree).toBeTruthy();
+
+            fireEvent.click(screen.getByRole("button", { name: "AI chat" }));
+            expect(workbench.classList).toContain("active-context-dock");
+            expect(mockSnapshot.aiChat).toBeTruthy();
+        } finally {
+            result.unmount();
+            mockSnapshot.aiChat = previousChat;
+        }
+    });
+
     it("sanitizes rendered AI markdown", () => {
         const result = render(() => (
             <Markdown

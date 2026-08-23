@@ -56,6 +56,10 @@ button:focus-visible {
     user-select: none;
     border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
     color-scheme: var(--color-scheme);
+    position: relative;
+}
+.minimum-window-notice {
+    display: none;
 }
 
 .titlebar {
@@ -2190,13 +2194,53 @@ kbd {
     }
 }
 
-@media (max-width: 900px) {
-    .ai-panel > .side-panel-header > span {
+@media (max-width: 1439px) {
+    .primary-content {
+        position: relative;
+    }
+    .side-dock {
+        position: absolute;
+        z-index: var(--layer-popover);
+        inset: 0 0 0 auto;
+        width: clamp(330px, 42vw, 520px);
+        max-width: 100%;
+        box-shadow: var(--shadow-popover);
+    }
+    .workbench.active-explorer-dock .side-dock,
+    .workbench.active-context-dock > .explorer {
         display: none;
     }
+}
+
+@media (max-width: 1099px) {
+    .workbench {
+        position: relative;
+    }
     .explorer {
-        width: 205px;
-        flex-basis: 205px;
+        position: absolute;
+        z-index: var(--layer-popover);
+        inset: 0 auto 0 var(--activity-size);
+        width: 242px;
+        box-shadow: var(--shadow-popover);
+    }
+}
+
+@media (max-width: 899px) {
+    .titlebar {
+        grid-template-columns: var(--activity-size) minmax(0, 1fr) 138px;
+    }
+    .brand {
+        justify-content: center;
+        padding: 0;
+    }
+    .brand > span:last-child {
+        display: none;
+    }
+    .side-dock {
+        width: min(100%, 480px);
+    }
+    .ai-panel > .side-panel-header > span {
+        display: none;
     }
     .status-left .git-counts {
         display: none;
@@ -2216,6 +2260,36 @@ kbd {
     .walkthrough-actions {
         display: grid;
         grid-template-columns: 1fr 1fr;
+    }
+    .picker {
+        width: calc(100% - 24px);
+        max-height: calc(100% - 42px);
+    }
+}
+
+@media (max-width: 719px), (max-height: 559px) {
+    .minimum-window-notice {
+        position: absolute;
+        z-index: var(--layer-notification);
+        inset: var(--titlebar-height) 0 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: var(--space-2);
+        color: var(--text-primary);
+        background: color-mix(in srgb, var(--canvas) 94%, transparent);
+        text-align: center;
+    }
+    .minimum-window-notice .icon {
+        color: var(--accent);
+    }
+    .minimum-window-notice b {
+        font-size: var(--text-body);
+    }
+    .minimum-window-notice span {
+        color: var(--text-secondary);
+        font-size: var(--text-control);
     }
 }
 

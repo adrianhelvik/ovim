@@ -886,10 +886,19 @@ const splitAtUtf8Offset = (text: string, offset: number) => {
 
 function App() {
     const native = isTauri();
+    const compactDockQuery = window.matchMedia?.("(max-width: 1439px)");
     const [view, setView] = createSignal<GuiSnapshot>(mockSnapshot);
     const [error, setError] = createSignal("");
     const [connected, setConnected] = createSignal(!native);
     const [composition, setComposition] = createSignal("");
+    const [compactDocks, setCompactDocks] = createSignal(
+        compactDockQuery?.matches ?? false,
+    );
+    const [activeDock, setActiveDock] = createSignal<"explorer" | "context">(
+        mockSnapshot.aiChat || mockSnapshot.testPanel || mockSnapshot.debug
+            ? "context"
+            : "explorer",
+    );
     let editorBody!: HTMLDivElement;
     let inputSink!: HTMLTextAreaElement;
     let chatInput: HTMLTextAreaElement | undefined;
@@ -899,6 +908,24 @@ function App() {
     let wheelRemainder = 0;
     let lastDimensions = { columns: 0, rows: 0 };
     const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
+    const hasContextDock = createMemo(() =>
+        Boolean(
+            !walkthrough() &&
+            (view().aiChat || view().testPanel || view().debug),
+        ),
+    );
+    let hadContextDock = hasContextDock();
+
+    createEffect(() => {
+        const hasContext = hasContextDock();
+        const hasExplorer = Boolean(view().fileTree);
+        if (hasContext && !hadContextDock) setActiveDock("context");
+        else if (!hasContext && activeDock() === "context")
+            setActiveDock("explorer");
+        else if (hasContext && !hasExplorer && activeDock() === "explorer")
+            setActiveDock("context");
+        hadContextDock = hasContext;
+    });
 
     const dimensions = () => {
         const paneTree = editorBody?.querySelector<HTMLElement>(".pane-tree");
@@ -985,6 +1012,32 @@ function App() {
     };
     const windowAction = (action: string) =>
         invoke<void>("gui_window_action", { action });
+
+    const toggleExplorer = () => {
+        if (
+            compactDocks() &&
+            view().fileTree &&
+            hasContextDock() &&
+            activeDock() === "context"
+        ) {
+            setActiveDock("explorer");
+            queueMicrotask(focusPrimaryInput);
+            return;
+        }
+        setActiveDock("explorer");
+        void sendLiteral("-");
+    };
+
+    const toggleAiChat = () => {
+        if (compactDocks() && view().aiChat && activeDock() === "explorer") {
+            setActiveDock("context");
+            queueMicrotask(focusPrimaryInput);
+            return;
+        }
+        setActiveDock("context");
+        focusPrimaryInput();
+        void sendLiteral("  ");
+    };
 
     const themeVars = createMemo(() => ({
         ...themeVariables(view().theme),
@@ -1676,6 +1729,9 @@ function App() {
         window.addEventListener("cut", handleCut);
         const restoreInputFocus = () => focusPrimaryInput();
         window.addEventListener("focus", restoreInputFocus);
+        const updateCompactDocks = (event: MediaQueryListEvent) =>
+            setCompactDocks(event.matches);
+        compactDockQuery?.addEventListener("change", updateCompactDocks);
         editorBody.addEventListener("wheel", handleWheel, { passive: false });
         const observer = new ResizeObserver(syncDimensions);
         observer.observe(editorBody);
@@ -1697,6 +1753,7 @@ function App() {
             window.removeEventListener("copy", handleCopy);
             window.removeEventListener("cut", handleCut);
             window.removeEventListener("focus", restoreInputFocus);
+            compactDockQuery?.removeEventListener("change", updateCompactDocks);
             editorBody.removeEventListener("wheel", handleWheel);
             observer.disconnect();
         });
@@ -1740,15 +1797,24 @@ function App() {
                 </div>
             </header>
 
-            <section class="workbench">
+            <section
+                class="workbench"
+                classList={{
+                    "active-explorer-dock": activeDock() === "explorer",
+                    "active-context-dock": activeDock() === "context",
+                }}
+            >
                 <nav class="activity-bar" aria-label="Primary navigation">
                     <div class="activity-main">
                         <IconButton
                             icon="explorer"
                             label="Explorer"
                             shortcut="-"
-                            selected={Boolean(view().fileTree)}
-                            onClick={() => void sendLiteral("-")}
+                            selected={
+                                Boolean(view().fileTree) &&
+                                activeDock() === "explorer"
+                            }
+                            onClick={toggleExplorer}
                         />
                         <IconButton
                             icon="search"
@@ -1766,11 +1832,11 @@ function App() {
                             icon="ai-spark"
                             label="AI chat"
                             shortcut="Space Space"
-                            selected={Boolean(view().aiChat)}
-                            onClick={() => {
-                                focusPrimaryInput();
-                                void sendLiteral("  ");
-                            }}
+                            selected={
+                                Boolean(view().aiChat) &&
+                                activeDock() === "context"
+                            }
+                            onClick={toggleAiChat}
                         />
                     </div>
                     <IconButton
@@ -2186,6 +2252,11 @@ function App() {
                     </footer>
                 </section>
             </section>
+            <div class="minimum-window-notice" role="status">
+                <Icon name="maximize" size={20} />
+                <b>More room required</b>
+                <span>Expand the window to at least 720 × 560.</span>
+            </div>
         </main>
     );
 }
