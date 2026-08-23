@@ -108,6 +108,7 @@ impl AiChatSlashCommand {
                 if strategy.is_some_and(|value| !matches!(value, "balanced" | "aggressive")) {
                     return Some(Err(format!("Usage: {}", spec.usage)));
                 }
+
                 Ok(Self::Compact {
                     strategy: strategy.map(str::to_string),
                 })
@@ -240,6 +241,32 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.slash_completion_selected = 0;
         }
+    }
+
+    /// Replace the GUI composer draft atomically after verifying its last
+    /// authoritative value. This prevents delayed browser edits from
+    /// overwriting a draft recalled or changed by another chat action.
+    pub fn replace_ai_chat_input(
+        &mut self,
+        expected_input: &str,
+        expected_cursor: usize,
+        input: String,
+        cursor: usize,
+    ) -> bool {
+        if cursor > input.len() || !input.is_char_boundary(cursor) {
+            return false;
+        }
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        if chat.input != expected_input || chat.input_cursor != expected_cursor {
+            return false;
+        }
+        chat.input = input;
+        chat.input_cursor = cursor;
+        chat.slash_completion_selected = 0;
+        chat.focus = crate::ai::chat_types::ChatFocus::TextInput;
+        true
     }
 
     /// Parse and execute editor-owned chat commands before provider submission.
@@ -577,5 +604,18 @@ mod tests {
             .expect("chat")
             .reasoning_effort_override
             .is_none());
+    }
+
+    #[test]
+    fn gui_input_replacement_requires_the_expected_draft_and_utf8_boundary() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+
+        assert!(editor.replace_ai_chat_input("", 0, "a界b".into(), 4));
+        assert_eq!(editor.ai_chat_input(), "a界b");
+        assert_eq!(editor.ai_chat_input_cursor(), 4);
+        assert!(!editor.replace_ai_chat_input("stale", 0, "lost".into(), 4));
+        assert!(!editor.replace_ai_chat_input("a界b", 4, "a界b".into(), 2));
+        assert_eq!(editor.ai_chat_input(), "a界b");
     }
 }

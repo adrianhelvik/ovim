@@ -91,6 +91,20 @@ async fn gui_set_chat_input_cursor(
 }
 
 #[tauri::command]
+async fn gui_update_chat_input(
+    bridge: State<'_, GuiBridge>,
+    expected_input: String,
+    expected_cursor: usize,
+    input: String,
+    cursor: usize,
+    action: Option<GuiKeyInput>,
+) -> Result<(), String> {
+    bridge
+        .update_chat_input(expected_input, expected_cursor, input, cursor, action)
+        .await
+}
+
+#[tauri::command]
 async fn gui_set_chat_input_width(
     bridge: State<'_, GuiBridge>,
     columns: usize,
@@ -216,6 +230,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_attach_image,
             gui_set_cursor,
             gui_set_chat_input_cursor,
+            gui_update_chat_input,
             gui_set_chat_input_width,
             gui_select_ai_profile,
             gui_select_reasoning_effort,

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { ChatActivityGroup, ChatComposer, ChatMessageView, ChatPanel, ChatSetupCard, CodeWalkthrough, Markdown, activitySummary, chatSelectionText, chatTranscriptItems, guiKeyInput, imageExtension, isNearChatBottom, toolResultSummary } from "./App";
@@ -88,9 +88,9 @@ describe("Ovim Solid workbench", () => {
     expect(result.container.querySelector("script")).toBeNull();
   });
 
-  it("renders the chat caret at the core UTF-8 cursor and pending images", () => {
-    const onCursor = vi.fn();
-    const result = render(() => <ChatComposer onCursor={onCursor} chat={{
+  it("uses a native textarea while preserving UTF-8 core cursor offsets", async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    render(() => <ChatComposer onUpdate={onUpdate} chat={{
       profile: "codex",
       profiles: [{ id: "codex", provider: "codex", model: "gpt-test" }],
       reasoningEffort: "high",
@@ -106,15 +106,48 @@ describe("Ovim Solid workbench", () => {
       focus: "textInput", agents: [], agentCursor: 0,
     }} />);
 
-    const caret = result.container.querySelector(".chat-caret");
-    expect(caret?.previousSibling?.textContent).toBe("a界");
-    expect(caret?.nextSibling?.textContent).toBe("b");
     expect(screen.getByText("▧ diagram.png")).toBeTruthy();
-    const firstText = screen.getByLabelText("AI chat input").querySelector("span")!.firstChild!;
-    (document as any).caretPositionFromPoint = () => ({ offsetNode: firstText, offset: 1 });
-    fireEvent.mouseDown(screen.getByLabelText("AI chat input"), { clientX: 1, clientY: 1 });
-    expect(onCursor).toHaveBeenCalledWith(1);
-    delete (document as any).caretPositionFromPoint;
+    const input = screen.getByLabelText("AI chat input") as HTMLTextAreaElement;
+    await Promise.resolve();
+    expect(input.value).toBe("a界b");
+    expect(input.selectionStart).toBe(2);
+
+    input.value = "a›界b";
+    input.setSelectionRange(2, 2);
+    fireEvent.input(input);
+    await Promise.resolve();
+    expect(onUpdate).toHaveBeenCalledWith({
+      expectedInput: "a界b", expectedCursor: 4,
+      input: "a›界b", cursor: 4,
+      action: undefined,
+    });
+  });
+
+  it("publishes submit atomically with the latest native draft", async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    render(() => <ChatComposer onUpdate={onUpdate} chat={{
+      profile: "codex", profiles: [], reasoningEffort: "medium",
+      reasoningEffortSelection: "default", reasoningEfforts: ["default"],
+      activity: "idle", waiting: false, input: "", inputCursor: 0,
+      queuedInputs: [], pendingImages: [], messages: [], thinkingLive: false,
+      focus: "textInput", agents: [], agentCursor: 0,
+    }} />);
+    const input = screen.getByLabelText("AI chat input") as HTMLTextAreaElement;
+    input.value = "ship this";
+    input.setSelectionRange(9, 9);
+    fireEvent.input(input);
+    await Promise.resolve();
+    input.setSelectionRange(9, 9);
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
+
+    expect(onUpdate).toHaveBeenLastCalledWith(expect.objectContaining({
+      expectedInput: "ship this",
+      input: "ship this",
+      cursor: 9,
+      action: expect.objectContaining({ key: "Enter" }),
+    }));
+    expect(input.value).toBe("");
   });
 
   it("returns DOM focus to the editor input when AI chat is activated", () => {
@@ -258,7 +291,7 @@ describe("Ovim Solid workbench", () => {
 
     try {
       const result = render(() => <App />);
-      expect(screen.getByLabelText("AI chat input").textContent).toContain("visible draft");
+      expect((screen.getByLabelText("AI chat input") as HTMLTextAreaElement).value).toContain("visible draft");
       expect(result.container.querySelector(".overlay-shade")).toBeNull();
       expect(result.container.querySelector(".hover-popover")).toBeNull();
       expect(result.container.querySelector(".completion-popover")).toBeNull();

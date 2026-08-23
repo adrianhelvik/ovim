@@ -648,6 +648,14 @@ enum GuiRequest {
         input: GuiKeyInput,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    UpdateChatInput {
+        expected_input: String,
+        expected_cursor: usize,
+        input: String,
+        cursor: usize,
+        action: Option<GuiKeyInput>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     SetChatInputCursor {
         offset: usize,
         reply: oneshot::Sender<Result<(), String>>,
@@ -806,6 +814,25 @@ impl GuiBridge {
     pub async fn set_chat_input_cursor(&self, offset: usize) -> Result<(), String> {
         self.request(|reply| GuiRequest::SetChatInputCursor { offset, reply })
             .await
+    }
+
+    pub async fn update_chat_input(
+        &self,
+        expected_input: String,
+        expected_cursor: usize,
+        input: String,
+        cursor: usize,
+        action: Option<GuiKeyInput>,
+    ) -> Result<(), String> {
+        self.request(|reply| GuiRequest::UpdateChatInput {
+            expected_input,
+            expected_cursor,
+            input,
+            cursor,
+            action,
+            reply,
+        })
+        .await
     }
 
     pub async fn set_chat_input_width(&self, columns: usize) -> Result<(), String> {
@@ -1083,6 +1110,29 @@ async fn handle_request(
                 .into_core()
                 .and_then(|event| InputHandler::handle_key_event_no_dirty(editor, event));
             if result.is_ok() {
+                refresh_after_input(editor);
+                editor.dispatch_pending_intents().await;
+            }
+            (reply, result)
+        }
+        GuiRequest::UpdateChatInput {
+            expected_input,
+            expected_cursor,
+            input,
+            cursor,
+            action,
+            reply,
+        } => {
+            let mut result = editor
+                .replace_ai_chat_input(&expected_input, expected_cursor, input, cursor)
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("Chat draft changed before the GUI edit arrived"));
+            if result.is_ok() {
+                if let Some(action) = action {
+                    result = action
+                        .into_core()
+                        .and_then(|event| InputHandler::handle_key_event_no_dirty(editor, event));
+                }
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
             }

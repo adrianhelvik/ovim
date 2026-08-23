@@ -309,9 +309,11 @@ export const ChatMessageView = (props: { message: GuiChatMessage; onSelect?: (in
 
 export const ChatPanel = (props: {
   chat: GuiAiChat;
+  revision?: number;
   focusInput: () => void;
+  bindInput?: (input: HTMLTextAreaElement) => void;
+  onInputUpdate?: (update: ChatInputUpdate) => Promise<void>;
   onSetupKey?: (key: string) => void;
-  onInputCursor?: (offset: number) => void;
   onInputWidth?: (columns: number) => void;
   onProfile?: (profile: string) => void;
   onReasoningEffort?: (effort: string) => void;
@@ -409,7 +411,7 @@ export const ChatPanel = (props: {
       </div>
       <Show when={props.chat.approval}>{(approval) => <div class="approval-card"><b>Approval required</b><span>{approval()}</span><small>Use the keyboard choices shown by Ovim.</small></div>}</Show>
       <Show when={props.chat.setup}>{(setup) => <ChatSetupCard setup={setup()} onKey={props.onSetupKey} />}</Show>
-      <div onMouseDown={props.focusInput}><ChatComposer chat={props.chat} onCursor={props.onInputCursor} onWidth={props.onInputWidth} /></div>
+      <ChatComposer chat={props.chat} revision={props.revision} bindInput={props.bindInput} onUpdate={props.onInputUpdate} onWidth={props.onInputWidth} />
     </section>
   );
 };
@@ -458,10 +460,96 @@ const chatInputColumns = (root: HTMLElement) => {
   return Math.max(1, Math.floor(usableWidth / (measured || FALLBACK_CELL_WIDTH)));
 };
 
-export const ChatComposer = (props: { chat: GuiAiChat; onCursor?: (offset: number) => void; onWidth?: (columns: number) => void }) => {
-  const parts = createMemo(() => splitAtUtf8Offset(props.chat.input, props.chat.inputCursor));
-  let input!: HTMLPreElement;
+export type ChatInputUpdate = {
+  expectedInput: string;
+  expectedCursor: number;
+  input: string;
+  cursor: number;
+  action?: GuiKeyInput;
+};
+
+export const utf8OffsetFromTextArea = (text: string, utf16Offset: number) =>
+  new TextEncoder().encode(text.slice(0, utf16Offset)).length;
+
+export const utf16OffsetFromUtf8 = (text: string, utf8Offset: number) =>
+  splitAtUtf8Offset(text, utf8Offset)[0].length;
+
+export const ChatComposer = (props: {
+  chat: GuiAiChat;
+  revision?: number;
+  bindInput?: (input: HTMLTextAreaElement) => void;
+  onUpdate?: (update: ChatInputUpdate) => Promise<void>;
+  onWidth?: (columns: number) => void;
+}) => {
+  const [draft, setDraft] = createSignal(props.chat.input);
+  let input!: HTMLTextAreaElement;
+  let optimisticInput = props.chat.input;
+  let optimisticCursor = props.chat.inputCursor;
+  let awaiting: { base: string; action: boolean; responseDone: boolean; revision: number } | undefined;
+  let mutations = Promise.resolve();
+  const resize = () => {
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
+  };
+
+  const applyRemote = () => {
+    const remoteInput = props.chat.input;
+    const remoteCursor = props.chat.inputCursor;
+    if (awaiting) {
+      const matchesOptimistic = remoteInput === optimisticInput && remoteCursor === optimisticCursor;
+      const actionChangedInput = awaiting.action
+        && awaiting.responseDone
+        && (props.revision ?? 0) > awaiting.revision
+        && remoteInput !== awaiting.base;
+      if (!matchesOptimistic && !actionChangedInput) return;
+      awaiting = undefined;
+    }
+    optimisticInput = remoteInput;
+    optimisticCursor = remoteCursor;
+    setDraft(remoteInput);
+    queueMicrotask(() => {
+      if (!input) return;
+      const cursor = utf16OffsetFromUtf8(remoteInput, remoteCursor);
+      input.setSelectionRange(cursor, cursor);
+      resize();
+    });
+  };
+
+  createEffect(applyRemote);
+
+  const publish = (nextInput: string, utf16Cursor: number, action?: GuiKeyInput) => {
+    const nextCursor = utf8OffsetFromTextArea(nextInput, utf16Cursor);
+    const update: ChatInputUpdate = {
+      expectedInput: optimisticInput,
+      expectedCursor: optimisticCursor,
+      input: nextInput,
+      cursor: nextCursor,
+      action,
+    };
+    const base = optimisticInput;
+    optimisticInput = action?.key === "Enter" ? "" : nextInput;
+    optimisticCursor = action?.key === "Enter" ? 0 : nextCursor;
+    if (action?.key === "Enter") setDraft("");
+    awaiting = { base, action: Boolean(action), responseDone: false, revision: props.revision ?? 0 };
+    mutations = mutations
+      .then(() => props.onUpdate?.(update))
+      .then(() => {
+        if (awaiting) awaiting.responseDone = true;
+        applyRemote();
+      })
+      .catch(() => {
+        awaiting = undefined;
+        optimisticInput = props.chat.input;
+        optimisticCursor = props.chat.inputCursor;
+        setDraft(props.chat.input);
+      });
+    return mutations;
+  };
+
   onMount(() => {
+    props.bindInput?.(input);
+    resize();
     if (!props.onWidth) return;
     let previous = 0;
     const report = () => {
@@ -476,13 +564,6 @@ export const ChatComposer = (props: { chat: GuiAiChat; onCursor?: (offset: numbe
     report();
     onCleanup(() => observer.disconnect());
   });
-  const placeCursor = (event: MouseEvent) => {
-    if (!props.onCursor) return;
-    event.preventDefault();
-    const requested = chatInputOffsetAtPoint(input, event.clientX, event.clientY);
-    const maximum = new TextEncoder().encode(props.chat.input).length;
-    props.onCursor(Math.min(requested, maximum));
-  };
   return (
     <div class="chat-composer" classList={{ waiting: props.chat.waiting }}>
       <Show when={props.chat.pendingImages.length}>
@@ -490,7 +571,37 @@ export const ChatComposer = (props: { chat: GuiAiChat; onCursor?: (offset: numbe
           <For each={props.chat.pendingImages}>{(name) => <span title={name}>▧ {name}</span>}</For>
         </div>
       </Show>
-      <pre ref={input!} aria-label="AI chat input" onMouseDown={placeCursor}><Show when={props.chat.input} fallback={<><i class="chat-caret" aria-hidden="true" /><span class="chat-placeholder">Ask Ovim about this code…</span></>}><span>{parts()[0]}</span><i class="chat-caret" aria-hidden="true" /><span>{parts()[1]}</span></Show></pre>
+      <textarea
+        ref={input!}
+        class="chat-input"
+        aria-label="AI chat input"
+        value={draft()}
+        placeholder="Ask Ovim about this code…"
+        rows={2}
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck={false}
+        onInput={(event) => {
+          const target = event.currentTarget;
+          setDraft(target.value);
+          resize();
+          void publish(target.value, target.selectionStart);
+        }}
+        onSelect={(event) => {
+          const target = event.currentTarget;
+          const cursor = utf8OffsetFromTextArea(target.value, target.selectionStart);
+          if (target.value === optimisticInput && cursor !== optimisticCursor) void publish(target.value, target.selectionStart);
+        }}
+        onKeyDown={(event) => {
+          if (event.isComposing) return;
+          const submit = event.key === "Enter" && !event.shiftKey;
+          const coreAction = submit || event.key === "Tab" || event.key === "Escape";
+          if (!coreAction) return;
+          event.preventDefault();
+          const target = event.currentTarget;
+          void publish(target.value, target.selectionStart, guiKeyInput(event));
+        }}
+      />
       <footer><span>{props.chat.waiting ? "working" : "Enter to send · drop images to attach · Esc to return"}</span><b>{props.chat.reasoningEffort}</b></footer>
     </div>
   );
@@ -518,6 +629,7 @@ function App() {
   const [composition, setComposition] = createSignal("");
   let editorBody!: HTMLDivElement;
   let inputSink!: HTMLTextAreaElement;
+  let chatInput: HTMLTextAreaElement | undefined;
   let cellWidth = FALLBACK_CELL_WIDTH;
   let composing = false;
   let ignoreNextInput = false;
@@ -547,20 +659,36 @@ function App() {
   };
 
   const accept = (snapshot: GuiSnapshot) => {
+    const chatOpened = !view().aiChat && Boolean(snapshot.aiChat);
     setView(snapshot);
     setConnected(true);
     setError("");
     requestAnimationFrame(syncDimensions);
+    if (chatOpened) queueMicrotask(focusPrimaryInput);
     if (snapshot.shouldQuit && native) void windowAction("close");
   };
 
-  const mutate = async (command: string, args: Record<string, unknown>) => {
+  const mutateStrict = async (command: string, args: Record<string, unknown>) => {
     if (!native) return;
     try {
       await invoke(command, args);
     } catch (reason) {
       setError(String(reason));
+      throw reason;
     }
+  };
+
+  const mutate = async (command: string, args: Record<string, unknown>) => {
+    try {
+      await mutateStrict(command, args);
+    } catch {
+      // `mutateStrict` has already projected the failure into the GUI status.
+    }
+  };
+
+  const focusPrimaryInput = () => {
+    const input = view().aiChat ? chatInput : inputSink;
+    input?.focus({ preventScroll: true });
   };
 
   const sendKey = (input: GuiKeyInput) => mutate("gui_key", { input });
@@ -614,8 +742,6 @@ function App() {
   };
 
   const handlePaste = (event: ClipboardEvent) => {
-    const target = event.target as Element | null;
-    if (target !== inputSink && target?.closest?.("input, textarea, [contenteditable='true']")) return;
     const image = Array.from(event.clipboardData?.items ?? [])
       .find((item) => imageExtension(item.type))
       ?.getAsFile()
@@ -633,6 +759,8 @@ function App() {
         .catch((reason) => setError(String(reason)));
       return;
     }
+    const target = event.target as Element | null;
+    if (target !== inputSink && target?.closest?.("input, textarea, [contenteditable='true']")) return;
     const text = event.clipboardData?.getData("text/plain");
     if (!text) return;
     event.preventDefault();
@@ -808,9 +936,11 @@ function App() {
     <Show when={view().aiChat}>{(chat) => (
       <ChatPanel
         chat={chat()}
-        focusInput={() => inputSink.focus({ preventScroll: true })}
+        revision={view().revision}
+        focusInput={focusPrimaryInput}
+        bindInput={(input) => { chatInput = input; }}
         onSetupKey={(key) => void sendKey({ key, shift: false, control: false, alt: false, meta: false })}
-        onInputCursor={(offset) => void mutate("gui_set_chat_input_cursor", { offset })}
+        onInputUpdate={(update) => mutateStrict("gui_update_chat_input", { ...update })}
         onInputWidth={(columns) => void mutate("gui_set_chat_input_width", { columns })}
         onProfile={(profile) => void mutate("gui_select_ai_profile", { profile })}
         onReasoningEffort={(effort) => void mutate("gui_select_reasoning_effort", { effort })}
@@ -818,7 +948,7 @@ function App() {
         onAgent={(agentId) => void mutate("gui_select_chat_agent", { agentId })}
         onQueuedAction={(id, action) => {
           void mutate("gui_manage_queued_chat_input", { id, action });
-          if (action === "recall") queueMicrotask(() => inputSink.focus({ preventScroll: true }));
+          if (action === "recall") queueMicrotask(focusPrimaryInput);
         }}
       />
     )}</Show>
@@ -905,7 +1035,7 @@ function App() {
     window.addEventListener("paste", handlePaste);
     window.addEventListener("copy", handleCopy);
     window.addEventListener("cut", handleCut);
-    const restoreInputFocus = () => inputSink.focus({ preventScroll: true });
+    const restoreInputFocus = () => focusPrimaryInput();
     window.addEventListener("focus", restoreInputFocus);
     editorBody.addEventListener("wheel", handleWheel, { passive: false });
     const observer = new ResizeObserver(syncDimensions);
@@ -949,7 +1079,7 @@ function App() {
             <button classList={{ active: Boolean(view().fileTree) }} title="Explorer  –" onClick={() => void sendLiteral("-")}><Icon name="files" /></button>
             <button title="Search project  Space s g" onClick={() => void sendLiteral(" sg")}><Icon name="search" /></button>
             <button title="Source control"><Icon name="branch" /></button>
-            <button title="AI chat  Space Space" onClick={() => { inputSink.focus({ preventScroll: true }); void sendLiteral("  "); }}><Icon name="spark" /></button>
+            <button title="AI chat  Space Space" onClick={() => { focusPrimaryInput(); void sendLiteral("  "); }}><Icon name="spark" /></button>
           </div>
           <button title="Settings  :set" onClick={() => void sendLiteral(":set")}><Icon name="gear" /></button>
         </nav>
