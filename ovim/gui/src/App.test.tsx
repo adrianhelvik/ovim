@@ -17,6 +17,7 @@ import App, {
     guiKeyInput,
     imageExtension,
     isNearChatBottom,
+    retainTranscriptItems,
     toolResultSummary,
 } from "./App";
 import { mockSnapshot } from "./mock";
@@ -1012,6 +1013,55 @@ describe("Ovim Solid workbench", () => {
             "thinking",
         ]);
         expect(activity.live).toBe(true);
+    });
+
+    it("retains unchanged transcript entries across streaming snapshots", async () => {
+        const message: GuiAiChat["messages"][number] = {
+            id: "1:1",
+            index: 0,
+            selected: false,
+            role: "assistant",
+            content: "A **stable** historical response",
+            model: "codex",
+            tools: [],
+        };
+        const previous = chatTranscriptItems([message]);
+        const next = retainTranscriptItems(
+            previous,
+            chatTranscriptItems([{ ...message, tools: [] }]),
+        );
+        expect(next[0]).toBe(previous[0]);
+
+        const initial: GuiAiChat = {
+            profile: "codex",
+            profiles: [],
+            reasoningEffort: "medium",
+            reasoningEffortSelection: "default",
+            reasoningEfforts: ["default"],
+            activity: "idle",
+            waiting: false,
+            input: "",
+            inputCursor: 0,
+            queuedInputs: [],
+            pendingImages: [],
+            messages: [message],
+            thinkingLive: false,
+            focus: "textInput",
+            agents: [],
+            agentCursor: 0,
+        };
+        const [chat, setChat] = createSignal(initial);
+        render(() => <ChatPanel chat={chat()} focusInput={() => {}} />);
+        const historicalMarkup = screen.getByText("stable");
+
+        setChat({
+            ...initial,
+            activity: "streaming",
+            streaming: "A new live token",
+        });
+        await Promise.resolve();
+
+        expect(screen.getByText("stable")).toBe(historicalMarkup);
     });
 
     it("keeps tool results collapsed until their details are requested", async () => {

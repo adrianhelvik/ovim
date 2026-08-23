@@ -559,6 +559,49 @@ export const chatTranscriptItems = (
     return items;
 };
 
+const sameStrings = (left: string[], right: string[]) =>
+    left.length === right.length &&
+    left.every((value, index) => value === right[index]);
+
+const sameChatMessage = (left: GuiChatMessage, right: GuiChatMessage) =>
+    left.id === right.id &&
+    left.index === right.index &&
+    left.selected === right.selected &&
+    left.role === right.role &&
+    left.content === right.content &&
+    left.model === right.model &&
+    left.toolName === right.toolName &&
+    sameStrings(left.tools, right.tools) &&
+    (left as ChatActivityEntry).live === (right as ChatActivityEntry).live;
+
+export const retainTranscriptItems = (
+    previous: ChatTranscriptItem[],
+    next: ChatTranscriptItem[],
+) => {
+    const priorById = new Map(previous.map((item) => [item.id, item]));
+    return next.map((item) => {
+        const prior = priorById.get(item.id);
+        if (!prior || prior.kind !== item.kind) return item;
+        if (
+            item.kind === "message" &&
+            prior.kind === "message" &&
+            sameChatMessage(prior.message, item.message)
+        )
+            return prior;
+        if (
+            item.kind === "activity" &&
+            prior.kind === "activity" &&
+            prior.live === item.live &&
+            prior.entries.length === item.entries.length &&
+            prior.entries.every((entry, index) =>
+                sameChatMessage(entry, item.entries[index]),
+            )
+        )
+            return prior;
+        return item;
+    });
+};
+
 const lastActivityEntry = (
     entries: ChatActivityEntry[],
     predicate: (entry: ChatActivityEntry) => boolean,
@@ -712,13 +755,18 @@ export const ChatPanel = (props: {
     let transcript!: HTMLDivElement;
     let messageCount = props.chat.messages.length;
     let selectedMessageId: string | undefined;
-    const transcriptItems = createMemo(() =>
-        chatTranscriptItems(
-            props.chat.messages,
-            props.chat.streamingThinking,
-            props.chat.thinkingLive,
-            props.chat.activity !== "idle",
-        ),
+    const transcriptItems = createMemo<ChatTranscriptItem[]>(
+        (previous = []) =>
+            retainTranscriptItems(
+                previous,
+                chatTranscriptItems(
+                    props.chat.messages,
+                    props.chat.streamingThinking,
+                    props.chat.thinkingLive,
+                    props.chat.activity !== "idle",
+                ),
+            ),
+        [],
     );
 
     createEffect(() => {
@@ -745,7 +793,15 @@ export const ChatPanel = (props: {
         const messages = props.chat.messages;
         const latest = messages.at(-1);
         const queued = props.chat.queuedInputs;
-        const revision = `${messages.length}:${latest?.content.length ?? 0}:${props.chat.streaming?.length ?? 0}:${props.chat.streamingThinking?.length ?? 0}:${queued.length}:${queued.at(-1)?.content.length ?? 0}:${props.chat.approval?.length ?? 0}`;
+        const revision = [
+            messages.length,
+            latest?.content.length ?? 0,
+            props.chat.streaming?.length ?? 0,
+            props.chat.streamingThinking?.length ?? 0,
+            queued.length,
+            queued.at(-1)?.content.length ?? 0,
+            props.chat.approval?.length ?? 0,
+        ];
         if (messages.length > messageCount && latest?.role === "user")
             setFollowing(true);
         messageCount = messages.length;
