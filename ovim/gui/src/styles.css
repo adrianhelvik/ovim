@@ -20,7 +20,8 @@ button:not(:disabled) {
 }
 button:focus-visible {
     outline: 2px solid var(--accent);
-    outline-offset: -2px;
+    outline-offset: -3px;
+    box-shadow: inset 0 0 0 1px var(--canvas);
 }
 .icon {
     display: block;
@@ -714,8 +715,9 @@ button:focus-visible {
     border-color: var(--accent);
 }
 .chat-run-trigger:focus-visible {
-    outline: 1px solid var(--accent);
-    outline-offset: 1px;
+    outline: 2px solid var(--accent);
+    outline-offset: -3px;
+    box-shadow: inset 0 0 0 1px var(--canvas);
 }
 .chat-run-popover {
     position: absolute;
@@ -2337,11 +2339,32 @@ kbd {
 }
 
 @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+    }
     .code-segment.cursor,
     .prompt i,
     .walkthrough-spinner,
     .thinking-spinner {
         animation: none;
+    }
+}
+
+@media (forced-colors: active) {
+    button:focus-visible,
+    .chat-run-trigger:focus-visible {
+        outline-color: Highlight;
+        box-shadow: inset 0 0 0 1px Canvas;
+    }
+    .selected,
+    [aria-current="true"] {
+        outline: 1px solid Highlight;
+        outline-offset: -1px;
     }
 }
 

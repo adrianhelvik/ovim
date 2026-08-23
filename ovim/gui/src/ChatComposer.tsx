@@ -158,7 +158,11 @@ export default function ChatComposer(props: {
     });
 
     return (
-        <div class="chat-composer" classList={{ waiting: props.chat.waiting }}>
+        <div
+            class="chat-composer"
+            classList={{ waiting: props.chat.waiting }}
+            aria-busy={props.chat.waiting}
+        >
             <Show when={props.chat.pendingImages.length}>
                 <div
                     class="chat-attachments"

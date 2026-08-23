@@ -89,6 +89,7 @@ export const QueuedChatMessage = (props: {
         <article
             class="chat-message user queued"
             classList={{ selected: props.item.selected }}
+            aria-current={props.item.selected ? "true" : undefined}
             onClick={() => props.onAction?.(props.item.id, "select")}
         >
             <header>
@@ -149,6 +150,11 @@ export const ChatActivityGroup = (props: {
             }}
             data-selected={
                 props.item.entries.some((entry) => entry.selected) || undefined
+            }
+            aria-current={
+                props.item.entries.some((entry) => entry.selected)
+                    ? "true"
+                    : undefined
             }
             onToggle={(event) => setExpanded(event.currentTarget.open)}
         >
@@ -461,7 +467,7 @@ export const ChatSetupCard = (props: {
                 </pre>
             </Show>
             <Show when={props.setup.error}>
-                <small>{props.setup.error}</small>
+                <small role="alert">{props.setup.error}</small>
             </Show>
             <footer>
                 <For each={props.setup.actions}>
@@ -638,6 +644,7 @@ export const ChatMessageView = (props: {
             class={`chat-message ${props.message.role}`}
             classList={{ selected: props.message.selected }}
             data-selected={props.message.selected || undefined}
+            aria-current={props.message.selected ? "true" : undefined}
             onClick={(event) => {
                 if ((event.target as Element).closest("a, button, summary"))
                     return;
@@ -747,7 +754,11 @@ export const ChatPanel = (props: {
     });
 
     return (
-        <section class="side-panel ai-panel" aria-label="AI chat">
+        <section
+            class="side-panel ai-panel"
+            aria-label="AI chat"
+            aria-busy={props.chat.activity !== "idle"}
+        >
             <header class="side-panel-header">
                 <div>
                     <b>AI chat</b>
@@ -764,13 +775,20 @@ export const ChatPanel = (props: {
                         focusInput={props.focusInput}
                     />
                 </div>
-                <span classList={{ working: props.chat.activity !== "idle" }}>
+                <span
+                    classList={{ working: props.chat.activity !== "idle" }}
+                    role="status"
+                    aria-live="polite"
+                >
                     {props.chat.activity.replaceAll("_", " ")}
                 </span>
             </header>
             <Show when={props.chat.agents.length}>
                 <section class="chat-agents" aria-label="Agent navigation">
                     <button
+                        aria-current={
+                            !props.chat.selectedAgentId ? "true" : undefined
+                        }
                         classList={{
                             selected: !props.chat.selectedAgentId,
                             cursor:
@@ -791,6 +809,11 @@ export const ChatPanel = (props: {
                     <For each={props.chat.agents}>
                         {(agent, index) => (
                             <button
+                                aria-current={
+                                    props.chat.selectedAgentId === agent.id
+                                        ? "true"
+                                        : undefined
+                                }
                                 classList={{
                                     selected:
                                         props.chat.selectedAgentId === agent.id,
@@ -812,7 +835,12 @@ export const ChatPanel = (props: {
                                     <b>{agent.taskName}</b>
                                     <small>{agent.model}</small>
                                 </span>
-                                <em>{agent.lifecycle.replaceAll("_", " ")}</em>
+                                <em>
+                                    {props.chat.followedAgentId === agent.id
+                                        ? "following · "
+                                        : ""}
+                                    {agent.lifecycle.replaceAll("_", " ")}
+                                </em>
                             </button>
                         )}
                     </For>
@@ -898,7 +926,7 @@ export const ChatPanel = (props: {
             </div>
             <Show when={props.chat.approval}>
                 {(approval) => (
-                    <div class="approval-card">
+                    <div class="approval-card" role="status" aria-live="polite">
                         <b>Approval required</b>
                         <span>{approval()}</span>
                         <small>Use the keyboard choices shown by Ovim.</small>
@@ -1593,13 +1621,21 @@ function App() {
     const TestPanel = () => (
         <Show when={view().testPanel}>
             {(test) => (
-                <section class="side-panel test-panel" aria-label="Test output">
+                <section
+                    class="side-panel test-panel"
+                    aria-label="Test output"
+                    aria-busy={test().status === "running"}
+                >
                     <header class="side-panel-header">
                         <div>
                             <b>{test().scope} tests</b>
                             <small>{test().directory}</small>
                         </div>
-                        <span class={`run-status ${test().status}`}>
+                        <span
+                            class={`run-status ${test().status}`}
+                            role="status"
+                            aria-live="polite"
+                        >
                             {test().status} ·{" "}
                             {(test().elapsedMs / 1000).toFixed(1)}s
                         </span>
@@ -2495,7 +2531,12 @@ function App() {
                         <Show
                             when={view().prompt}
                             fallback={
-                                <span class="message">
+                                <span
+                                    class="message"
+                                    role={error() ? "alert" : "status"}
+                                    aria-live={error() ? "assertive" : "polite"}
+                                    aria-atomic="true"
+                                >
                                     {error() ||
                                         view().statusMessage ||
                                         view().lspStatus}
@@ -2511,7 +2552,13 @@ function App() {
                             )}
                         </Show>
                         <Show when={!connected()}>
-                            <span class="connecting">connecting…</span>
+                            <span
+                                class="connecting"
+                                role="status"
+                                aria-live="polite"
+                            >
+                                connecting…
+                            </span>
                         </Show>
                     </div>
 
@@ -2524,7 +2571,11 @@ function App() {
                                     {view().gitBranch}
                                 </span>
                             </Show>
-                            <span class="git-counts">
+                            <span
+                                class="git-counts"
+                                role="img"
+                                aria-label={`${view().gitChanges.added} added, ${view().gitChanges.modified} modified, ${view().gitChanges.removed} removed`}
+                            >
                                 <b>+{view().gitChanges.added}</b>
                                 <i>~{view().gitChanges.modified}</i>
                                 <em>−{view().gitChanges.removed}</em>
@@ -2534,6 +2585,8 @@ function App() {
                                     has: view().diagnostics.errors > 0,
                                 }}
                                 class="problems"
+                                role="img"
+                                aria-label={`${view().diagnostics.errors} errors, ${view().diagnostics.warnings} warnings`}
                             >
                                 <Icon name="status-error" tone="error" />
                                 {view().diagnostics.errors}
