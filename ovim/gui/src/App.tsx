@@ -20,6 +20,7 @@ import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
 import { trapDialogFocus } from "./focus";
+import { anchoredOverlayPosition } from "./overlayPosition";
 import type {
     GuiAiChat,
     GuiCodeExplanation,
@@ -1183,7 +1184,7 @@ function App() {
         if (
             target !== inputSink &&
             target?.closest?.(
-                "button, input, select, textarea, [contenteditable='true'], [data-gui-native-control]",
+                "a[href], button, input, select, textarea, [contenteditable='true'], [data-gui-native-control]",
             )
         )
             return;
@@ -1406,6 +1407,31 @@ function App() {
         if (severity === "warning")
             return { name: "status-warning", tone: "warning" };
         return { name: "status-info", tone: "information" };
+    };
+
+    const inlineOverlayStyle = (
+        line: number,
+        displayColumn: number,
+        width: number,
+        height: number,
+    ) => {
+        const position = anchoredOverlayPosition({
+            anchorX:
+                Math.max(0, displayColumn - view().horizontalOffset) *
+                    cellWidth +
+                66,
+            anchorY: Math.max(0, line - view().firstLine + 1) * LINE_HEIGHT + 6,
+            containerWidth: editorBody?.clientWidth || 960,
+            containerHeight: editorBody?.clientHeight || 600,
+            preferredWidth: width,
+            preferredHeight: height,
+        });
+        return {
+            left: `${position.left}px`,
+            top: `${position.top}px`,
+            width: `${position.width}px`,
+            "max-height": `${position.height}px`,
+        };
     };
 
     const PaneView = (props: { pane: GuiPane }) => (
@@ -2336,10 +2362,18 @@ function App() {
                                     class="completion-popover"
                                     role="listbox"
                                     aria-label="Code completions"
-                                    style={{
-                                        top: `${Math.min(58, (view().cursor.line - view().firstLine + 1) * LINE_HEIGHT + 6)}px`,
-                                        left: `${Math.min(70, (view().cursor.displayColumn - view().horizontalOffset) * cellWidth + 76)}px`,
-                                    }}
+                                    style={inlineOverlayStyle(
+                                        view().cursor.line,
+                                        view().cursor.displayColumn,
+                                        430,
+                                        Math.min(
+                                            290,
+                                            Math.max(
+                                                34,
+                                                menu().items.length * 34,
+                                            ),
+                                        ),
+                                    )}
                                 >
                                     <For each={menu().items}>
                                         {(item) => (
@@ -2395,12 +2429,22 @@ function App() {
 
                         <Show when={!view().aiChat ? view().hover : undefined}>
                             {(hover) => (
-                                <div class="hover-popover">
+                                <section
+                                    class="hover-popover"
+                                    aria-label="Documentation"
+                                    style={inlineOverlayStyle(
+                                        hover().line ?? view().cursor.line,
+                                        hover().displayColumn ??
+                                            view().cursor.displayColumn,
+                                        520,
+                                        340,
+                                    )}
+                                >
                                     <div class="popover-label">
                                         Documentation
                                     </div>
-                                    <pre>{hover().content}</pre>
-                                </div>
+                                    <Markdown text={hover().content} />
+                                </section>
                             )}
                         </Show>
 

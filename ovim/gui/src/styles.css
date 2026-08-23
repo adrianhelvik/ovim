@@ -1810,7 +1810,6 @@ button:focus-visible {
     overflow: hidden;
 }
 .completion-popover {
-    width: min(430px, calc(100% - 100px));
     max-height: 290px;
     overflow-y: auto;
 }
@@ -1845,10 +1844,7 @@ button:focus-visible {
     white-space: nowrap;
 }
 .hover-popover {
-    top: 16px;
-    right: 18px;
-    width: min(520px, calc(100% - 100px));
-    max-height: 46%;
+    overflow: auto;
 }
 .popover-label {
     padding: 6px 10px;
@@ -1858,13 +1854,8 @@ button:focus-visible {
     text-transform: uppercase;
     letter-spacing: 0.1em;
 }
-.hover-popover pre {
-    margin: 0;
+.hover-popover > .markdown {
     padding: 12px 14px;
-    max-height: 320px;
-    overflow: auto;
-    white-space: pre-wrap;
-    font: 11.5px/1.6 var(--editor-font);
     user-select: text;
 }
 

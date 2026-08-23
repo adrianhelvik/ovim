@@ -424,7 +424,7 @@ pub struct GuiCompletionItem {
 pub struct GuiHover {
     pub content: String,
     pub line: Option<usize>,
-    pub column: Option<usize>,
+    pub display_column: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1533,13 +1533,7 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
         .unwrap_or_else(|| "plain text".to_string());
     let (errors, warnings, information, hints) = editor.cached_diagnostic_count();
     let (added, modified, removed) = buffer.git_status().change_counts();
-    let cursor_line_text = buffer
-        .line_text(cursor.line())
-        .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
-        .unwrap_or_default();
-    let cursor_char_column = crate::unicode::grapheme_to_char_col(&cursor_line_text, cursor.col());
-    let cursor_display_column =
-        crate::display::char_col_to_display_col(&cursor_line_text, cursor_char_column.0, tab_width);
+    let cursor_display_column = display_column(buffer, cursor.line(), cursor.col().0, tab_width);
     let (layout, panes) = project_panes(
         editor,
         &file_name,
@@ -1619,7 +1613,8 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
             GuiHover {
                 content: content.to_string(),
                 line: position.map(|position| position.0),
-                column: position.map(|position| position.1),
+                display_column: position
+                    .map(|(line, column)| display_column(buffer, line, column, tab_width)),
             }
         }),
         file_tree: file_tree(editor),
@@ -1631,6 +1626,20 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
         theme: theme(editor),
         should_quit: editor.should_quit(),
     }
+}
+
+fn display_column(
+    buffer: &crate::buffer::Buffer,
+    line: usize,
+    grapheme_column: usize,
+    tab_width: usize,
+) -> usize {
+    let text = buffer
+        .line_text(line)
+        .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
+        .unwrap_or_default();
+    let char_column = crate::unicode::grapheme_to_char_col(&text, GraphemeCol(grapheme_column));
+    crate::display::char_col_to_display_col(&text, char_column.0, tab_width)
 }
 
 fn project_lines(
@@ -2712,6 +2721,14 @@ fn indexed_rgb(index: u8) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_columns_use_rendered_tab_and_wide_character_widths() {
+        let editor = Editor::with_content("\t界x\n");
+
+        assert_eq!(display_column(editor.buffer(), 0, 1, 4), 4);
+        assert_eq!(display_column(editor.buffer(), 0, 2, 4), 6);
+    }
 
     #[test]
     fn snapshot_is_bounded_and_preserves_cursor_and_syntax() {

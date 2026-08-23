@@ -280,7 +280,7 @@ export interface GuiSnapshot {
             kind?: string;
         }>;
     };
-    hover?: { content: string; line?: number; column?: number };
+    hover?: { content: string; line?: number; displayColumn?: number };
     fileTree?: {
         root: string;
         selected: number;
