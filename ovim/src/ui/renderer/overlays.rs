@@ -627,7 +627,10 @@ pub fn render_codex_auth_dialog(frame: &mut Frame, editor: &Editor) {
                 ),
                 (detail.as_str(), 's'),
                 (" ", 's'),
-                ("Enter: sign in in browser   Esc: not now", 'a'),
+                (
+                    "Enter: sign in   D: device code (SSH)   B: browser   Esc: not now",
+                    'a',
+                ),
             ],
         ),
         CodexAuthDialogPhase::Refreshing => render_modal_dialog(
@@ -640,6 +643,36 @@ pub fn render_codex_auth_dialog(frame: &mut Frame, editor: &Editor) {
                 ("Esc: cancel", 'a'),
             ],
         ),
+        CodexAuthDialogPhase::PreparingDeviceCode => render_modal_dialog(
+            frame,
+            " Preparing Device Sign-in ",
+            &[
+                ("Requesting a one-time sign-in code…", 't'),
+                ("This works over SSH and on headless machines.", 's'),
+                (" ", 's'),
+                ("Esc: cancel", 'a'),
+            ],
+        ),
+        CodexAuthDialogPhase::WaitingForDeviceCode => {
+            let url = summary.authorize_url.unwrap_or_default();
+            let code = summary.user_code.unwrap_or_default();
+            render_modal_dialog(
+                frame,
+                " Finish Codex Device Sign-in ",
+                &[
+                    ("1. Open this URL in any browser:", 't'),
+                    (url.as_str(), 's'),
+                    ("2. Enter this one-time code (expires in 15 minutes):", 't'),
+                    (code.as_str(), 'a'),
+                    (
+                        "Continue only if you started this login in Ovim. If someone else gave you this code, cancel.",
+                        's',
+                    ),
+                    (" ", 's'),
+                    ("Waiting for approval…   Esc: cancel", 'a'),
+                ],
+            );
+        }
         CodexAuthDialogPhase::WaitingForBrowser => render_modal_dialog(
             frame,
             " Finish Sign-in in Your Browser ",
@@ -657,7 +690,10 @@ pub fn render_codex_auth_dialog(frame: &mut Frame, editor: &Editor) {
                 (detail.as_str(), 't'),
                 ("Your draft and selection are still here.", 's'),
                 (" ", 's'),
-                ("Enter: try again   Esc: cancel", 'a'),
+                (
+                    "Enter: try again   D: device code   B: browser   Esc: cancel",
+                    'a',
+                ),
             ],
         ),
     }
@@ -1608,7 +1644,10 @@ mod tests {
                             's',
                         ),
                         (" ", 's'),
-                        ("Enter: sign in in browser   Esc: not now", 'a'),
+                        (
+                            "Enter: sign in   D: device code (SSH)   B: browser   Esc: not now",
+                            'a',
+                        ),
                     ],
                 )
             })
@@ -1621,7 +1660,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("Enter: sign in in browser"), "{rendered}");
+        assert!(rendered.contains("Enter: sign in"), "{rendered}");
     }
 
     #[test]

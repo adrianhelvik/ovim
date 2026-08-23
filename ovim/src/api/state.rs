@@ -285,11 +285,28 @@ pub struct AiChatSnapshot {
     /// Blocking first-run/recovery setup currently shown by the chat UI.
     #[serde(default)]
     pub pending_setup: Option<String>,
+    /// Active Codex sign-in state. Device-code fields let SSH/headless clients
+    /// complete login without scraping terminal rendering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_auth: Option<CodexAuthSnapshot>,
     /// Interactive concept/code walkthrough currently blocking the agent tool call.
     #[serde(default)]
     pub code_explanation: Option<CodeExplanationSnapshot>,
     pub queued: Vec<QueuedChatSnapshot>,
     pub messages: Vec<AiChatMessageSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexAuthSnapshot {
+    /// `offer`, `refreshing`, `preparing_device_code`,
+    /// `waiting_for_device_code`, `waiting_for_browser`, or `error`.
+    pub phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

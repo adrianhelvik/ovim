@@ -4,9 +4,24 @@ use crate::{KeyCode, KeyEvent};
 
 use super::ai_state::{
     CodexAuthDialog, CodexAuthDialogPhase, CodexAuthDialogSummary, CodexAuthResume,
-    PendingCodexAuth,
+    PendingCodexAuth, PendingCodexAuthReceiver,
 };
 use super::Editor;
+
+enum PendingCodexAuthOutcome {
+    Completion(anyhow::Result<()>),
+    DeviceCode(anyhow::Result<codex_auth::DeviceLoginCode>),
+}
+
+fn is_ssh_session() -> bool {
+    is_ssh_session_with(|name| std::env::var_os(name))
+}
+
+fn is_ssh_session_with(mut value: impl FnMut(&str) -> Option<std::ffi::OsString>) -> bool {
+    ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+        .into_iter()
+        .any(|name| value(name).is_some_and(|value| !value.is_empty()))
+}
 
 impl Editor {
     pub fn codex_auth_dialog_summary(&self) -> Option<CodexAuthDialogSummary> {
@@ -14,6 +29,8 @@ impl Editor {
         Some(CodexAuthDialogSummary {
             phase: dialog.phase.clone(),
             detail: dialog.detail.clone(),
+            authorize_url: dialog.authorize_url.clone(),
+            user_code: dialog.user_code.clone(),
         })
     }
 
@@ -67,6 +84,7 @@ impl Editor {
                     phase: CodexAuthDialogPhase::Offer,
                     detail: Some(detail),
                     authorize_url: None,
+                    user_code: None,
                     resume,
                 });
                 false
@@ -83,9 +101,13 @@ impl Editor {
             phase: CodexAuthDialogPhase::Refreshing,
             detail: None,
             authorize_url: None,
+            user_code: None,
             resume,
         });
-        self.ai_state.pending_codex_auth = Some(PendingCodexAuth { receiver, task });
+        self.ai_state.pending_codex_auth = Some(PendingCodexAuth {
+            receiver: PendingCodexAuthReceiver::Completion(receiver),
+            task,
+        });
     }
 
     fn start_codex_browser_login(&mut self) {
@@ -97,9 +119,10 @@ impl Editor {
                     dialog.phase = CodexAuthDialogPhase::WaitingForBrowser;
                     dialog.detail = None;
                     dialog.authorize_url = Some(attempt.authorize_url);
+                    dialog.user_code = None;
                 }
                 self.ai_state.pending_codex_auth = Some(PendingCodexAuth {
-                    receiver: attempt.receiver,
+                    receiver: PendingCodexAuthReceiver::Completion(attempt.receiver),
                     task: attempt.task,
                 });
             }
@@ -108,8 +131,35 @@ impl Editor {
                     dialog.phase = CodexAuthDialogPhase::Error;
                     dialog.detail = Some(error.to_string());
                     dialog.authorize_url = None;
+                    dialog.user_code = None;
                 }
             }
+        }
+    }
+
+    fn start_codex_device_login(&mut self) {
+        self.ai_state.pending_codex_auth = None;
+        let (tx, receiver) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _ = tx.send(codex_auth::request_device_login().await);
+        });
+        if let Some(dialog) = self.ai_state.codex_auth_dialog.as_mut() {
+            dialog.phase = CodexAuthDialogPhase::PreparingDeviceCode;
+            dialog.detail = None;
+            dialog.authorize_url = None;
+            dialog.user_code = None;
+        }
+        self.ai_state.pending_codex_auth = Some(PendingCodexAuth {
+            receiver: PendingCodexAuthReceiver::DeviceCode(receiver),
+            task,
+        });
+    }
+
+    fn start_preferred_codex_login(&mut self) {
+        if is_ssh_session() {
+            self.start_codex_device_login();
+        } else {
+            self.start_codex_browser_login();
         }
     }
 
@@ -129,6 +179,18 @@ impl Editor {
                 );
             }
             (Some(CodexAuthDialogPhase::Offer | CodexAuthDialogPhase::Error), KeyCode::Enter) => {
+                self.start_preferred_codex_login();
+            }
+            (
+                Some(CodexAuthDialogPhase::Offer | CodexAuthDialogPhase::Error),
+                KeyCode::Char('d' | 'D'),
+            ) => {
+                self.start_codex_device_login();
+            }
+            (
+                Some(CodexAuthDialogPhase::Offer | CodexAuthDialogPhase::Error),
+                KeyCode::Char('b' | 'B'),
+            ) => {
                 self.start_codex_browser_login();
             }
             (Some(CodexAuthDialogPhase::WaitingForBrowser), KeyCode::Char('o' | 'O')) => {
@@ -147,12 +209,25 @@ impl Editor {
             let Some(pending) = self.ai_state.pending_codex_auth.as_mut() else {
                 return false;
             };
-            match pending.receiver.try_recv() {
-                Ok(result) => Some(result),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
-                    anyhow::anyhow!("Codex sign-in task stopped unexpectedly"),
-                )),
+            match &mut pending.receiver {
+                PendingCodexAuthReceiver::Completion(receiver) => match receiver.try_recv() {
+                    Ok(result) => Some(PendingCodexAuthOutcome::Completion(result)),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        Some(PendingCodexAuthOutcome::Completion(Err(anyhow::anyhow!(
+                            "Codex sign-in task stopped unexpectedly"
+                        ))))
+                    }
+                },
+                PendingCodexAuthReceiver::DeviceCode(receiver) => match receiver.try_recv() {
+                    Ok(result) => Some(PendingCodexAuthOutcome::DeviceCode(result)),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        Some(PendingCodexAuthOutcome::DeviceCode(Err(anyhow::anyhow!(
+                            "Codex device sign-in task stopped unexpectedly"
+                        ))))
+                    }
+                },
             }
         };
         let Some(outcome) = outcome else {
@@ -161,7 +236,23 @@ impl Editor {
         self.ai_state.pending_codex_auth = None;
 
         match outcome {
-            Ok(()) => {
+            PendingCodexAuthOutcome::DeviceCode(Ok(code)) => {
+                if let Some(dialog) = self.ai_state.codex_auth_dialog.as_mut() {
+                    dialog.phase = CodexAuthDialogPhase::WaitingForDeviceCode;
+                    dialog.detail = None;
+                    dialog.authorize_url = Some(code.verification_url.clone());
+                    dialog.user_code = Some(code.user_code.clone());
+                }
+                let (tx, receiver) = tokio::sync::oneshot::channel();
+                let task = tokio::spawn(async move {
+                    let _ = tx.send(codex_auth::complete_device_login(code).await);
+                });
+                self.ai_state.pending_codex_auth = Some(PendingCodexAuth {
+                    receiver: PendingCodexAuthReceiver::Completion(receiver),
+                    task,
+                });
+            }
+            PendingCodexAuthOutcome::Completion(Ok(())) => {
                 let resume = self
                     .ai_state
                     .codex_auth_dialog
@@ -171,11 +262,13 @@ impl Editor {
                 self.set_status_message("Signed in to Codex for Ovim");
                 self.resume_after_codex_auth(resume);
             }
-            Err(error) => {
+            PendingCodexAuthOutcome::Completion(Err(error))
+            | PendingCodexAuthOutcome::DeviceCode(Err(error)) => {
                 if let Some(dialog) = self.ai_state.codex_auth_dialog.as_mut() {
                     dialog.phase = CodexAuthDialogPhase::Error;
                     dialog.detail = Some(error.to_string());
                     dialog.authorize_url = None;
+                    dialog.user_code = None;
                 }
             }
         }
@@ -223,6 +316,7 @@ mod tests {
             phase: CodexAuthDialogPhase::Offer,
             detail: None,
             authorize_url: None,
+            user_code: None,
             resume: CodexAuthResume::None,
         });
         editor.handle_codex_auth_key(KeyEvent {
@@ -243,6 +337,7 @@ mod tests {
             phase: CodexAuthDialogPhase::WaitingForBrowser,
             detail: None,
             authorize_url: Some("https://example.test/login".into()),
+            user_code: None,
             resume: CodexAuthResume::None,
         });
         editor.handle_codex_auth_key(KeyEvent {
@@ -307,5 +402,33 @@ mod tests {
 
         assert_eq!(editor.mode(), Mode::Normal);
         assert!(editor.has_codex_auth_dialog());
+    }
+
+    #[test]
+    fn ssh_detection_accepts_any_nonempty_ssh_marker() {
+        let detected =
+            is_ssh_session_with(|name| (name == "SSH_CONNECTION").then(|| "client server".into()));
+        assert!(detected);
+        assert!(!is_ssh_session_with(|_| None));
+        assert!(!is_ssh_session_with(|_| Some("".into())));
+    }
+
+    #[test]
+    fn dialog_summary_exposes_device_code_without_internal_polling_state() {
+        let mut editor = Editor::default();
+        editor.ai_state.codex_auth_dialog = Some(CodexAuthDialog {
+            phase: CodexAuthDialogPhase::WaitingForDeviceCode,
+            detail: None,
+            authorize_url: Some("https://auth.example/device".into()),
+            user_code: Some("ABCD-EFGH".into()),
+            resume: CodexAuthResume::None,
+        });
+
+        let summary = editor.codex_auth_dialog_summary().unwrap();
+        assert_eq!(
+            summary.authorize_url.as_deref(),
+            Some("https://auth.example/device")
+        );
+        assert_eq!(summary.user_code.as_deref(), Some("ABCD-EFGH"));
     }
 }

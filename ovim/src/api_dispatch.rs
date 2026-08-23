@@ -1072,8 +1072,8 @@ pub(crate) fn create_snapshot_with_dimensions(
 
 fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot> {
     use ovim::api::{
-        AiChatMessageSnapshot, AiChatSnapshot, CodeExplanationSnapshot, QueuedChatSnapshot,
-        ToolCallSnapshot,
+        AiChatMessageSnapshot, AiChatSnapshot, CodeExplanationSnapshot, CodexAuthSnapshot,
+        QueuedChatSnapshot, ToolCallSnapshot,
     };
     use ovim_core::ai::chat_types::{ChatFocus, ChatRole};
     use ovim_core::editor::QueuedChatInputKind;
@@ -1082,6 +1082,24 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
     let pending_approval = editor
         .ai_chat_pending_tool_approval_summary()
         .or_else(|| editor.ai_chat_pending_no_repo_folder_approval_summary());
+    let codex_auth = editor.codex_auth_dialog_summary().map(|summary| {
+        use ovim_core::editor::CodexAuthDialogPhase;
+
+        CodexAuthSnapshot {
+            phase: match summary.phase {
+                CodexAuthDialogPhase::Offer => "offer",
+                CodexAuthDialogPhase::Refreshing => "refreshing",
+                CodexAuthDialogPhase::PreparingDeviceCode => "preparing_device_code",
+                CodexAuthDialogPhase::WaitingForDeviceCode => "waiting_for_device_code",
+                CodexAuthDialogPhase::WaitingForBrowser => "waiting_for_browser",
+                CodexAuthDialogPhase::Error => "error",
+            }
+            .to_string(),
+            detail: summary.detail,
+            verification_url: summary.authorize_url,
+            user_code: summary.user_code,
+        }
+    });
     let queued = editor
         .ai_chat_queued_inputs()
         .map(|item| QueuedChatSnapshot {
@@ -1168,6 +1186,7 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
                     editor.ai_chat_exa_dashboard_url()
                 )
             }),
+        codex_auth,
         code_explanation: editor
             .ai_code_explanation_view()
             .map(|view| {
