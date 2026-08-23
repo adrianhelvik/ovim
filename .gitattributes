@@ -1,3 +1,7 @@
 * text=auto eol=lf
 
 *.gif binary
+*.png binary
+
+ovim/gui/dist/** linguist-generated=true
+gui-design-guide/icons/dist/** linguist-generated=true
