@@ -1,0 +1,510 @@
+{
+  "version": 1,
+  "count": 26,
+  "icons": [
+    {
+      "name": "agent",
+      "meaning": "Show an AI agent, delegated task, or agent conversation.",
+      "tags": [
+        "ai",
+        "agent",
+        "subagent",
+        "network",
+        "task"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "ai-spark",
+      "meaning": "Open Ovim AI chat, agent activity, or an AI-assisted action.",
+      "tags": [
+        "navigation",
+        "ai",
+        "agent",
+        "spark",
+        "assistant"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "attach",
+      "meaning": "Attach a file, image, or code reference to a message.",
+      "tags": [
+        "action",
+        "attach",
+        "paperclip",
+        "file",
+        "image"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "chevron-down",
+      "meaning": "Collapse an expanded row or reveal a disclosure region.",
+      "tags": [
+        "navigation",
+        "chevron",
+        "down",
+        "collapse",
+        "disclosure"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "chevron-right",
+      "meaning": "Expand a collapsed row or move forward through hierarchy.",
+      "tags": [
+        "navigation",
+        "chevron",
+        "right",
+        "expand",
+        "breadcrumb"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "close",
+      "meaning": "Close or dismiss the current window, panel, or transient surface.",
+      "tags": [
+        "window",
+        "close",
+        "dismiss",
+        "chrome"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "command",
+      "meaning": "Open the command line or run an editor command.",
+      "tags": [
+        "command",
+        "ex",
+        "prompt",
+        "terminal",
+        "action"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "debug",
+      "meaning": "Open or control the debugger and paused execution state.",
+      "tags": [
+        "panel",
+        "debug",
+        "bug",
+        "breakpoint"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "explorer",
+      "meaning": "Open or focus the project explorer and file tree.",
+      "tags": [
+        "navigation",
+        "explorer",
+        "files",
+        "tree",
+        "panel"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "file",
+      "meaning": "Represent a file or file result independent of language.",
+      "tags": [
+        "tree",
+        "file",
+        "document",
+        "result"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "folder",
+      "meaning": "Represent a folder or directory in the explorer.",
+      "tags": [
+        "tree",
+        "folder",
+        "directory",
+        "project"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "maximize",
+      "meaning": "Maximize the application window.",
+      "tags": [
+        "window",
+        "maximize",
+        "chrome"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "minimize",
+      "meaning": "Minimize the application window.",
+      "tags": [
+        "window",
+        "minimize",
+        "chrome"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "problems",
+      "meaning": "Open diagnostics, warnings, and problems for the workspace.",
+      "tags": [
+        "panel",
+        "problems",
+        "warning",
+        "diagnostics",
+        "alert"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "restore",
+      "meaning": "Restore a maximized application window to its previous size.",
+      "tags": [
+        "window",
+        "restore",
+        "chrome"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "search",
+      "meaning": "Search files, symbols, commands, or project content.",
+      "tags": [
+        "navigation",
+        "search",
+        "find",
+        "magnifier"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "send",
+      "meaning": "Send a message, submit input, or dispatch an action.",
+      "tags": [
+        "action",
+        "send",
+        "submit",
+        "dispatch",
+        "arrow"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "settings",
+      "meaning": "Open preferences or tune a configurable editor behavior.",
+      "tags": [
+        "navigation",
+        "settings",
+        "preferences",
+        "tune",
+        "sliders"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "source-control",
+      "meaning": "Open source control and show repository branches and changes.",
+      "tags": [
+        "navigation",
+        "git",
+        "branch",
+        "source-control",
+        "repository"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "status-error",
+      "meaning": "Mark an error, failed task, or blocking diagnostic.",
+      "tags": [
+        "status",
+        "error",
+        "failed",
+        "diagnostic"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "status-info",
+      "meaning": "Mark informational diagnostics, help, or neutral detail.",
+      "tags": [
+        "status",
+        "information",
+        "help",
+        "diagnostic"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "status-success",
+      "meaning": "Mark success, passed verification, or healthy state.",
+      "tags": [
+        "status",
+        "success",
+        "passed",
+        "healthy",
+        "check"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "status-warning",
+      "meaning": "Mark a warning, caution, or action that needs attention.",
+      "tags": [
+        "status",
+        "warning",
+        "caution",
+        "diagnostic"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "stop",
+      "meaning": "Stop generation, cancel a running task, or terminate execution.",
+      "tags": [
+        "action",
+        "stop",
+        "cancel",
+        "terminate"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "terminal",
+      "meaning": "Open or focus an integrated terminal surface.",
+      "tags": [
+        "panel",
+        "terminal",
+        "shell",
+        "console"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "test",
+      "meaning": "Run or inspect tests and their latest result.",
+      "tags": [
+        "panel",
+        "test",
+        "flask",
+        "verify",
+        "runner"
+      ],
+      "canvas": {
+        "w": 24,
+        "h": 24
+      },
+      "sizes": [
+        16,
+        20,
+        24
+      ]
+    }
+  ]
+}

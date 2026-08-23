@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+    <path id="link-top" d="M12 8 L12 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="link-left" d="M8 13 L4 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="link-right" d="M16 13 L20 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="core" d="M8 10 A2 2 0 0 1 10 8 L14 8 A2 2 0 0 1 16 10 L16 14 A2 2 0 0 1 14 16 L10 16 A2 2 0 0 1 8 14Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="node-top" d="M12 2 C13.1046 2, 14 2.89543, 14 4 C14 5.10457, 13.1046 6, 12 6 C10.8954 6, 10 5.10457, 10 4 C10 2.89543, 10.8954 2, 12 2Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="node-left" d="M4 16 C5.10457 16, 6 16.8954, 6 18 C6 19.1046, 5.10457 20, 4 20 C2.89543 20, 2 19.1046, 2 18 C2 16.8954, 2.89543 16, 4 16Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="node-right" d="M20 16 C21.1046 16, 22 16.8954, 22 18 C22 19.1046, 21.1046 20, 20 20 C18.8954 20, 18 19.1046, 18 18 C18 16.8954, 18.8954 16, 20 16Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+</svg>

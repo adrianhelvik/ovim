@@ -1,0 +1,28 @@
+# @meaning Show an AI agent, delegated task, or agent conversation.
+# @tags ai, agent, subagent, network, task
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape link template=line
+
+shape core template=rectangle
+  round-corners 2
+
+shape node template=ellipse
+  fill currentColor
+  stroke none
+
+place link-top shape=link from=12,8 to=12,4
+place link-left shape=link from=8,13 to=4,17
+place link-right shape=link from=16,13 to=20,17
+place core shape=core at=8,8 size=8x8
+place node-top shape=node at=10,2 size=4x4
+place node-left shape=node at=2,16 size=4x4
+place node-right shape=node at=18,16 size=4x4

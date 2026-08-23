@@ -1,0 +1,27 @@
+# @meaning Mark a warning, caution, or action that needs attention.
+# @tags status, warning, caution, diagnostic
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape triangle template=path
+  addpoint top at=12,3
+  addpoint right at=22,20
+  addpoint left at=2,20
+  close
+
+shape stem template=line
+
+shape dot template=rectangle
+  fill currentColor
+  stroke none
+
+place triangle shape=triangle at=0,0
+place stem shape=stem from=12,8 to=12,14
+place dot shape=dot at=11,17 size=2x2

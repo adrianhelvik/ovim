@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+    <path id="lens" d="M9.5 3 C13.0899 3, 16 5.91015, 16 9.5 C16 13.0899, 13.0899 16, 9.5 16 C5.91015 16, 3 13.0899, 3 9.5 C3 5.91015, 5.91015 3, 9.5 3Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="handle" d="M14 14 L21 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="glint" d="M7 6 L9 6 L9 8 L7 8Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+</svg>

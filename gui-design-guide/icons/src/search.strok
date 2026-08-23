@@ -1,0 +1,23 @@
+# @meaning Search files, symbols, commands, or project content.
+# @tags navigation, search, find, magnifier
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape lens template=ellipse
+
+shape handle template=line
+
+shape glint template=rectangle
+  fill currentColor
+  stroke none
+
+place lens shape=lens at=3,3 size=13x13
+place handle shape=handle from=14,14 to=21,21
+place glint shape=glint at=7,6 size=2x2

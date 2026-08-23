@@ -1,0 +1,34 @@
+# @meaning Run or inspect tests and their latest result.
+# @tags panel, test, flask, verify, runner
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape flask template=path
+  addpoint lip-l at=8,3
+  addpoint lip-r at=16,3
+  addpoint neck-r at=14,9
+  addpoint body-r at=20,18
+  addpoint base-r at=18,21
+  addpoint base-l at=6,21
+  addpoint body-l at=4,18
+  addpoint neck-l at=10,9
+  close
+
+shape liquid template=line
+
+shape check template=path
+  addpoint start at=8,16
+  addpoint elbow at=11,18
+  addpoint end at=16,13
+  open
+
+place flask shape=flask at=0,0
+place liquid shape=liquid from=6,13 to=18,13
+place check shape=check at=0,0

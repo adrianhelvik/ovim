@@ -1,0 +1,32 @@
+# @meaning Represent a file or file result independent of language.
+# @tags tree, file, document, result
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape page template=path
+  addpoint top-left at=5,2
+  addpoint fold-start at=15,2
+  addpoint fold-end at=20,7
+  addpoint bottom-right at=20,22
+  addpoint bottom-left at=5,22
+  close
+
+shape fold template=path
+  addpoint start at=15,2
+  addpoint corner at=15,7
+  addpoint end at=20,7
+  open
+
+shape line template=line
+
+place page shape=page at=0,0
+place fold shape=fold at=0,0
+place line-a shape=line from=8,12 to=17,12
+place line-b shape=line from=8,16 to=15,16

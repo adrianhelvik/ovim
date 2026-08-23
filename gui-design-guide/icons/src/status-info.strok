@@ -1,0 +1,23 @@
+# @meaning Mark informational diagnostics, help, or neutral detail.
+# @tags status, information, help, diagnostic
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape ring template=ellipse
+
+shape stem template=line
+
+shape dot template=rectangle
+  fill currentColor
+  stroke none
+
+place ring shape=ring at=3,3 size=18x18
+place stem shape=stem from=12,10 to=12,17
+place dot shape=dot at=11,6 size=2x2

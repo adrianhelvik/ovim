@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+    <path id="frame" d="M3 5 C3 4.44772, 3.44772 4, 4 4 L20 4 C20.5523 4, 21 4.44772, 21 5 L21 19 C21 19.5523, 20.5523 20, 20 20 L4 20 C3.44772 20, 3 19.5523, 3 19Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="marker-a" d="M6 7.5 A0.5 0.5 0 0 1 6.5 7 L8.5 7 A0.5 0.5 0 0 1 9 7.5 L9 9.5 A0.5 0.5 0 0 1 8.5 10 L6.5 10 A0.5 0.5 0 0 1 6 9.5Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" transform="matrix(0.7071067811865476, 0.7071067811865475, -0.7071067811865475, 0.7071067811865476, 8.207106781186546, -2.8137084989847594)" />
+    <path id="marker-b" d="M6 14.5 A0.5 0.5 0 0 1 6.5 14 L8.5 14 A0.5 0.5 0 0 1 9 14.5 L9 16.5 A0.5 0.5 0 0 1 8.5 17 L6.5 17 A0.5 0.5 0 0 1 6 16.5Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" transform="matrix(0.7071067811865476, 0.7071067811865475, -0.7071067811865475, 0.7071067811865476, 13.15685424949238, -0.763455967290593)" />
+    <path id="row-a" d="M11 8.5 L18 8.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="row-b" d="M11 15.5 L18 15.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+</svg>

@@ -1,0 +1,19 @@
+# @meaning Mark an error, failed task, or blocking diagnostic.
+# @tags status, error, failed, diagnostic
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape ring template=ellipse
+
+shape slash template=line
+
+place ring shape=ring at=3,3 size=18x18
+place slash-a shape=slash from=8,8 to=16,16
+place slash-b shape=slash from=16,8 to=8,16

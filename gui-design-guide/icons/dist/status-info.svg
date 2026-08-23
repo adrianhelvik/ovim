@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+    <path id="ring" d="M12 3 C16.9706 3, 21 7.02944, 21 12 C21 16.9706, 16.9706 21, 12 21 C7.02944 21, 3 16.9706, 3 12 C3 7.02944, 7.02944 3, 12 3Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="stem" d="M12 10 L12 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="dot" d="M11 6 L13 6 L13 8 L11 8Z" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+</svg>

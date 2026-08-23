@@ -1,0 +1,24 @@
+# @meaning Open preferences or tune a configurable editor behavior.
+# @tags navigation, settings, preferences, tune, sliders
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape rail template=line
+
+shape knob template=rectangle
+  fill currentColor
+  stroke none
+  round-corners 1
+
+repeat i 3
+  place rail shape=rail at=3,6+$i*6 size=18x0
+place knob-a shape=knob at=7,3 size=4x6
+place knob-b shape=knob at=14,9 size=4x6
+place knob-c shape=knob at=5,15 size=4x6

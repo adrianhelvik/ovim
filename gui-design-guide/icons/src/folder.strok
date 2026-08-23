@@ -1,0 +1,25 @@
+# @meaning Represent a folder or directory in the explorer.
+# @tags tree, folder, directory, project
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape folder template=path
+  addpoint top-left at=2,6
+  addpoint tab-right at=9,6
+  addpoint tab-end at=11,9
+  addpoint top-right at=22,9
+  addpoint bottom-right at=20,21
+  addpoint bottom-left at=4,21
+  close
+
+shape seam template=line
+
+place folder shape=folder at=0,0
+place seam shape=seam from=3,10 to=21,10

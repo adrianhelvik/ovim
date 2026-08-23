@@ -1,0 +1,16 @@
+# @meaning Close or dismiss the current window, panel, or transient surface.
+# @tags window, close, dismiss, chrome
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape slash template=line
+
+place slash-a shape=slash from=7,7 to=17,17
+place slash-b shape=slash from=17,7 to=7,17

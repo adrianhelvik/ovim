@@ -1,0 +1,24 @@
+# @meaning Restore a maximized application window to its previous size.
+# @tags window, restore, chrome
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape frame template=rectangle
+
+shape hidden-edge template=path
+  addpoint left at=9,6
+  addpoint top-left at=9,4
+  addpoint top-right at=19,4
+  addpoint bottom-right at=19,14
+  addpoint bottom at=17,14
+  open
+
+place hidden-edge shape=hidden-edge at=0,0
+place foreground shape=frame at=5,8 size=11x11

@@ -1,0 +1,24 @@
+# @meaning Attach a file, image, or code reference to a message.
+# @tags action, attach, paperclip, file, image
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape clip template=path
+  addpoint outer-open at=17.68,8.49
+  addpoint outer-end at=8.49,17.68
+  addpoint outer-turn at=0,9.19 mode=arc rx=6 ry=6 sweep=1 large=0
+  addpoint outer-top at=9.19,0
+  addpoint inner-turn at=14.85,5.66 mode=arc rx=4 ry=4 sweep=1 large=0
+  addpoint inner-end at=5.65,14.85
+  addpoint inner-cap at=2.82,12.02 mode=arc rx=2 ry=2 sweep=1 large=0
+  addpoint inner-open at=11.31,3.54
+  open
+
+place clip shape=clip at=3.76,2.56

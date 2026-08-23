@@ -1,0 +1,34 @@
+# @meaning Open source control and show repository branches and changes.
+# @tags navigation, git, branch, source-control, repository
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape rail template=path
+  addpoint top at=6,5
+  addpoint lower at=6,14
+  addpoint fork at=15,14
+  addpoint end at=15,18
+  open
+
+shape spur template=path
+  addpoint start at=6,9
+  addpoint turn at=15,9
+  addpoint top at=15,6
+  open
+
+shape node template=ellipse
+  fill currentColor
+  stroke none
+
+place rail shape=rail at=0,0
+place spur shape=spur at=0,0
+place node-a shape=node at=4,2 size=4x4
+place node-b shape=node at=13,2 size=4x4
+place node-c shape=node at=13,18 size=4x4

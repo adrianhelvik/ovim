@@ -1,0 +1,15 @@
+# @meaning Minimize the application window.
+# @tags window, minimize, chrome
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape rail template=line
+
+place rail shape=rail from=6,15 to=18,15

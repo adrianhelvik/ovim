@@ -1,0 +1,26 @@
+# @meaning Open the command line or run an editor command.
+# @tags command, ex, prompt, terminal, action
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape frame template=rectangle
+  round-corners 1
+
+shape prompt template=path
+  addpoint top at=7,8
+  addpoint point at=11,12
+  addpoint bottom at=7,16
+  open
+
+shape caret template=line
+
+place frame shape=frame at=3,4 size=18x16
+place prompt shape=prompt at=0,0
+place caret shape=caret from=13,16 to=18,16

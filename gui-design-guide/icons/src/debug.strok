@@ -1,0 +1,30 @@
+# @meaning Open or control the debugger and paused execution state.
+# @tags panel, debug, bug, breakpoint
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape body template=rectangle
+  round-corners 2
+
+shape rail template=line
+
+shape eye template=rectangle
+  fill currentColor
+  stroke none
+
+place body shape=body at=7,6 size=10x13
+place antenna-l shape=rail from=9,6 to=7,3
+place antenna-r shape=rail from=15,6 to=17,3
+place leg-l1 shape=rail from=7,10 to=3,8
+place leg-r1 shape=rail from=17,10 to=21,8
+place leg-l2 shape=rail from=7,15 to=3,17
+place leg-r2 shape=rail from=17,15 to=21,17
+place eye-l shape=eye at=9,9 size=2x2
+place eye-r shape=eye at=13,9 size=2x2

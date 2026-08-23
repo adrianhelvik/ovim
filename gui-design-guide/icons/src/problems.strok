@@ -1,0 +1,27 @@
+# @meaning Open diagnostics, warnings, and problems for the workspace.
+# @tags panel, problems, warning, diagnostics, alert
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape frame template=rectangle
+  round-corners 1
+
+shape row template=line
+
+shape marker template=rectangle
+  fill currentColor
+  stroke none
+  round-corners 0.5
+
+place frame shape=frame at=3,4 size=18x16
+place marker-a shape=marker at=6,7 size=3x3 rotation=45deg
+place marker-b shape=marker at=6,14 size=3x3 rotation=45deg
+place row-a shape=row from=11,8.5 to=18,8.5
+place row-b shape=row from=11,15.5 to=18,15.5

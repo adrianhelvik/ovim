@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+    <path id="frame" d="M3 5 C3 4.44772, 3.44772 4, 4 4 L20 4 C20.5523 4, 21 4.44772, 21 5 L21 19 C21 19.5523, 20.5523 20, 20 20 L4 20 C3.44772 20, 3 19.5523, 3 19Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="prompt" d="M7 8 L11 12 L7 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+    <path id="caret" d="M13 16 L18 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" />
+</svg>

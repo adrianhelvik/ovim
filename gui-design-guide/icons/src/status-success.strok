@@ -1,0 +1,22 @@
+# @meaning Mark success, passed verification, or healthy state.
+# @tags status, success, passed, healthy, check
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape ring template=ellipse
+
+shape check template=path
+  addpoint start at=7,12
+  addpoint elbow at=11,16
+  addpoint end at=18,8
+  open
+
+place ring shape=ring at=3,3 size=18x18
+place check shape=check at=0,0

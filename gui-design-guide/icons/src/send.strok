@@ -1,0 +1,22 @@
+# @meaning Send a message, submit input, or dispatch an action.
+# @tags action, send, submit, dispatch, arrow
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape plane template=path
+  addpoint tip at=22,3
+  addpoint bottom at=15,21
+  addpoint fold at=11,14
+  addpoint tail at=3,10
+  close
+  fill currentColor
+  stroke none
+
+place plane shape=plane at=0,0

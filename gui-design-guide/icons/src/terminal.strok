@@ -1,0 +1,29 @@
+# @meaning Open or focus an integrated terminal surface.
+# @tags panel, terminal, shell, console
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape frame template=rectangle
+  round-corners 1
+
+shape header template=line
+
+shape prompt template=path
+  addpoint top at=7,9
+  addpoint point at=10,12
+  addpoint bottom at=7,15
+  open
+
+shape caret template=line
+
+place frame shape=frame at=3,3 size=18x18
+place header shape=header from=3,7 to=21,7
+place prompt shape=prompt at=0,0
+place caret shape=caret from=13,15 to=17,15

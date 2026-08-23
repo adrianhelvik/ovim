@@ -1,0 +1,19 @@
+# @meaning Collapse an expanded row or reveal a disclosure region.
+# @tags navigation, chevron, down, collapse, disclosure
+documentsize 24x24
+
+defaults
+  fill none
+  stroke currentColor
+  stroke-width 2
+  stroke-linecap butt
+  stroke-linejoin miter
+  stroke-miterlimit 3
+
+shape chevron template=path
+  addpoint left at=4,8
+  addpoint point at=12,16
+  addpoint right at=20,8
+  open
+
+place chevron shape=chevron at=0,0
