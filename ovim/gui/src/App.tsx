@@ -352,6 +352,7 @@ export const CodeWalkthrough = (props: {
                         <b id="walkthrough-title">{title()}</b>
                     </div>
                     <button
+                        type="button"
                         aria-label="Dismiss walkthrough"
                         onClick={() => dispatch("Escape")}
                     >
@@ -367,6 +368,7 @@ export const CodeWalkthrough = (props: {
                 <footer>
                     <div class="walkthrough-pages">
                         <button
+                            type="button"
                             disabled={
                                 props.walkthrough.current === 1 || composing()
                             }
@@ -375,6 +377,7 @@ export const CodeWalkthrough = (props: {
                             Previous
                         </button>
                         <button
+                            type="button"
                             disabled={
                                 props.walkthrough.current ===
                                     props.walkthrough.total || composing()
@@ -387,6 +390,7 @@ export const CodeWalkthrough = (props: {
                     </div>
                     <div class="walkthrough-actions">
                         <button
+                            type="button"
                             disabled={answering()}
                             onClick={() =>
                                 dispatch(composing() ? "Escape" : " ")
@@ -395,6 +399,7 @@ export const CodeWalkthrough = (props: {
                             {composing() ? "Cancel question" : "Ask a question"}
                         </button>
                         <button
+                            type="button"
                             class="primary"
                             disabled={answering()}
                             onClick={() => dispatch("Enter")}
@@ -479,7 +484,10 @@ export const ChatSetupCard = (props: {
             <footer>
                 <For each={props.setup.actions}>
                     {(action) => (
-                        <button onClick={() => props.onKey?.(action.key)}>
+                        <button
+                            type="button"
+                            onClick={() => props.onKey?.(action.key)}
+                        >
                             {action.label}
                         </button>
                     )}
@@ -853,6 +861,7 @@ export const ChatPanel = (props: {
             <Show when={props.chat.agents.length}>
                 <section class="chat-agents" aria-label="Agent navigation">
                     <button
+                        type="button"
                         aria-current={
                             !props.chat.selectedAgentId ? "true" : undefined
                         }
@@ -876,6 +885,7 @@ export const ChatPanel = (props: {
                     <For each={props.chat.agents}>
                         {(agent, index) => (
                             <button
+                                type="button"
                                 aria-current={
                                     props.chat.selectedAgentId === agent.id
                                         ? "true"
@@ -988,6 +998,7 @@ export const ChatPanel = (props: {
                 </div>
                 <Show when={!following()}>
                     <button
+                        type="button"
                         class="chat-jump"
                         onClick={() => {
                             jumpToLatest();
@@ -1667,16 +1678,27 @@ function App() {
                     )}
                 </For>
             </div>
-            <div class="overview-ruler">
+            <div class="overview-ruler" aria-hidden="true">
                 <For each={props.pane.lines}>
                     {(line) => (
-                        <span
-                            classList={{
-                                current: line.current && props.pane.focused,
-                                diagnostic: Boolean(line.diagnostic),
-                                changed: Boolean(line.git),
-                            }}
-                        />
+                        <Show
+                            when={
+                                (line.current && props.pane.focused) ||
+                                line.diagnostic ||
+                                line.git
+                            }
+                        >
+                            <span
+                                classList={{
+                                    current: line.current && props.pane.focused,
+                                    diagnostic: Boolean(line.diagnostic),
+                                    changed: Boolean(line.git),
+                                }}
+                                style={{
+                                    top: `${props.pane.totalLines <= 1 ? 0 : ((line.number - 1) / (props.pane.totalLines - 1)) * 100}%`,
+                                }}
+                            />
+                        </Show>
                     )}
                 </For>
             </div>
@@ -3099,6 +3121,8 @@ function App() {
                                 title={
                                     "Line " +
                                     (view().cursor.line + 1) +
+                                    " of " +
+                                    view().totalLines +
                                     ", column " +
                                     (view().cursor.column + 1)
                                 }
@@ -3145,7 +3169,10 @@ function Dashboard(props: {
             <div class="dashboard-shortcuts">
                 <For each={shortcuts}>
                     {([keys, label]) => (
-                        <button onClick={() => void props.send(keys)}>
+                        <button
+                            type="button"
+                            onClick={() => void props.send(keys)}
+                        >
                             <kbd>{keys.replaceAll(" ", "␠")}</kbd>
                             <span>{label}</span>
                         </button>

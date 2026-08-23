@@ -533,14 +533,14 @@ button:focus-visible {
     position: absolute;
     inset: 8px 3px 8px auto;
     width: 3px;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
     opacity: 0.85;
 }
 .overview-ruler span {
-    flex: 1;
-    min-height: 1px;
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 2px;
+    transform: translateY(-50%);
     border-radius: var(--radius-1);
 }
 .overview-ruler .current {

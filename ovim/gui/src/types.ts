@@ -250,7 +250,6 @@ export interface GuiSnapshot {
         active: boolean;
         modified: boolean;
     }>;
-    activeTab: number;
     gitBranch?: string;
     gitChanges: { added: number; modified: number; removed: number };
     diagnostics: {

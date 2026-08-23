@@ -273,7 +273,6 @@ pub struct GuiSnapshot {
     pub layout: GuiLayoutNode,
     pub panes: Vec<GuiPane>,
     pub tabs: Vec<GuiTab>,
-    pub active_tab: usize,
     pub git_branch: Option<String>,
     pub git_changes: GuiGitChanges,
     pub diagnostics: GuiDiagnostics,
@@ -1600,7 +1599,6 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
                 }
             })
             .collect(),
-        active_tab: editor.current_tab_index(),
         git_branch: editor.git_branch().map(str::to_string),
         git_changes: GuiGitChanges {
             added,
