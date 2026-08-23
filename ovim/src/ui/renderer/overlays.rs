@@ -1751,6 +1751,7 @@ mod tests {
     async fn walkthrough_space_opens_visible_step_question_composer() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         let file = dir.path().join("demo.rs");
         std::fs::write(&file, "fn demo() {}\n").unwrap();
         let mut editor = Editor::default();
@@ -1838,6 +1839,7 @@ mod tests {
     async fn concept_page_uses_a_large_centered_panel() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         let file = dir.path().join("demo.rs");
         std::fs::write(&file, "fn demo() {}\n").unwrap();
         let mut editor = Editor::default();
