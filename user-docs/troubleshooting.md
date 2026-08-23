@@ -44,6 +44,14 @@ Ovim signs in to ChatGPT independently from Codex CLI. Open AI chat with
 browser flow. A visual selection attached with `Space Space` uses the same chat
 and sign-in flow.
 
+In an SSH session, `Enter` uses device-code sign-in instead: open the URL shown
+by Ovim on your local computer and enter the one-time code. The remote machine
+does not need a browser and you do not need to forward Ovim's localhost OAuth
+port. Press `D` to select this flow explicitly, or `B` to use the localhost
+browser callback when you have already arranged access to it. If an
+organization disables device-code authorization, Ovim reports that policy and
+keeps browser sign-in available.
+
 Ovim refreshes expiring credentials automatically and retries one inference
 request after an unexpected `401 Unauthorized`. If the refresh token is
 rejected, the dialog asks you to sign in again while preserving the current

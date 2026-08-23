@@ -73,12 +73,23 @@ ovim send -s dev "  "
 ovim send -s dev "inspect the project<Enter>"
 ```
 
-For unattended use, complete Ovim's contextual Codex sign-in once in the TUI
-before starting the headless session. The credential is stored in the same
-platform config directory and refreshes automatically. If credentials need
-renewal during a headless session, the auth dialog blocks inference without
-consuming the draft; attach a TUI or complete sign-in in a regular Ovim session
-before retrying.
+For unattended use, complete Ovim's contextual Codex sign-in once before
+starting the session. The credential is stored in the same platform config
+directory and refreshes automatically. If credentials need renewal during a
+headless session, the auth dialog blocks inference without consuming the
+draft. Device-code sign-in can be completed entirely through the headless API:
+
+```bash
+ovim send -s dev D
+ovim snapshot -s dev --format json
+```
+
+Wait for `ai_chat.codex_auth.phase` to become `waiting_for_device_code`, then
+open its `verification_url` in any browser and enter its `user_code`. Ovim
+continues automatically after approval. Device-code login must be enabled in
+your ChatGPT security settings or by your workspace administrator. You can
+send `B` instead to use the localhost browser callback, or `<Esc>` to cancel
+without losing the draft.
 
 If auto mode pauses an Ovim tool for approval, the agent round remains blocked
 until the decision arrives. Inspect it with `ovim snapshot -s dev`, then

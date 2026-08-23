@@ -47,6 +47,8 @@ pub struct AiSelectionSnapshot {
 pub enum CodexAuthDialogPhase {
     Offer,
     Refreshing,
+    PreparingDeviceCode,
+    WaitingForDeviceCode,
     WaitingForBrowser,
     Error,
 }
@@ -55,6 +57,8 @@ pub enum CodexAuthDialogPhase {
 pub struct CodexAuthDialogSummary {
     pub phase: CodexAuthDialogPhase,
     pub detail: Option<String>,
+    pub authorize_url: Option<String>,
+    pub user_code: Option<String>,
 }
 
 #[derive(Debug)]
@@ -67,11 +71,19 @@ pub(crate) struct CodexAuthDialog {
     pub phase: CodexAuthDialogPhase,
     pub detail: Option<String>,
     pub authorize_url: Option<String>,
+    pub user_code: Option<String>,
     pub resume: CodexAuthResume,
 }
 
+pub(crate) enum PendingCodexAuthReceiver {
+    Completion(tokio::sync::oneshot::Receiver<anyhow::Result<()>>),
+    DeviceCode(
+        tokio::sync::oneshot::Receiver<anyhow::Result<crate::ai::codex_auth::DeviceLoginCode>>,
+    ),
+}
+
 pub(crate) struct PendingCodexAuth {
-    pub receiver: tokio::sync::oneshot::Receiver<anyhow::Result<()>>,
+    pub receiver: PendingCodexAuthReceiver,
     pub task: tokio::task::JoinHandle<()>,
 }
 

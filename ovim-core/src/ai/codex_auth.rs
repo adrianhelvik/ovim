@@ -21,11 +21,37 @@ const AUTH_SCHEMA_VERSION: u8 = 2;
 const AUTH_ORIGIN: &str = "ovim_pkce";
 const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+const DEVICE_AUTH_BASE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth";
+const DEVICE_VERIFICATION_URL: &str = "https://auth.openai.com/codex/device";
+const DEVICE_REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CALLBACK_PORT: u16 = 1455;
 const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 const REFRESH_MARGIN_SECONDS: u64 = 60;
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const DEVICE_LOGIN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+#[derive(Debug)]
+pub(crate) struct DeviceLoginCode {
+    pub(crate) verification_url: String,
+    pub(crate) user_code: String,
+    device_auth_id: String,
+    interval: Duration,
+}
+
+#[derive(Deserialize)]
+struct DeviceUserCodeResponse {
+    device_auth_id: String,
+    #[serde(alias = "usercode")]
+    user_code: String,
+    interval: Value,
+}
+
+#[derive(Deserialize)]
+struct DeviceTokenResponse {
+    authorization_code: String,
+    code_verifier: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct StoredCredentials {
@@ -130,6 +156,107 @@ pub(crate) fn begin_login() -> Result<LoginAttempt> {
     })
 }
 
+/// Start OpenAI's device-code flow without opening a browser or listening on
+/// localhost. This is the first half of the SSH/headless login path: callers
+/// display the returned URL and one-time code before polling for approval.
+pub(crate) async fn request_device_login() -> Result<DeviceLoginCode> {
+    let client = Client::builder()
+        .build()
+        .context("failed to create Codex device login HTTP client")?;
+    request_device_login_from(&client, DEVICE_AUTH_BASE_URL).await
+}
+
+async fn request_device_login_from(client: &Client, base_url: &str) -> Result<DeviceLoginCode> {
+    let response = client
+        .post(format!("{}/usercode", base_url.trim_end_matches('/')))
+        .json(&serde_json::json!({ "client_id": CLIENT_ID }))
+        .send()
+        .await
+        .context("failed to request a Codex device login code")?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("failed to read the Codex device login response")?;
+    if !status.is_success() {
+        if status == reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!(
+                "device-code sign-in is not enabled for this account; press B to use browser sign-in"
+            );
+        }
+        anyhow::bail!("Codex device login returned {status}");
+    }
+    let response: DeviceUserCodeResponse =
+        serde_json::from_str(&body).context("Codex device login returned an invalid response")?;
+    let interval = parse_device_interval(&response.interval)?;
+    if response.device_auth_id.is_empty() || response.user_code.is_empty() {
+        anyhow::bail!("Codex device login returned an incomplete response");
+    }
+    Ok(DeviceLoginCode {
+        verification_url: DEVICE_VERIFICATION_URL.to_string(),
+        user_code: response.user_code,
+        device_auth_id: response.device_auth_id,
+        interval: Duration::from_secs(interval.max(1)),
+    })
+}
+
+/// Poll until the device code is approved, then exchange the resulting PKCE
+/// authorization code into Ovim's independent credential lineage.
+pub(crate) async fn complete_device_login(code: DeviceLoginCode) -> Result<()> {
+    let client = Client::builder()
+        .build()
+        .context("failed to create Codex device login HTTP client")?;
+    let token = poll_device_login(&client, DEVICE_AUTH_BASE_URL, &code).await?;
+    exchange_code_with_redirect(
+        &token.authorization_code,
+        &token.code_verifier,
+        DEVICE_REDIRECT_URI,
+    )
+    .await
+}
+
+async fn poll_device_login(
+    client: &Client,
+    base_url: &str,
+    code: &DeviceLoginCode,
+) -> Result<DeviceTokenResponse> {
+    let endpoint = format!("{}/token", base_url.trim_end_matches('/'));
+    let started = tokio::time::Instant::now();
+    loop {
+        let response = client
+            .post(&endpoint)
+            .json(&serde_json::json!({
+                "device_auth_id": code.device_auth_id,
+                "user_code": code.user_code,
+            }))
+            .send()
+            .await
+            .context("failed while waiting for Codex device login")?;
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .json()
+                .await
+                .context("Codex device login returned an invalid approval response");
+        }
+        if status != reqwest::StatusCode::FORBIDDEN && status != reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("Codex device login failed with {status}");
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= DEVICE_LOGIN_TIMEOUT {
+            anyhow::bail!("device sign-in timed out after 15 minutes; press Enter to try again");
+        }
+        tokio::time::sleep(code.interval.min(DEVICE_LOGIN_TIMEOUT - elapsed)).await;
+    }
+}
+
+fn parse_device_interval(value: &Value) -> Result<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
+        .ok_or_else(|| anyhow!("Codex device login returned an invalid polling interval"))
+}
+
 fn build_authorize_url(verifier: &str, state: &str) -> Result<String> {
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(Sha256::digest(verifier.as_bytes()));
@@ -227,6 +354,10 @@ fn parse_callback_request(request: &[u8], expected_state: &str) -> Result<String
 }
 
 async fn exchange_code(code: &str, verifier: &str) -> Result<()> {
+    exchange_code_with_redirect(code, verifier, REDIRECT_URI).await
+}
+
+async fn exchange_code_with_redirect(code: &str, verifier: &str, redirect_uri: &str) -> Result<()> {
     let client = Client::builder()
         .build()
         .context("failed to create Codex login HTTP client")?;
@@ -236,7 +367,7 @@ async fn exchange_code(code: &str, verifier: &str) -> Result<()> {
             ("grant_type", "authorization_code"),
             ("client_id", CLIENT_ID),
             ("code", code),
-            ("redirect_uri", REDIRECT_URI),
+            ("redirect_uri", redirect_uri),
             ("code_verifier", verifier),
         ])
         .send()
@@ -587,5 +718,25 @@ mod tests {
         let token = format!("header.{claims}.signature");
         assert_eq!(jwt_account_id(&token).as_deref(), Some("acct_123"));
         assert_eq!(jwt_expiry(&token), Some(1234));
+    }
+
+    #[test]
+    fn device_poll_interval_accepts_server_string_and_number_forms() {
+        assert_eq!(parse_device_interval(&serde_json::json!("5")).unwrap(), 5);
+        assert_eq!(parse_device_interval(&serde_json::json!(7)).unwrap(), 7);
+        assert!(parse_device_interval(&serde_json::json!("later")).is_err());
+    }
+
+    #[test]
+    fn device_response_accepts_both_user_code_spellings() {
+        for field in ["user_code", "usercode"] {
+            let value = serde_json::json!({
+                "device_auth_id": "device-1",
+                field: "ABCD-EFGH",
+                "interval": "5"
+            });
+            let response: DeviceUserCodeResponse = serde_json::from_value(value).unwrap();
+            assert_eq!(response.user_code, "ABCD-EFGH");
+        }
     }
 }

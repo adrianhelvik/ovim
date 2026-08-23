@@ -14,11 +14,17 @@ to open the same chat with that code attached to the composer. When a direct
 Codex profile needs credentials, Ovim shows a
 sign-in dialog at the point of use:
 
-1. Press `Enter` to open ChatGPT sign-in in your browser.
+1. Press `Enter` to sign in. In a local terminal, Ovim opens ChatGPT sign-in in
+   your browser. Over SSH, Ovim instead shows a verification URL and one-time
+   device code that you can use in any browser; no port forwarding is needed.
 2. Complete sign-in and return to Ovim; the pending draft or unchanged
    selection resumes automatically.
 3. Press `Esc` instead to dismiss the dialog without losing the draft or
    selection.
+
+Press `D` to choose device-code sign-in explicitly or `B` to choose the local
+browser callback. Device codes expire after 15 minutes. Only enter a code when
+you started the login yourself in Ovim.
 
 Ovim stores its own refreshable credentials as `ovim/codex-auth.json` in the
 platform config directory (`~/.config` on Linux,
