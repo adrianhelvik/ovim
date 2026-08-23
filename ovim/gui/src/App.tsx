@@ -14,6 +14,7 @@ import { marked } from "marked";
 import { mockSnapshot } from "./mock";
 import ChatModelPicker from "./ChatModelPicker";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
+import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
@@ -1506,20 +1507,43 @@ function App() {
         </Show>
     );
 
-    const SideDock = () => (
-        <Show
-            when={
-                !walkthrough() &&
-                (view().aiChat || view().testPanel || view().debug)
-            }
-        >
-            <aside class="side-dock">
-                <AiPanel />
-                <TestPanel />
-                <DebugPanel />
-            </aside>
-        </Show>
-    );
+    const contextPanels = createMemo<ContextPanelDefinition[]>(() => {
+        if (walkthrough()) return [];
+        const panels: ContextPanelDefinition[] = [];
+        const chat = view().aiChat;
+        const tests = view().testPanel;
+        const debug = view().debug;
+        if (chat) {
+            panels.push({
+                id: "ai",
+                label: "AI chat",
+                state: chat.activity.replaceAll("_", " "),
+                icon: "ai-spark",
+                render: () => <AiPanel />,
+            });
+        }
+        if (tests) {
+            panels.push({
+                id: "tests",
+                label: "Tests",
+                state: tests.status,
+                icon: "test",
+                render: () => <TestPanel />,
+            });
+        }
+        if (debug) {
+            panels.push({
+                id: "debug",
+                label: "Debug",
+                state: debug.running ? "running" : "paused",
+                icon: "debug",
+                render: () => <DebugPanel />,
+            });
+        }
+        return panels;
+    });
+
+    const SideDock = () => <ContextDock panels={contextPanels()} />;
 
     const ProblemPanel = () => (
         <Show when={view().problems} keyed>
