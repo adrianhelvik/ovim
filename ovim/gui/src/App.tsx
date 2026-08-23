@@ -21,6 +21,7 @@ import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
 import { trapDialogFocus } from "./focus";
 import { anchoredOverlayPosition } from "./overlayPosition";
+import { shouldAcceptRevision } from "./stateProjection";
 import type {
     GuiAiChat,
     GuiCodeExplanation,
@@ -978,6 +979,7 @@ function App() {
     let ignoreNextInput = false;
     let wheelRemainder = 0;
     let lastDimensions = { columns: 0, rows: 0 };
+    let latestSnapshotRevision: number | undefined;
     const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
     const hasContextDock = createMemo(() =>
         Boolean(
@@ -1054,6 +1056,9 @@ function App() {
     };
 
     const accept = (snapshot: GuiSnapshot) => {
+        if (!shouldAcceptRevision(latestSnapshotRevision, snapshot.revision))
+            return;
+        latestSnapshotRevision = snapshot.revision;
         const chatOpened = !view().aiChat && Boolean(snapshot.aiChat);
         const chatClosed = Boolean(view().aiChat) && !snapshot.aiChat;
         const coreDialogClosed =
