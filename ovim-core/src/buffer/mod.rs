@@ -1229,6 +1229,17 @@ mod tests {
     }
 
     #[test]
+    fn test_positioning_insert_uses_the_clamped_column() {
+        let mut buf = Buffer::new_from_str("first\nsecond\n");
+
+        assert!(buf.insert_text_at_positioning_cursor(0, CharCol(usize::MAX), "!"));
+
+        assert_eq!(buf.rope().to_string(), "first!\nsecond\n");
+        assert_eq!(buf.cursor().line(), 0);
+        assert_eq!(buf.cursor().col(), GraphemeCol(6));
+    }
+
+    #[test]
     fn test_insert_empty_text_does_not_record_a_mutation() {
         let mut buf = Buffer::new_from_str("hello\n");
         let version = buf.version();

@@ -93,8 +93,9 @@ impl Buffer {
         col: CharCol,
         text: &str,
     ) -> bool {
+        let insertion_col = CharCol(col.0.min(self.line_len(line)));
         let version_before = self.version();
-        self.insert_text_at(line, col, text);
+        self.insert_text_at(line, insertion_col, text);
         if self.version() == version_before {
             return false;
         }
@@ -102,7 +103,7 @@ impl Buffer {
         // chars (not graphemes), matching the legacy `calculate_end_position`
         // on `Change`; `set_cursor_char_col` converts to grapheme space.
         let mut end_line = line;
-        let mut end_col = col.0;
+        let mut end_col = insertion_col.0;
         for ch in text.chars() {
             if ch == '\n' {
                 end_line += 1;
