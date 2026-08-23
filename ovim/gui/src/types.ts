@@ -238,6 +238,7 @@ export interface GuiSnapshot {
     horizontalOffset: number;
     wrap: boolean;
     tabWidth: number;
+    expandTab: boolean;
     firstLine: number;
     totalLines: number;
     lines: GuiLine[];

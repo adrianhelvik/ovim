@@ -1886,6 +1886,9 @@ button:focus-visible {
 .status-right {
     color: color-mix(in srgb, var(--text-primary) 72%, var(--text-secondary));
 }
+.status-right span {
+    white-space: nowrap;
+}
 .status-left > span {
     display: flex;
     align-items: center;
@@ -2399,8 +2402,9 @@ kbd {
     .status-left .git-counts {
         display: none;
     }
-    .status-right span:nth-child(2),
-    .status-right span:nth-child(3) {
+    .status-encoding,
+    .status-line-ending,
+    .status-wrap {
         display: none;
     }
     .walkthrough-layer.code {

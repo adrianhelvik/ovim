@@ -2259,7 +2259,7 @@ function App() {
                     <span>ovim</span>
                 </div>
                 <div class="window-title" data-tauri-drag-region>
-                    <span>
+                    <span title={view().filePath || view().fileName}>
                         {view().fileName}
                         {view().modified ? " •" : ""}
                     </span>
@@ -2466,6 +2466,14 @@ function App() {
                                     tabIndex={tab.active ? 0 : -1}
                                     class="tab"
                                     classList={{ active: tab.active }}
+                                    aria-label={
+                                        tab.title +
+                                        (tab.modified ? ", modified" : "")
+                                    }
+                                    title={
+                                        tab.title +
+                                        (tab.modified ? " · modified" : "")
+                                    }
                                     onClick={() => {
                                         void mutate("gui_select_tab", {
                                             index: tab.index,
@@ -2891,10 +2899,49 @@ function App() {
                             </span>
                         </div>
                         <div class="status-right">
-                            <span>{view().language}</span>
-                            <span>{view().encoding}</span>
-                            <span>{view().lineEnding}</span>
-                            <span>
+                            <span
+                                class="status-language"
+                                title={"Language: " + view().language}
+                            >
+                                {view().language}
+                            </span>
+                            <span
+                                class="status-encoding"
+                                title={"Encoding: " + view().encoding}
+                            >
+                                {view().encoding}
+                            </span>
+                            <span
+                                class="status-line-ending"
+                                title={"Line ending: " + view().lineEnding}
+                            >
+                                {view().lineEnding}
+                            </span>
+                            <span
+                                class="status-indentation"
+                                title={
+                                    (view().expandTab ? "Spaces" : "Tabs") +
+                                    ", width " +
+                                    view().tabWidth
+                                }
+                            >
+                                {view().expandTab ? "Spaces" : "Tabs"}:{" "}
+                                {view().tabWidth}
+                            </span>
+                            <Show when={view().wrap}>
+                                <span class="status-wrap" title="Line wrap on">
+                                    Wrap
+                                </span>
+                            </Show>
+                            <span
+                                class="status-cursor"
+                                title={
+                                    "Line " +
+                                    (view().cursor.line + 1) +
+                                    ", column " +
+                                    (view().cursor.column + 1)
+                                }
+                            >
                                 {view().cursor.line + 1}:
                                 {view().cursor.column + 1}
                             </span>

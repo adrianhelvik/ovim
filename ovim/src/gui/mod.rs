@@ -262,6 +262,7 @@ pub struct GuiSnapshot {
     pub horizontal_offset: usize,
     pub wrap: bool,
     pub tab_width: usize,
+    pub expand_tab: bool,
     pub first_line: usize,
     pub total_lines: usize,
     pub lines: Vec<GuiLine>,
@@ -1568,6 +1569,7 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
         horizontal_offset: editor.horizontal_offset(),
         wrap: editor.options.wrap,
         tab_width,
+        expand_tab: editor.indent_options().expand_tab,
         first_line,
         total_lines,
         lines,
@@ -2756,6 +2758,7 @@ mod tests {
 
         assert_eq!(view.revision, 7);
         assert_eq!(view.cursor.line, 10);
+        assert!(view.expand_tab);
         assert!(view.lines.len() <= 24);
         assert!(view
             .lines

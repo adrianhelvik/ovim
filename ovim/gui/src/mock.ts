@@ -119,6 +119,7 @@ export const mockSnapshot: GuiSnapshot = {
     horizontalOffset: 0,
     wrap: false,
     tabWidth: 4,
+    expandTab: true,
     firstLine: 0,
     totalLines: 742,
     lines: source.map((line, index) => ({
