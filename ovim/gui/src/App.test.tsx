@@ -213,6 +213,29 @@ describe("Ovim Solid workbench", () => {
         expect(result.container.querySelector("script")).toBeNull();
     });
 
+    it("hands safe markdown links to the desktop opener without navigating the editor", () => {
+        const onOpenLink = vi.fn();
+        const result = render(() => (
+            <Markdown
+                text="Read the [Ovim guide](https://example.com/guide)."
+                onOpenLink={onOpenLink}
+            />
+        ));
+        const link = screen.getByRole("link", { name: "Ovim guide" });
+        const click = new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+        });
+
+        link.dispatchEvent(click);
+
+        expect(click.defaultPrevented).toBe(true);
+        expect(onOpenLink).toHaveBeenCalledWith("https://example.com/guide");
+        expect(result.container.ownerDocument.location.href).toBe(
+            "http://localhost:3000/",
+        );
+    });
+
     it("uses a native textarea while preserving UTF-8 core cursor offsets", async () => {
         const onUpdate = vi.fn().mockResolvedValue(undefined);
         render(() => (

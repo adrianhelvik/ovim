@@ -36,7 +36,19 @@ const LINE_HEIGHT = 22;
 const FALLBACK_CELL_WIDTH = 8.15;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
-export const Markdown = (props: { text: string }) => {
+const openExternalLink = (url: string) => {
+    if (!/^(https?:\/\/|mailto:)/i.test(url)) return;
+    if (isTauri()) {
+        void invoke("gui_open_external", { url }).catch(() => {});
+        return;
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+};
+
+export const Markdown = (props: {
+    text: string;
+    onOpenLink?: (url: string) => void;
+}) => {
     const html = createMemo(() =>
         DOMPurify.sanitize(
             marked.parse(props.text, {
@@ -48,7 +60,19 @@ export const Markdown = (props: { text: string }) => {
         ),
     );
 
-    return <div class="markdown" innerHTML={html()} />;
+    return (
+        <div
+            class="markdown"
+            innerHTML={html()}
+            onClick={(event) => {
+                const link = (event.target as Element).closest("a[href]");
+                if (!link || !event.currentTarget.contains(link)) return;
+                event.preventDefault();
+                const url = link.getAttribute("href") ?? "";
+                (props.onOpenLink ?? openExternalLink)(url);
+            }}
+        />
+    );
 };
 
 export const QueuedChatMessage = (props: {

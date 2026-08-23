@@ -229,6 +229,27 @@ fn gui_window_action(window: WebviewWindow, action: String) -> Result<(), String
     .map_err(|error| error.to_string())
 }
 
+fn validate_external_url(url: &str) -> Result<(), String> {
+    let normalized = url.to_ascii_lowercase();
+    if url.is_empty()
+        || url.trim() != url
+        || url.chars().any(char::is_control)
+        || !["https://", "http://", "mailto:"]
+            .iter()
+            .any(|scheme| normalized.starts_with(scheme))
+    {
+        return Err("Only HTTP(S) and email links can be opened".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn gui_open_external(url: String) -> Result<(), String> {
+    validate_external_url(&url)?;
+    let _ = open::that_in_background(url);
+    Ok(())
+}
+
 /// Run the native application on the calling thread until its last window closes.
 pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
     // Keep Tauri's patchable bundle marker linked even without the updater
@@ -266,6 +287,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_select_lsp,
             gui_select_debug_frame,
             gui_window_action,
+            gui_open_external,
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -295,4 +317,18 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_external_url;
+
+    #[test]
+    fn external_links_are_limited_to_non_executable_schemes() {
+        assert!(validate_external_url("https://example.com/guide").is_ok());
+        assert!(validate_external_url("mailto:hello@example.com").is_ok());
+        assert!(validate_external_url("javascript:alert(1)").is_err());
+        assert!(validate_external_url("file:///etc/passwd").is_err());
+        assert!(validate_external_url("https://example.com\nfile:///etc/passwd").is_err());
+    }
 }
