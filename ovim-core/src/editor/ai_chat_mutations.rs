@@ -727,6 +727,10 @@ impl Editor {
 
     fn handle_write_file_at_path(&mut self, args: WriteFileArgs, create_only: bool) -> ToolResult {
         let path = args.path;
+        let created_new_file = self
+            .buffer()
+            .file_path()
+            .is_some_and(|target| !std::path::Path::new(target).exists());
         let mut content = args.content;
         if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');
@@ -769,6 +773,11 @@ impl Editor {
             Ok(s) => s,
             Err(e) => return e,
         };
+        if created_new_file {
+            if let Some(target) = self.buffer().file_path().map(std::path::PathBuf::from) {
+                self.record_current_session_temp_file(&target);
+            }
+        }
 
         // Mark full file as edited for review mode.
         let buffer_id = self.buffer().id();

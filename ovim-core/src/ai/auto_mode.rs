@@ -618,7 +618,7 @@ fn double_quoted_substitutions(command: &str) -> Vec<&str> {
     substitutions
 }
 
-fn shell_tokens(command: &str) -> Vec<String> {
+pub(crate) fn shell_tokens(command: &str) -> Vec<String> {
     let chars: Vec<char> = command.chars().collect();
     let mut tokens = Vec::new();
     let mut word = String::new();

@@ -61,6 +61,17 @@ impl Editor {
             .is_some_and(|root| requested_path.starts_with(root));
         let approved_session_match = self.current_session_approved_root_for(&requested_path);
 
+        // A session owns only the exact temp files it created. This check is
+        // deliberately before the project boundary prompt but after
+        // canonicalization, so platform aliases such as /tmp and /private/tmp
+        // resolve to the same file without granting the surrounding folder.
+        if self.current_session_created_temp_file(&requested_path) {
+            return Ok(ToolPathResolution::Allowed {
+                absolute_path: requested_path.clone(),
+                boundary_root: requested_path,
+            });
+        }
+
         if requested_path.starts_with(&boundary_root) {
             if let Some(reason) = sensitive_path_reason(&requested_path) {
                 let approved_sensitive = self.ai_chat_yolo_mode()
@@ -160,6 +171,30 @@ impl Editor {
         None
     }
 
+    pub(super) fn current_session_created_temp_file(&self, path: &Path) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.created_temp_files.contains(path))
+    }
+
+    pub(super) fn record_current_session_temp_file(&mut self, path: &Path) -> bool {
+        self.ai_state
+            .chat
+            .as_mut()
+            .is_some_and(|chat| chat.created_temp_files.record(path))
+    }
+
+    pub(super) fn current_session_authorizes_temp_shell_command(&self, command: &str) -> bool {
+        let Some(project_root) = self.ai_effective_project_root() else {
+            return false;
+        };
+        self.ai_state.chat.as_ref().is_some_and(|chat| {
+            chat.created_temp_files
+                .authorizes_shell_command(command, &project_root)
+        })
+    }
+
     /// Effective project boundary for AI project-level tools.
     ///
     /// Prefers git repository root. Outside git, falls back to a
@@ -190,7 +225,20 @@ impl Editor {
             .map(PathBuf::from);
         let current_file = self.buffer().file_path().map(PathBuf::from);
 
-        if let Some(file) = active_target_file.or(origin_file).or(current_file) {
+        // Opening a temp artifact as the mutation target must not replace the
+        // chat's repository boundary. Keep resolving policy and capabilities
+        // from the originating project while that exact artifact is active.
+        let active_target_is_unscoped_temp = active_target_file.as_deref().is_some_and(|path| {
+            super::ai_session_temp::is_temp_location(path)
+                && discover_repo_root_from_start(path).is_none()
+        });
+        let target_file = if active_target_is_unscoped_temp {
+            origin_file.or(active_target_file)
+        } else {
+            active_target_file.or(origin_file)
+        };
+
+        if let Some(file) = target_file.or(current_file) {
             Some(self.absolutize_path(&file))
         } else {
             std::env::current_dir().ok()

@@ -72,6 +72,15 @@ read-only inputs and do not trigger outside-project approval prompts. To opt
 out of auto mode, set `tool_approval_mode = "sensitive_prompt"` or
 `"always_prompt"` in legacy `ai.toml`.
 
+An exact temporary file created by the active chat keeps that session's
+authority for later reads, edits, `chmod +x`, and execution. Ovim uses the
+platform temp directory and canonical paths, so aliases such as macOS `/tmp`
+and `/private/tmp` identify the same file. The grant never expands to the
+surrounding temp folder or a sibling file, and replacing the recorded file on
+Unix revokes it. Shell attribution considers only previously absent temp paths
+named by that command; Ovim does not scan the shared temp directory.
+The explicit `always_prompt` policy still prompts for every effect.
+
 For trusted work where approval interruptions are more costly than the safety
 gate, click `YOLO OFF` at the top right of the chat to switch it to `YOLO ON`.
 YOLO is opt-in per chat and defaults off. It bypasses Terra and interactive tool

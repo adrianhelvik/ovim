@@ -424,6 +424,21 @@ impl Editor {
             return None;
         }
         let mode = self.active_chat_tool_approval_mode();
+        if mode != ToolApprovalMode::AlwaysPrompt
+            && (requested_path
+                .as_deref()
+                .is_some_and(|path| self.current_session_created_temp_file(path))
+                || (tc.name == "bash"
+                    && tc
+                        .arguments
+                        .get("command")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|command| {
+                            self.current_session_authorizes_temp_shell_command(command)
+                        })))
+        {
+            return None;
+        }
         if mode == ToolApprovalMode::Auto {
             return None;
         }
