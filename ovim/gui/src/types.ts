@@ -53,6 +53,14 @@ export interface GuiAiChat {
   input: string;
   inputCursor: number;
   pendingImages: string[];
+  queuedInputs: Array<{
+    id: number;
+    kind: "steer" | "followUp" | "command";
+    content: string;
+    imageCount: number;
+    hasCodeAttachment: boolean;
+    selected: boolean;
+  }>;
   setup?: {
     kind: string;
     title: string;
@@ -62,10 +70,15 @@ export interface GuiAiChat {
     error?: string;
     actions: Array<{ label: string; key: string }>;
   };
-  messages: Array<{ id: string; role: string; content: string; model?: string; toolName?: string; tools: string[] }>;
+  messages: Array<{ id: string; index: number; selected: boolean; role: string; content: string; model?: string; toolName?: string; tools: string[] }>;
   streaming?: string;
   streamingThinking?: string;
   thinkingLive: boolean;
+  focus: "textInput" | "messageHistory" | "modelSelector" | "treePanel";
+  agents: Array<{ id: string; taskName: string; lifecycle: string; model: string; depth: number }>;
+  selectedAgentId?: string;
+  followedAgentId?: string;
+  agentCursor: number;
   approval?: string;
   codeExplanation?: GuiCodeExplanation;
 }

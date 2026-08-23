@@ -14,13 +14,55 @@ export const Markdown = (props: { text: string }) => {
     marked.parse(props.text, { async: false, breaks: true, gfm: true }) as string,
     { USE_PROFILES: { html: true } },
   ));
+
   return <div class="markdown" innerHTML={html()} />;
 };
 
-export const ChatActivityGroup = (props: { item: Extract<ChatTranscriptItem, { kind: "activity" }> }) => {
+export const QueuedChatMessage = (props: {
+  item: GuiAiChat["queuedInputs"][number];
+  onAction?: (id: number, action: "select" | "recall" | "remove") => void;
+}) => {
+  const label = () => props.item.kind === "steer"
+    ? ["Queued steer", "next tool boundary"]
+    : props.item.kind === "command"
+      ? ["Queued command", "after this round"]
+      : ["Queued message", "next round"];
+  return <article
+    class="chat-message user queued"
+    classList={{ selected: props.item.selected }}
+    onClick={() => props.onAction?.(props.item.id, "select")}
+  >
+    <header><b>{label()[0]}</b><small>{label()[1]}</small></header>
+    <Show when={props.item.content}><Markdown text={props.item.content} /></Show>
+    <Show when={props.item.imageCount || props.item.hasCodeAttachment}><footer class="queued-attachments">
+      <Show when={props.item.imageCount}><span>{props.item.imageCount} {props.item.imageCount === 1 ? "image" : "images"}</span></Show>
+      <Show when={props.item.hasCodeAttachment}><span>code attached</span></Show>
+    </footer></Show>
+    <footer class="queued-actions">
+      <button type="button" onClick={(event) => { event.stopPropagation(); props.onAction?.(props.item.id, "recall"); }}>Edit</button>
+      <button type="button" onClick={(event) => { event.stopPropagation(); props.onAction?.(props.item.id, "remove"); }}>Remove</button>
+    </footer>
+  </article>;
+};
+
+export const guiKeyInput = (event: Pick<KeyboardEvent, "key" | "shiftKey" | "ctrlKey" | "altKey" | "metaKey">): GuiKeyInput | undefined => {
+  if (["Shift", "Control", "Alt", "Meta"].includes(event.key)) return undefined;
+  const optionProducedText = event.altKey
+    && Array.from(event.key).length === 1
+    && !/^[\x00-\x7f]$/.test(event.key);
+  return {
+    key: event.key,
+    shift: event.shiftKey,
+    control: event.ctrlKey,
+    alt: event.altKey && !optionProducedText,
+    meta: event.metaKey,
+  };
+};
+
+export const ChatActivityGroup = (props: { item: Extract<ChatTranscriptItem, { kind: "activity" }>; onSelect?: (index: number) => void }) => {
   const [expanded, setExpanded] = createSignal(false);
   return (
-    <details class="chat-activity" onToggle={(event) => setExpanded(event.currentTarget.open)}>
+    <details class="chat-activity" classList={{ live: props.item.live, selected: props.item.entries.some((entry) => entry.selected) }} data-selected={props.item.entries.some((entry) => entry.selected) || undefined} onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary>
         <span classList={{ "thinking-spinner": props.item.live }} aria-label={props.item.live ? "Thinking" : undefined} />
         <span><small>{props.item.live ? "Thinking" : "Activity"}</small><b>{activitySummary(props.item.entries)}</b></span>
@@ -28,7 +70,7 @@ export const ChatActivityGroup = (props: { item: Extract<ChatTranscriptItem, { k
       </summary>
       <Show when={expanded()}><div class="chat-activity-history">
         <For each={props.item.entries}>{(entry) => (
-          <section class={`chat-activity-entry ${entry.role}`}>
+          <section class={`chat-activity-entry ${entry.role}`} onClick={() => props.onSelect?.(entry.index)}>
             <header><b>{entry.role === "tool" ? entry.toolName || "Tool result" : entry.role}</b><small>{entry.live ? "live" : entry.model}</small></header>
             <Show when={entry.content}><Markdown text={entry.content} /></Show>
             <ToolCallList tools={entry.tools} />
@@ -149,6 +191,7 @@ export const chatTranscriptItems = (
   messages: GuiChatMessage[],
   streamingThinking?: string,
   thinkingLive = false,
+  workLive = thinkingLive,
 ): ChatTranscriptItem[] => {
   const items: ChatTranscriptItem[] = [];
   for (const message of messages) {
@@ -166,6 +209,8 @@ export const chatTranscriptItems = (
   if (thinkingLive) {
     const liveThinking: ChatActivityEntry = {
       id: "streaming-thinking",
+      index: messages.length,
+      selected: false,
       role: "thinking",
       content: streamingThinking || "Thinking…",
       tools: [],
@@ -178,6 +223,9 @@ export const chatTranscriptItems = (
     } else {
       items.push({ kind: "activity", id: "activity:streaming-thinking", entries: [liveThinking], live: true });
     }
+  } else if (workLive) {
+    const previous = items.at(-1);
+    if (previous?.kind === "activity") previous.live = true;
   }
   return items;
 };
@@ -195,7 +243,13 @@ const lastActivityEntry = (
 export const activitySummary = (entries: ChatActivityEntry[]) => {
   const latestThinking = lastActivityEntry(entries, (entry) => entry.role === "thinking" && Boolean(entry.content.trim()));
   if (latestThinking) {
-    return latestThinking.content.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) || "Thinking…";
+    const summary = latestThinking.content.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) || "Thinking…";
+    return summary
+      .replace(/^#{1,6}\s+/, "")
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+      .replace(/[*_~`]+/g, "")
+      .trim() || "Thinking…";
   }
   const latestToolCall = lastActivityEntry(entries, (entry) => entry.tools.length > 0);
   if (latestToolCall) return `Calling ${latestToolCall.tools.join(", ")}`;
@@ -217,7 +271,7 @@ export const ToolCallList = (props: { tools: string[] }) => (
   </Show>
 );
 
-export const ChatMessageView = (props: { message: GuiChatMessage }) => {
+export const ChatMessageView = (props: { message: GuiChatMessage; onSelect?: (index: number) => void }) => {
   const [expanded, setExpanded] = createSignal(false);
   let disclosure: HTMLDetailsElement | undefined;
   let identity = "";
@@ -230,7 +284,15 @@ export const ChatMessageView = (props: { message: GuiChatMessage }) => {
     identity = next;
   });
   return (
-    <article class={`chat-message ${props.message.role}`}>
+    <article
+      class={`chat-message ${props.message.role}`}
+      classList={{ selected: props.message.selected }}
+      data-selected={props.message.selected || undefined}
+      onClick={(event) => {
+        if ((event.target as Element).closest("a, button, summary")) return;
+        props.onSelect?.(props.message.index);
+      }}
+    >
       <Show when={props.message.role === "tool"} fallback={<>
         <header><b>{props.message.role}</b><small>{props.message.model}</small></header>
         <Markdown text={props.message.content} />
@@ -253,6 +315,9 @@ export const ChatPanel = (props: {
   onInputWidth?: (columns: number) => void;
   onProfile?: (profile: string) => void;
   onReasoningEffort?: (effort: string) => void;
+  onMessage?: (index: number) => void;
+  onAgent?: (agentId?: string) => void;
+  onQueuedAction?: (id: number, action: "select" | "recall" | "remove") => void;
 }) => {
   const [following, setFollowing] = createSignal(true);
   let transcript!: HTMLDivElement;
@@ -261,7 +326,15 @@ export const ChatPanel = (props: {
     props.chat.messages,
     props.chat.streamingThinking,
     props.chat.thinkingLive,
+    props.chat.activity !== "idle",
   ));
+
+  createEffect(() => {
+    const selected = props.chat.messages.find((message) => message.selected)?.id;
+    if (!selected) return;
+    setFollowing(false);
+    queueMicrotask(() => transcript.querySelector<HTMLElement>("[data-selected='true']")?.scrollIntoView?.({ block: "nearest" }));
+  });
 
   const jumpToLatest = () => {
     transcript.scrollTop = transcript.scrollHeight;
@@ -271,7 +344,8 @@ export const ChatPanel = (props: {
   createEffect(() => {
     const messages = props.chat.messages;
     const latest = messages.at(-1);
-    const revision = `${messages.length}:${latest?.content.length ?? 0}:${props.chat.streaming?.length ?? 0}:${props.chat.streamingThinking?.length ?? 0}:${props.chat.approval?.length ?? 0}`;
+    const queued = props.chat.queuedInputs;
+    const revision = `${messages.length}:${latest?.content.length ?? 0}:${props.chat.streaming?.length ?? 0}:${props.chat.streamingThinking?.length ?? 0}:${queued.length}:${queued.at(-1)?.content.length ?? 0}:${props.chat.approval?.length ?? 0}`;
     if (messages.length > messageCount && latest?.role === "user") setFollowing(true);
     messageCount = messages.length;
     void revision;
@@ -288,6 +362,7 @@ export const ChatPanel = (props: {
             data-gui-native-control
             aria-label="AI model profile"
             value={props.chat.profile}
+            onClick={() => queueMicrotask(props.focusInput)}
             onChange={(event) => { props.onProfile?.(event.currentTarget.value); queueMicrotask(props.focusInput); }}
           >
             <For each={props.chat.profiles}>{(profile) => <option value={profile.id}>{profile.id} · {profile.provider}/{profile.model}</option>}</For>
@@ -297,6 +372,7 @@ export const ChatPanel = (props: {
             aria-label="Reasoning effort"
             value={props.chat.reasoningEffortSelection}
             title={`Effective effort: ${props.chat.reasoningEffort}`}
+            onClick={() => queueMicrotask(props.focusInput)}
             onChange={(event) => { props.onReasoningEffort?.(event.currentTarget.value); queueMicrotask(props.focusInput); }}
           >
             <For each={props.chat.reasoningEfforts}>{(effort) => <option value={effort}>{effort === "default" ? `default (${props.chat.reasoningEffort})` : effort}</option>}</For>
@@ -304,6 +380,17 @@ export const ChatPanel = (props: {
         </div></div>
         <span classList={{ working: props.chat.activity !== "idle" }}>{props.chat.activity.replaceAll("_", " ")}</span>
       </header>
+      <Show when={props.chat.agents.length}><section class="chat-agents" aria-label="Agent navigation">
+        <button
+          classList={{ selected: !props.chat.selectedAgentId, cursor: props.chat.focus === "treePanel" && props.chat.agentCursor === 0 }}
+          onClick={() => props.onAgent?.()}
+        ><span><b>Primary conversation</b><small>{props.chat.profile}</small></span><em>root</em></button>
+        <For each={props.chat.agents}>{(agent, index) => <button
+          classList={{ selected: props.chat.selectedAgentId === agent.id, followed: props.chat.followedAgentId === agent.id, cursor: props.chat.focus === "treePanel" && props.chat.agentCursor === index() + 1 }}
+          style={{ "padding-left": `${9 + agent.depth * 12}px` }}
+          onClick={() => props.onAgent?.(agent.id)}
+        ><span><b>{agent.taskName}</b><small>{agent.model}</small></span><em>{agent.lifecycle.replaceAll("_", " ")}</em></button>}</For>
+      </section></Show>
       <div class="chat-transcript">
         <div
           class="chat-messages"
@@ -311,11 +398,12 @@ export const ChatPanel = (props: {
           onScroll={() => setFollowing(isNearChatBottom(transcript))}
         >
           <Index each={transcriptItems()}>{(item) => (
-            <Show when={item().kind === "activity" ? item() as Extract<ChatTranscriptItem, { kind: "activity" }> : undefined} fallback={<ChatMessageView message={(item() as Extract<ChatTranscriptItem, { kind: "message" }>).message} />}>
-              {(activity) => <ChatActivityGroup item={activity()} />}
+            <Show when={item().kind === "activity" ? item() as Extract<ChatTranscriptItem, { kind: "activity" }> : undefined} fallback={<ChatMessageView message={(item() as Extract<ChatTranscriptItem, { kind: "message" }>).message} onSelect={props.onMessage} />}>
+              {(activity) => <ChatActivityGroup item={activity()} onSelect={props.onMessage} />}
             </Show>
           )}</Index>
           <Show when={props.chat.streaming}>{(content) => <article class="chat-message assistant streaming"><header><b>assistant</b><small>streaming</small></header><Markdown text={content()} /></article>}</Show>
+          <For each={props.chat.queuedInputs}>{(item) => <QueuedChatMessage item={item} onAction={props.onQueuedAction} />}</For>
         </div>
         <Show when={!following()}><button class="chat-jump" onClick={() => { jumpToLatest(); props.focusInput(); }}>↓ Jump to latest</button></Show>
       </div>
@@ -513,22 +601,21 @@ function App() {
 
   const handleKeyDown = (event: KeyboardEvent) => {
     if (event.isComposing || event.key === "Process" || event.key === "Dead") return;
-    if ((event.target as Element | null)?.closest?.("[data-gui-native-control]")) return;
+    const target = event.target as Element | null;
+    if (target !== inputSink && target?.closest?.("button, input, select, textarea, [contenteditable='true'], [data-gui-native-control]")) return;
     const clipboardModifier = /Mac|iPhone|iPad/.test(navigator.platform)
       ? event.metaKey
       : event.ctrlKey && event.shiftKey;
     if (clipboardModifier && ["c", "v", "x"].includes(event.key.toLowerCase())) return;
+    const input = guiKeyInput(event);
+    if (!input) return;
     event.preventDefault();
-    void sendKey({
-      key: event.key,
-      shift: event.shiftKey,
-      control: event.ctrlKey,
-      alt: event.altKey,
-      meta: event.metaKey,
-    });
+    void sendKey(input);
   };
 
   const handlePaste = (event: ClipboardEvent) => {
+    const target = event.target as Element | null;
+    if (target !== inputSink && target?.closest?.("input, textarea, [contenteditable='true']")) return;
     const image = Array.from(event.clipboardData?.items ?? [])
       .find((item) => imageExtension(item.type))
       ?.getAsFile()
@@ -553,14 +640,30 @@ function App() {
   };
 
   const handleCopy = (event: ClipboardEvent) => {
-    const text = chatSelectionText() || view().selectionText;
+    const chatText = chatSelectionText();
+    if (chatText) {
+      event.clipboardData?.setData("text/plain", chatText);
+      event.preventDefault();
+      return;
+    }
+    const target = event.target as Element | null;
+    if (target !== inputSink && target?.closest?.("input, textarea, [contenteditable='true']")) return;
+    const text = view().selectionText;
     if (!text) return;
     event.clipboardData?.setData("text/plain", text);
     event.preventDefault();
   };
 
   const handleCut = (event: ClipboardEvent) => {
-    const text = chatSelectionText() || view().selectionText;
+    const chatText = chatSelectionText();
+    if (chatText) {
+      event.clipboardData?.setData("text/plain", chatText);
+      event.preventDefault();
+      return;
+    }
+    const target = event.target as Element | null;
+    if (target !== inputSink && target?.closest?.("input, textarea, [contenteditable='true']")) return;
+    const text = view().selectionText;
     if (!text) return;
     event.clipboardData?.setData("text/plain", text);
     event.preventDefault();
@@ -711,6 +814,12 @@ function App() {
         onInputWidth={(columns) => void mutate("gui_set_chat_input_width", { columns })}
         onProfile={(profile) => void mutate("gui_select_ai_profile", { profile })}
         onReasoningEffort={(effort) => void mutate("gui_select_reasoning_effort", { effort })}
+        onMessage={(index) => void mutate("gui_select_chat_message", { index })}
+        onAgent={(agentId) => void mutate("gui_select_chat_agent", { agentId })}
+        onQueuedAction={(id, action) => {
+          void mutate("gui_manage_queued_chat_input", { id, action });
+          if (action === "recall") queueMicrotask(() => inputSink.focus({ preventScroll: true }));
+        }}
       />
     )}</Show>
   );

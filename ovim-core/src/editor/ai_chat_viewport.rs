@@ -16,6 +16,26 @@ fn anchored_scroll_offset(
 }
 
 impl Editor {
+    /// Select one message on the active conversation branch for GUI/history navigation.
+    pub fn ai_chat_history_select_index(&mut self, index: usize) -> bool {
+        let node_id = self
+            .conversation()
+            .and_then(|conversation| conversation.node_ids_for_active_branch().get(index))
+            .copied();
+        let Some(node_id) = node_id else {
+            return false;
+        };
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        chat.history.selected_node_id = Some(node_id);
+        chat.history.selected_queued_id = None;
+        chat.history.selected_shell_tool_id = None;
+        chat.focus = crate::ai::chat_types::ChatFocus::MessageHistory;
+        self.ai_chat_history_ensure_cursor_visible();
+        true
+    }
+
     /// Selected message index in current conversation.
     pub fn ai_chat_history_selected_index(&self) -> Option<usize> {
         if self.ai_chat_history_selected_queued_id().is_some()

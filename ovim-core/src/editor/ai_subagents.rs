@@ -79,6 +79,7 @@ fn preserved_invalid_result(
         {
             return None;
         }
+
         let crate::run_log::EventKind::AgentHandoffValidationFailed(failed) = &event.kind else {
             return None;
         };
@@ -1369,6 +1370,34 @@ impl Editor {
             .chat
             .as_ref()
             .and_then(|chat| chat.selected_agent_id.as_deref())
+    }
+
+    /// Select the primary conversation or a delegated agent without starting a composer action.
+    pub fn select_ai_agent_for_navigation(&mut self, agent_id: Option<&str>) -> bool {
+        let cursor = match agent_id {
+            Some(agent_id) => {
+                let Ok(Some(snapshot)) = self.ai_agent_current_snapshot() else {
+                    return false;
+                };
+                let Some(index) = snapshot
+                    .hierarchy()
+                    .iter()
+                    .position(|agent| agent.agent_id.as_str() == agent_id)
+                else {
+                    return false;
+                };
+                index + 1
+            }
+            None => 0,
+        };
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        chat.selected_agent_id = agent_id.map(str::to_string);
+        chat.agent_tree_cursor = cursor;
+        chat.agent_tree_focused = true;
+        chat.focus = crate::ai::chat_types::ChatFocus::TreePanel;
+        true
     }
 
     pub fn ai_agent_followed_id(&self) -> Option<&str> {

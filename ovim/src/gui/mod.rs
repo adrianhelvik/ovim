@@ -53,6 +53,16 @@ pub struct GuiKeyInput {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GuiAgentOption {
+    pub id: String,
+    pub task_name: String,
+    pub lifecycle: String,
+    pub model: String,
+    pub depth: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GuiAiProfileOption {
     pub id: String,
     pub provider: String,
@@ -449,13 +459,30 @@ pub struct GuiAiChat {
     pub input: String,
     pub input_cursor: usize,
     pub pending_images: Vec<String>,
+    pub queued_inputs: Vec<GuiQueuedChatInput>,
     pub setup: Option<GuiChatSetup>,
     pub messages: Vec<GuiChatMessage>,
     pub streaming: Option<String>,
     pub streaming_thinking: Option<String>,
     pub thinking_live: bool,
+    pub focus: String,
+    pub agents: Vec<GuiAgentOption>,
+    pub selected_agent_id: Option<String>,
+    pub followed_agent_id: Option<String>,
+    pub agent_cursor: usize,
     pub approval: Option<String>,
     pub code_explanation: Option<GuiCodeExplanation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiQueuedChatInput {
+    pub id: u64,
+    pub kind: String,
+    pub content: String,
+    pub image_count: usize,
+    pub has_code_attachment: bool,
+    pub selected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -507,6 +534,8 @@ pub enum GuiCodeExplanationDiscussion {
 #[serde(rename_all = "camelCase")]
 pub struct GuiChatMessage {
     pub id: String,
+    pub index: usize,
+    pub selected: bool,
     pub role: String,
     pub content: String,
     pub model: Option<String>,
@@ -633,6 +662,19 @@ enum GuiRequest {
     },
     SelectReasoningEffort {
         effort: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    SelectChatMessage {
+        index: usize,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    ManageQueuedChatInput {
+        id: u64,
+        action: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    SelectChatAgent {
+        agent_id: Option<String>,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Paste {
@@ -854,6 +896,21 @@ impl GuiBridge {
             .await
     }
 
+    pub async fn select_chat_message(&self, index: usize) -> Result<(), String> {
+        self.request(|reply| GuiRequest::SelectChatMessage { index, reply })
+            .await
+    }
+
+    pub async fn manage_queued_chat_input(&self, id: u64, action: String) -> Result<(), String> {
+        self.request(|reply| GuiRequest::ManageQueuedChatInput { id, action, reply })
+            .await
+    }
+
+    pub async fn select_chat_agent(&self, agent_id: Option<String>) -> Result<(), String> {
+        self.request(|reply| GuiRequest::SelectChatAgent { agent_id, reply })
+            .await
+    }
+
     pub fn shutdown(&self) {
         let _ = self.requests.send(GuiRequest::Shutdown);
     }
@@ -1028,6 +1085,43 @@ async fn handle_request(
             if result.is_ok() {
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
+            }
+            (reply, result)
+        }
+        GuiRequest::ManageQueuedChatInput { id, action, reply } => {
+            let changed = match action.as_str() {
+                "select" => Ok(editor.select_queued_ai_chat_input(id)),
+                "recall" => Ok(editor.recall_queued_ai_chat_input(id)),
+                "remove" => Ok(editor.discard_queued_ai_chat_input(id)),
+                _ => Err(anyhow::anyhow!("Unknown queued message action: {action}")),
+            };
+            let result = changed.and_then(|changed| {
+                changed
+                    .then_some(())
+                    .ok_or_else(|| anyhow::anyhow!("Queued message no longer exists"))
+            });
+            if result.is_ok() {
+                refresh_after_input(editor);
+            }
+            (reply, result)
+        }
+        GuiRequest::SelectChatMessage { index, reply } => {
+            let result = editor
+                .ai_chat_history_select_index(index)
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("Unknown chat message: {index}"));
+            if result.is_ok() {
+                refresh_after_input(editor);
+            }
+            (reply, result)
+        }
+        GuiRequest::SelectChatAgent { agent_id, reply } => {
+            let result = editor
+                .select_ai_agent_for_navigation(agent_id.as_deref())
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("Unknown delegated agent"));
+            if result.is_ok() {
+                refresh_after_input(editor);
             }
             (reply, result)
         }
@@ -1953,7 +2047,13 @@ fn file_tree(editor: &Editor) -> Option<GuiFileTree> {
 fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
     (editor.mode() == Mode::AiChat).then(|| {
         let messages = editor.ai_chat_messages();
-        let start = messages.len().saturating_sub(40);
+        let focus = editor.ai_chat_focus();
+        let selected_index = (focus == ovim_core::ai::chat_types::ChatFocus::MessageHistory)
+            .then(|| editor.ai_chat_history_selected_index())
+            .flatten();
+        let start = selected_index
+            .map(|selected| centered_window_start(selected, messages.len(), 40))
+            .unwrap_or_else(|| messages.len().saturating_sub(40));
         let (conversation_instance, message_node_ids) = editor
             .ai_state
             .chat
@@ -1976,6 +2076,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             .flat_map(|message| message.tool_calls.iter())
             .map(|tool| (tool.id.as_str(), tool.name.as_str()))
             .collect::<std::collections::HashMap<_, _>>();
+        let selected_queued_id = editor.ai_chat_history_selected_queued_id();
         GuiAiChat {
             profile: editor.ai_chat_effective_profile(),
             profiles: editor
@@ -2020,11 +2121,29 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                     }
                 })
                 .collect(),
+            queued_inputs: editor
+                .ai_chat_queued_inputs()
+                .map(|item| GuiQueuedChatInput {
+                    id: item.id,
+                    kind: match item.kind {
+                        ovim_core::editor::QueuedChatInputKind::Steer => "steer",
+                        ovim_core::editor::QueuedChatInputKind::FollowUp => "followUp",
+                        ovim_core::editor::QueuedChatInputKind::Command => "command",
+                    }
+                    .to_string(),
+                    content: truncate_panel_text(&item.content, 8_000),
+                    image_count: item.images.len(),
+                    has_code_attachment: item.code_attachment.is_some(),
+                    selected: selected_queued_id == Some(item.id),
+                })
+                .collect(),
             setup: chat_setup(editor),
             messages: messages[start..]
                 .iter()
                 .enumerate()
                 .map(|(offset, message)| GuiChatMessage {
+                    index: start + offset,
+                    selected: selected_index == Some(start + offset),
                     id: message_node_ids
                         .get(start + offset)
                         .map(|node_id| format!("{conversation_instance}:{node_id}"))
@@ -2061,6 +2180,34 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                 .filter(|content| !content.is_empty())
                 .map(|content| truncate_panel_text(content, 12_000)),
             thinking_live: editor.ai_chat_streaming_thinking().is_some(),
+            focus: match focus {
+                ovim_core::ai::chat_types::ChatFocus::TextInput => "textInput",
+                ovim_core::ai::chat_types::ChatFocus::MessageHistory => "messageHistory",
+                ovim_core::ai::chat_types::ChatFocus::ModelSelector => "modelSelector",
+                ovim_core::ai::chat_types::ChatFocus::TreePanel => "treePanel",
+            }
+            .to_string(),
+            agents: editor
+                .ai_agent_current_snapshot()
+                .ok()
+                .flatten()
+                .map(|snapshot| {
+                    snapshot
+                        .hierarchy()
+                        .into_iter()
+                        .map(|agent| GuiAgentOption {
+                            id: agent.agent_id.to_string(),
+                            task_name: agent.task_name.clone(),
+                            lifecycle: agent.lifecycle.clone(),
+                            model: agent.resolved_route.model.clone(),
+                            depth: agent.ancestry.len().saturating_sub(1),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            selected_agent_id: editor.ai_agent_selected_id().map(str::to_string),
+            followed_agent_id: editor.ai_agent_followed_id().map(str::to_string),
+            agent_cursor: editor.ai_agent_tree_cursor(),
             approval: editor
                 .ai_chat_pending_tool_approval_summary()
                 .or_else(|| editor.ai_chat_pending_no_repo_folder_approval_summary()),

@@ -3,7 +3,7 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { ChatActivityGroup, ChatComposer, ChatMessageView, ChatPanel, ChatSetupCard, CodeWalkthrough, Markdown, activitySummary, chatSelectionText, chatTranscriptItems, imageExtension, isNearChatBottom, toolResultSummary } from "./App";
+import App, { ChatActivityGroup, ChatComposer, ChatMessageView, ChatPanel, ChatSetupCard, CodeWalkthrough, Markdown, activitySummary, chatSelectionText, chatTranscriptItems, guiKeyInput, imageExtension, isNearChatBottom, toolResultSummary } from "./App";
 import { mockSnapshot } from "./mock";
 import type { GuiAiChat, GuiCodeExplanation } from "./types";
 
@@ -100,9 +100,10 @@ describe("Ovim Solid workbench", () => {
       waiting: false,
       input: "a界b",
       inputCursor: 4,
-      pendingImages: ["diagram.png"],
+      queuedInputs: [], pendingImages: ["diagram.png"],
       messages: [],
       thinkingLive: false,
+      focus: "textInput", agents: [], agentCursor: 0,
     }} />);
 
     const caret = result.container.querySelector(".chat-caret");
@@ -139,9 +140,10 @@ describe("Ovim Solid workbench", () => {
       waiting: false,
       input: "",
       inputCursor: 0,
-      pendingImages: [],
-      messages: [{ id: "1:1", role: "assistant", content: "First response", model: "codex", tools: [] }],
+      queuedInputs: [], pendingImages: [],
+      messages: [{ id: "1:1", index: 0, selected: false, role: "assistant", content: "First response", model: "codex", tools: [] }],
       thinkingLive: false,
+      focus: "textInput", agents: [], agentCursor: 0,
     };
     const [chat, setChat] = createSignal(initial);
     const result = render(() => <ChatPanel chat={chat()} focusInput={() => {}} />);
@@ -173,9 +175,11 @@ describe("Ovim Solid workbench", () => {
     expect(transcript.scrollTop).toBe(700);
   });
 
-  it("offers configured model and reasoning selections", () => {
+  it("offers configured model selections and releases pointer focus back to chat input", async () => {
     const onProfile = vi.fn();
     const onReasoningEffort = vi.fn();
+    const onQueuedAction = vi.fn();
+    const focusInput = vi.fn();
     const chat: GuiAiChat = {
       profile: "codex",
       profiles: [
@@ -186,9 +190,14 @@ describe("Ovim Solid workbench", () => {
       reasoningEffortSelection: "default",
       reasoningEfforts: ["default", "low", "medium", "high"],
       activity: "idle", waiting: false, input: "preserved", inputCursor: 9,
-      pendingImages: [], messages: [], thinkingLive: false,
+      queuedInputs: [{ id: 7, kind: "followUp", content: "Check the remaining tests", imageCount: 1, hasCodeAttachment: true, selected: false }], pendingImages: [], messages: [], thinkingLive: false,
+      focus: "textInput", agents: [], agentCursor: 0,
     };
-    render(() => <ChatPanel chat={chat} focusInput={() => {}} onProfile={onProfile} onReasoningEffort={onReasoningEffort} />);
+    render(() => <ChatPanel chat={chat} focusInput={focusInput} onProfile={onProfile} onReasoningEffort={onReasoningEffort} onQueuedAction={onQueuedAction} />);
+
+    fireEvent.click(screen.getByLabelText("AI model profile"));
+    await Promise.resolve();
+    expect(focusInput).toHaveBeenCalledOnce();
 
     fireEvent.change(screen.getByLabelText("AI model profile"), { target: { value: "local" } });
     fireEvent.change(screen.getByLabelText("Reasoning effort"), { target: { value: "high" } });
@@ -196,6 +205,35 @@ describe("Ovim Solid workbench", () => {
     expect(onReasoningEffort).toHaveBeenCalledWith("high");
     expect(screen.getByRole("option", { name: "codex · codex/gpt-test" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "default (medium)" })).toBeTruthy();
+    expect(screen.getByText("Queued message")).toBeTruthy();
+    expect(screen.getByText("Check the remaining tests")).toBeTruthy();
+    expect(screen.getByText("1 image")).toBeTruthy();
+    expect(screen.getByText("code attached")).toBeTruthy();
+    fireEvent.click(screen.getByText("Check the remaining tests"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(onQueuedAction.mock.calls).toEqual([[7, "select"], [7, "recall"], [7, "remove"]]);
+  });
+
+  it("shows and activates core history and agent navigation state", () => {
+    const onMessage = vi.fn();
+    const onAgent = vi.fn();
+    const chat: GuiAiChat = {
+      profile: "codex", profiles: [{ id: "codex", provider: "codex", model: "gpt-test" }],
+      reasoningEffort: "high", reasoningEffortSelection: "default", reasoningEfforts: ["default", "high"],
+      activity: "idle", waiting: false, input: "", inputCursor: 0, queuedInputs: [], pendingImages: [], thinkingLive: false,
+      focus: "treePanel", agentCursor: 1, selectedAgentId: "agt_1",
+      agents: [{ id: "agt_1", taskName: "Review changes", lifecycle: "running", model: "gpt-test", depth: 0 }],
+      messages: [{ id: "1:1", index: 0, selected: true, role: "assistant", content: "Selected response", tools: [] }],
+    };
+    const result = render(() => <ChatPanel chat={chat} focusInput={() => {}} onMessage={onMessage} onAgent={onAgent} />);
+
+    expect(result.container.querySelector(".chat-message.selected")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Review changes/ }).classList.contains("cursor")).toBe(true);
+    fireEvent.click(screen.getByText("Selected response"));
+    fireEvent.click(screen.getByRole("button", { name: /Review changes/ }));
+    expect(onMessage).toHaveBeenCalledWith(0);
+    expect(onAgent).toHaveBeenCalledWith("agt_1");
   });
 
   it("uses a small threshold when deciding whether chat should follow", () => {
@@ -207,7 +245,8 @@ describe("Ovim Solid workbench", () => {
     mockSnapshot.aiChat = {
       profile: "codex", profiles: [{ id: "codex", provider: "codex", model: "gpt-test" }],
       reasoningEffort: "high", reasoningEffortSelection: "default", reasoningEfforts: ["default", "high"], activity: "idle", waiting: false,
-      input: "visible draft", inputCursor: 13, pendingImages: [], messages: [], thinkingLive: false,
+      input: "visible draft", inputCursor: 13, queuedInputs: [], pendingImages: [], messages: [], thinkingLive: false,
+      focus: "textInput", agents: [], agentCursor: 0,
     };
     mockSnapshot.picker = {
       title: "Stale picker", query: "", selected: 0, total: 1,
@@ -275,13 +314,21 @@ describe("Ovim Solid workbench", () => {
     expect(imageExtension("image/svg+xml")).toBeUndefined();
   });
 
+  it("ignores standalone modifiers and treats option-produced Unicode as text", () => {
+    expect(guiKeyInput({ key: "Shift", shiftKey: true, ctrlKey: false, altKey: false, metaKey: false })).toBeUndefined();
+    expect(guiKeyInput({ key: "›", shiftKey: true, ctrlKey: false, altKey: true, metaKey: false })).toEqual({
+      key: "›", shift: true, control: false, alt: false, meta: false,
+    });
+    expect(guiKeyInput({ key: "b", shiftKey: false, ctrlKey: false, altKey: true, metaKey: false })?.alt).toBe(true);
+  });
+
   it("groups contiguous thinking and tool activity behind one live summary", async () => {
     const items = chatTranscriptItems([
-      { id: "1:1", role: "user", content: "Please inspect this", tools: [] },
-      { id: "1:2", role: "thinking", content: "Planning the inspection", model: "codex", tools: [] },
-      { id: "1:3", role: "assistant", content: "", model: "codex", tools: ["search_project"] },
-      { id: "1:4", role: "tool", content: "Found three matches", toolName: "search_project", tools: [] },
-      { id: "1:5", role: "assistant", content: "Here is the result", model: "codex", tools: [] },
+      { id: "1:1", index: 0, selected: false, role: "user", content: "Please inspect this", tools: [] },
+      { id: "1:2", index: 1, selected: false, role: "thinking", content: "**Planning the inspection**", model: "codex", tools: [] },
+      { id: "1:3", index: 2, selected: false, role: "assistant", content: "", model: "codex", tools: ["search_project"] },
+      { id: "1:4", index: 3, selected: false, role: "tool", content: "Found three matches", toolName: "search_project", tools: [] },
+      { id: "1:5", index: 4, selected: false, role: "assistant", content: "Here is the result", model: "codex", tools: [] },
     ], "Inspecting the matching files", true);
 
     expect(items.map((item) => item.kind)).toEqual(["message", "activity", "message", "activity"]);
@@ -301,10 +348,24 @@ describe("Ovim Solid workbench", () => {
     expect(result.container.querySelector(".chat-activity-history")).toBeTruthy();
   });
 
+  it("keeps the latest activity live between thinking chunks while work continues", () => {
+    const items = chatTranscriptItems([
+      { id: "1:1", index: 0, selected: false, role: "thinking", content: "**Planning**", tools: [] },
+      { id: "1:2", index: 1, selected: false, role: "assistant", content: "", tools: ["search_project"] },
+      { id: "1:3", index: 2, selected: false, role: "tool", content: "Found matches", toolName: "search_project", tools: [] },
+    ], undefined, false, true);
+
+    const activity = items.at(-1);
+    expect(activity?.kind).toBe("activity");
+    if (activity?.kind !== "activity") throw new Error("expected activity");
+    expect(activity.live).toBe(true);
+    expect(activitySummary(activity.entries)).toBe("Planning");
+  });
+
   it("keeps tool results collapsed until their details are requested", async () => {
     const payload = "large tool payload that should start hidden";
     const result = render(() => <ChatMessageView message={{
-      id: "1:3", role: "tool", content: payload, toolName: "search_project", tools: [],
+      id: "1:3", index: 2, selected: false, role: "tool", content: payload, toolName: "search_project", tools: [],
     }} />);
 
     expect(screen.getByText("search_project")).toBeTruthy();
@@ -320,7 +381,7 @@ describe("Ovim Solid workbench", () => {
 
   it("collapses assistant tool-call lists by default", () => {
     const result = render(() => <ChatMessageView message={{
-      id: "1:4", role: "assistant", content: "I will inspect this.", model: "codex",
+      id: "1:4", index: 3, selected: false, role: "assistant", content: "I will inspect this.", model: "codex",
       tools: ["search_project", "read_file_at_path"],
     }} />);
 

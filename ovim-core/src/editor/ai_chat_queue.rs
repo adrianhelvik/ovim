@@ -187,6 +187,37 @@ impl Editor {
         None
     }
 
+    pub fn select_queued_ai_chat_input(&mut self, id: u64) -> bool {
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        if !chat.queued_inputs.iter().any(|item| item.id == id) {
+            return false;
+        }
+        chat.history.selected_queued_id = Some(id);
+        chat.history.selected_node_id = None;
+        true
+    }
+
+    pub fn discard_queued_ai_chat_input(&mut self, id: u64) -> bool {
+        let Some(item) = self.remove_queued_ai_chat_input(id) else {
+            return false;
+        };
+        if item.kind == QueuedChatInputKind::Steer {
+            if let Some(tx) = self
+                .ai_state
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.pending_job.as_ref())
+                .and_then(|job| job.steer_tx.as_ref())
+            {
+                let _ = tx.send(ProviderSteerUpdate::Cancel { id });
+            }
+        }
+        self.set_status_message("Queued message removed".to_string());
+        true
+    }
+
     pub fn recall_queued_ai_chat_input(&mut self, id: u64) -> bool {
         let Some(item) = self.remove_queued_ai_chat_input(id) else {
             return false;
@@ -418,6 +449,29 @@ mod tests {
         assert_eq!(chat.queued_inputs.len(), 1);
         assert_eq!(chat.queued_inputs[0].kind, QueuedChatInputKind::FollowUp);
         assert_eq!(chat.queued_inputs[0].images.len(), 1);
+    }
+
+    #[test]
+    fn queued_input_can_be_selected_recalled_and_discarded_by_stable_id() {
+        let mut editor = editor_with_active_round();
+        for content in ["first", "second"] {
+            let chat = editor.ai_state.chat.as_mut().unwrap();
+            chat.input = content.into();
+            chat.input_cursor = chat.input.len();
+            editor.schedule_ai_chat_message().unwrap();
+        }
+        let ids = editor
+            .ai_chat_queued_inputs()
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+
+        assert!(editor.select_queued_ai_chat_input(ids[1]));
+        assert_eq!(editor.ai_chat_history_selected_queued_id(), Some(ids[1]));
+        assert!(editor.recall_queued_ai_chat_input(ids[1]));
+        assert_eq!(editor.ai_chat_input(), "second");
+        assert!(editor.discard_queued_ai_chat_input(ids[0]));
+        assert!(editor.ai_chat_queued_inputs().next().is_none());
+        assert!(!editor.discard_queued_ai_chat_input(u64::MAX));
     }
 
     #[tokio::test]
