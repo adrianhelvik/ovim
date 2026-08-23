@@ -1445,7 +1445,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn auto_mode_unauthorized_deploy_is_sent_to_terra_before_user_escalation() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        git2::Repository::init(dir.path()).unwrap();
         let file = dir.path().join("main.rs");
         std::fs::write(&file, "fn main() {}\n").unwrap();
         let mut editor = Editor::default();

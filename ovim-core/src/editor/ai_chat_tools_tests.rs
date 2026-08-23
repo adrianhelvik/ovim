@@ -335,7 +335,8 @@ fn edit_range_with_other_path_requires_approval_in_sensitive_mode() {
 async fn yolo_mode_bypasses_outside_project_approval() {
     let dir = tempfile::tempdir().expect("tempdir");
     let repo = dir.path().join("repo");
-    fs::create_dir_all(repo.join(".git")).expect("repo marker");
+    fs::create_dir_all(&repo).expect("repo directory");
+    git2::Repository::init(&repo).expect("init repository");
     let main = repo.join("main.rs");
     let outside = dir.path().join("outside.rs");
     fs::write(&main, "fn main() {}\n").expect("seed main");
@@ -379,8 +380,10 @@ fn ai_repo_root_prefers_active_target_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let repo_a = dir.path().join("repo_a");
         let repo_b = dir.path().join("repo_b");
-        fs::create_dir_all(repo_a.join(".git")).expect("mkdir repo_a/.git");
-        fs::create_dir_all(repo_b.join(".git")).expect("mkdir repo_b/.git");
+        fs::create_dir_all(&repo_a).expect("mkdir repo_a");
+        fs::create_dir_all(&repo_b).expect("mkdir repo_b");
+        git2::Repository::init(&repo_a).expect("init repo_a");
+        git2::Repository::init(&repo_b).expect("init repo_b");
         let file_a = repo_a.join("a.rs");
         let file_b = repo_b.join("b.rs");
         fs::write(&file_a, "fn a() {}\n").expect("seed a");
@@ -436,6 +439,21 @@ fn ai_repo_root_detects_git_file_marker() {
             .unwrap_or_else(|_| normalize_path(&repo));
         assert_eq!(detected, expected);
     });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn ai_repo_root_ignores_empty_git_directory_markers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::create_dir(dir.path().join(".git")).expect("empty lookalike marker");
+    let project = dir.path().join("project");
+    fs::create_dir(&project).expect("project directory");
+    let file = project.join("main.rs");
+    fs::write(&file, "fn main() {}\n").expect("write file");
+
+    let mut editor = Editor::default();
+    editor.open_file(&file).expect("open file");
+
+    assert_eq!(editor.ai_repo_root(), None);
 }
 
 #[test]

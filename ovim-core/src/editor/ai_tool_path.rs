@@ -1,7 +1,10 @@
 use crate::ai::path_policy::{
     canonicalize_or_normalize, has_parent_traversal, sensitive_path_reason,
 };
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use super::ai_chat_tools::{ToolApprovalRequest, ToolPathResolution};
 use super::Editor;
@@ -422,10 +425,13 @@ pub(super) fn discover_repo_root_from_start(start: &Path) -> Option<PathBuf> {
         return Some(normalize_path(repo.path()));
     }
 
-    // Fallback for marker-only setups (e.g. tests, partial repos).
+    // Fallback for marker-only setups (e.g. worktree metadata or a partial
+    // repository). Do not trust mere `.git` existence: a stray empty file or
+    // directory in an ancestor would otherwise silently widen the AI project
+    // boundary and skip the no-repository folder approval.
     let mut dir = probe;
     loop {
-        if dir.join(".git").exists() {
+        if is_recognizable_git_marker(&dir.join(".git")) {
             return Some(normalize_path(&dir));
         }
         if !dir.pop() {
@@ -433,6 +439,31 @@ pub(super) fn discover_repo_root_from_start(start: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn is_recognizable_git_marker(marker: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(marker) else {
+        return false;
+    };
+
+    if metadata.is_dir() {
+        // Even a partially initialized repository has a HEAD. Requiring it
+        // rejects empty/lookalike directories while retaining the fallback's
+        // original partial-repository behavior.
+        return marker.join("HEAD").is_file();
+    }
+    if !metadata.is_file() || metadata.len() > 4096 {
+        return false;
+    }
+
+    fs::read_to_string(marker).ok().is_some_and(|contents| {
+        contents
+            .lines()
+            .next()
+            .map(str::trim)
+            .and_then(|line| line.strip_prefix("gitdir:"))
+            .is_some_and(|git_dir| !git_dir.trim().is_empty())
+    })
 }
 
 pub(super) fn to_relative_path_for_boundary(path: &Path, boundary_root: &Path) -> String {
