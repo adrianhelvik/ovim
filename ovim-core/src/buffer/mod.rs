@@ -1211,6 +1211,41 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_clamps_oversized_column_to_requested_line() {
+        let mut buf = Buffer::new_from_str("first\nsecond\n");
+
+        let ((), edits) = buf.record(|b| {
+            b.insert_text_at(0, CharCol(usize::MAX), "!");
+        });
+
+        assert_eq!(buf.rope().to_string(), "first!\nsecond\n");
+        assert_eq!(
+            edits,
+            vec![crate::edit::Edit::Insert {
+                offset: 5,
+                text: "!".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_insert_empty_text_does_not_record_a_mutation() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        let version = buf.version();
+        let modified = buf.is_modified();
+
+        let ((), edits) = buf.record(|b| {
+            b.insert_text_at(0, CharCol(2), "");
+        });
+
+        assert_eq!(buf.rope().to_string(), "hello\n");
+        assert_eq!(buf.version(), version);
+        assert_eq!(buf.is_modified(), modified);
+        assert!(edits.is_empty());
+        assert!(buf.edit_log().is_empty());
+    }
+
+    #[test]
     fn test_record_delete() {
         let mut buf = Buffer::new_from_str("hello world\n");
         let (deleted, edits) = buf.record(|b| b.delete_range(0, CharCol(5), 0, CharCol(11)));
