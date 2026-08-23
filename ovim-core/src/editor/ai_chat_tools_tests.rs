@@ -491,6 +491,133 @@ fn write_file_at_path_creates_missing_file() {
 }
 
 #[test]
+fn session_created_temp_file_can_be_rewritten_and_executed_without_more_approval() {
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    runtime.block_on(async {
+        let repository = tempfile::tempdir().expect("repository");
+        git2::Repository::init(repository.path()).expect("init repository");
+        let source = repository.path().join("main.rs");
+        fs::write(&source, "fn main() {}\n").expect("seed source");
+        let temp = tempfile::tempdir_in(std::env::temp_dir()).expect("session temp parent");
+        git2::Repository::init(temp.path()).expect("init unrelated temp repository");
+        let script = temp.path().join("agent-script.sh");
+        let runs = tempfile::tempdir().expect("run storage");
+
+        let mut editor = Editor::default();
+        *editor.ai_state = super::super::ai_state::AiState::with_run_storage_layout(
+            crate::run_log::RunStorageLayout::new(runs.path()),
+        )
+        .expect("isolated run storage");
+        editor.open_file(&source).expect("open source");
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+        set_active_profile_project_scope(&mut editor);
+        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::SensitivePrompt;
+
+        let create = ToolCallInfo {
+            id: "create-temp-script".into(),
+            name: "create_file".into(),
+            arguments: serde_json::json!({
+                "path": script.to_string_lossy(),
+                "content": "#!/bin/sh\nprintf first",
+                "expected_revision": 0,
+            }),
+        };
+        match editor.dispatch_tool_call_with_approval(
+            &create,
+            Some(&temp.path().canonicalize().expect("canonical temp parent")),
+        ) {
+            ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+            ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+                panic!("create failed: {error}")
+            }
+            ToolDispatchOutcome::ApprovalRequired(request) => {
+                panic!("initial one-shot approval was ignored: {}", request.message)
+            }
+        }
+        assert!(editor.current_session_created_temp_file(&script));
+        assert_eq!(
+            editor
+                .ai_repo_root()
+                .expect("origin repository remains in scope")
+                .canonicalize()
+                .expect("canonical detected repository"),
+            repository
+                .path()
+                .canonicalize()
+                .expect("canonical repository")
+        );
+
+        let rewrite = ToolCallInfo {
+            id: "rewrite-temp-script".into(),
+            name: "write_file_at_path".into(),
+            arguments: serde_json::json!({
+                "path": script.to_string_lossy(),
+                "content": "#!/bin/sh\nprintf second",
+                "expected_revision": editor.build_tool_execution_context().buffer_revision,
+            }),
+        };
+        match editor.dispatch_tool_call_with_approval(&rewrite, None) {
+            ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+            ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+                panic!("rewrite failed: {error}")
+            }
+            ToolDispatchOutcome::ApprovalRequired(request) => {
+                panic!("owned temp rewrite requested approval: {}", request.message)
+            }
+        }
+
+        for (id, command) in [
+            (
+                "chmod-temp-script",
+                format!("chmod +x {}", script.display()),
+            ),
+            ("run-temp-script", script.display().to_string()),
+        ] {
+            let call = ToolCallInfo {
+                id: id.into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": command}),
+            };
+            match editor.dispatch_tool_call_with_approval(&call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(output)) => {
+                    if id == "run-temp-script" {
+                        assert!(output.contains("second"), "{output}");
+                    }
+                }
+                ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+                    panic!("{id} failed: {error}")
+                }
+                ToolDispatchOutcome::ApprovalRequired(request) => {
+                    panic!("{id} requested approval: {}", request.message)
+                }
+            }
+        }
+
+        let unowned = temp.path().join("unowned.sh");
+        fs::write(&unowned, "#!/bin/sh\n").expect("seed unowned sibling");
+        let call = ToolCallInfo {
+            id: "rewrite-unowned-temp".into(),
+            name: "write_file_at_path".into(),
+            arguments: serde_json::json!({
+                "path": unowned.to_string_lossy(),
+                "content": "must require approval",
+                "expected_revision": 0,
+            }),
+        };
+        assert!(matches!(
+            editor.dispatch_tool_call_with_approval(&call, None),
+            ToolDispatchOutcome::ApprovalRequired(_)
+        ));
+    });
+}
+
+#[test]
 fn missing_expected_revision_does_not_prepare_path_target() {
     let dir = tempfile::tempdir().expect("tempdir");
     let target = dir.path().join("not_opened.rs");

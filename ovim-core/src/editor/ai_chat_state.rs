@@ -283,6 +283,8 @@ pub fn kill_shell_process_group(pid: u32) {
 pub struct ShellExecutionObservation {
     pub result: crate::ai::tools::ToolResult,
     pub delta: Option<crate::run_log::WorkspaceDelta>,
+    /// Exact, previously absent temp files named by this shell command.
+    pub created_temp_files: Vec<PathBuf>,
     pub capture_error: Option<String>,
     /// The command may have run, but its resulting disk state was not captured.
     pub outcome_unknown: bool,
@@ -756,6 +758,9 @@ pub struct AiChatState {
     /// Session-scoped roots explicitly approved for path-restricted tool access
     /// (outside-project and sensitive-path overrides).
     pub approved_external_roots: Vec<PathBuf>,
+    /// Exact temp files created during this live chat, shared by every turn
+    /// and agent participating in the session.
+    pub(super) created_temp_files: super::ai_session_temp::SessionTempFiles,
     /// Compact tool event summaries keyed by tool call id.
     pub tool_event_summaries: HashMap<String, ToolEventSummary>,
     /// Images loaded by a tool and waiting to be attached to its tool result.
@@ -945,6 +950,7 @@ impl AiChatState {
             code_explanation_cache_bytes: 0,
             pending_no_repo_folder_approval: None,
             approved_external_roots: Vec::new(),
+            created_temp_files: Default::default(),
             tool_event_summaries: HashMap::new(),
             tool_result_images: HashMap::new(),
             file_snapshots: HashMap::new(),
