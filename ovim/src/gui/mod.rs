@@ -171,22 +171,26 @@ fn attach_chat_images(editor: &mut Editor, paths: &[std::path::PathBuf]) -> Resu
     if paths.is_empty() {
         return Ok(());
     }
-    for path in paths {
-        let supported = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| {
-                matches!(
-                    extension.to_ascii_lowercase().as_str(),
-                    "png" | "jpg" | "jpeg" | "gif" | "webp"
-                )
-            });
-        if !supported {
-            anyhow::bail!("Unsupported image format: {}", path.display());
-        }
-        let path = path
-            .to_str()
-            .with_context(|| format!("Image path is not valid UTF-8: {}", path.display()))?;
+    let validated = paths
+        .iter()
+        .map(|path| {
+            let supported = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg" | "gif" | "webp"
+                    )
+                });
+            if !supported {
+                anyhow::bail!("Unsupported image format: {}", path.display());
+            }
+            path.to_str()
+                .with_context(|| format!("Image path is not valid UTF-8: {}", path.display()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for path in validated {
         editor.handle_paste_event(path)?;
     }
     Ok(())
@@ -2935,6 +2939,24 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn invalid_multi_image_drop_does_not_partially_attach() {
+        let directory = tempfile::tempdir().unwrap();
+        let valid = directory.path().join("valid.png");
+        let invalid = directory.path().join("notes.txt");
+        std::fs::write(&valid, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        std::fs::write(&invalid, b"not an image").unwrap();
+        let mut editor = Editor::new();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+
+        let error = attach_chat_images(&mut editor, &[valid, invalid]).unwrap_err();
+
+        assert!(error.to_string().contains("Unsupported image format"));
+        assert!(editor.ai_chat_pending_images().is_empty());
     }
 
     #[test]
