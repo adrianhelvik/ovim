@@ -548,11 +548,15 @@ function App() {
   };
 
   const handlePaste = (event: ClipboardEvent) => {
+    const target = event.target as Element | null;
+    const nativeTextOwner = target !== inputSink
+      && Boolean(target?.closest?.("input, textarea, [contenteditable='true']"));
     const image = Array.from(event.clipboardData?.items ?? [])
       .find((item) => imageExtension(item.type))
       ?.getAsFile()
       ?? Array.from(event.clipboardData?.files ?? []).find((file) => imageExtension(file.type));
     if (image) {
+      if (nativeTextOwner && target !== chatInput) return;
       event.preventDefault();
       if (image.size > MAX_IMAGE_BYTES) {
         setError("Clipboard image exceeds the 20 MiB limit");
@@ -565,8 +569,7 @@ function App() {
         .catch((reason) => setError(String(reason)));
       return;
     }
-    const target = event.target as Element | null;
-    if (target !== inputSink && target?.closest?.("input, textarea, [contenteditable='true']")) return;
+    if (nativeTextOwner) return;
     const text = event.clipboardData?.getData("text/plain");
     if (!text) return;
     event.preventDefault();
