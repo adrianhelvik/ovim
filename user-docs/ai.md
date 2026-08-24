@@ -497,6 +497,21 @@ troubleshooting choice when native image placement flickers or is unstable.
 Terminal drag-and-drop is handled as a pasted image path, so the same behavior
 is available headlessly with `ovim paste -s SESSION '/path/to/image.png'`.
 
+## Collaborating on Strøk vectors in the GUI
+
+For `.strok` files, the native GUI adds a **Vector** tab that renders the
+in-memory buffer with Strøk. Unsaved edits appear without an export step. The
+review field appends file-specific feedback to the current AI chat draft; it
+does not submit or replace the draft.
+
+The read-only `strok_vector` tool provides `intro`, `guide`, `inspect`, and
+`audit`. Source changes still use Ovim's revision-aware file tools. Install
+Strøk 0.2 or newer and make sure `strok` is on the PATH used to launch Ovim:
+
+```sh
+brew install adhvfed/tap/strok
+```
+
 ## API-key providers
 
 Codex is the default hosted path. The following sections apply only when you
@@ -588,6 +603,25 @@ Built-in AI keybindings:
 - Normal mode `Space ?`: read-only query
 - Visual mode `Space Space`: attach selected code to chat
 - AI chat `Ctrl-T`: delegated-agent and conversation-tree sidebar
+
+## Collaborative diff reviews with Gdiff
+
+In the native GUI, select **Diff collaboration** in the activity bar to open
+the Diff tab. Ovim discovers the Gdiff instance for the current Git worktree;
+if none is running, **Open Gdiff** launches `gdiff start` in that worktree.
+`gdiff` must be installed or linked on the PATH inherited by Ovim.
+
+The tab shows the active comparison, changed files, and one-based new-side line
+numbers. Comments are Gdiff's persistent review notes and appear in both apps.
+
+Editable project chats also receive two collaboration tools:
+
+- `gdiff_review` reads the active comparison, changed files, and comments.
+- `gdiff_comment` adds, updates, or removes a comment after normal external-tool
+  policy checks. Its line argument is always the new/right-side line number.
+
+Both tools are scoped to the chat's Git worktree and validate the loopback
+instance before using it.
 
 ## Legacy `ai.toml` (Still Supported)
 

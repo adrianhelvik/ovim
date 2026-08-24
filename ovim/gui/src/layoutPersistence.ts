@@ -2,7 +2,7 @@ import type { GuiSnapshot } from "./types";
 
 export type WorkbenchLayoutPreference = {
     activeDock: "explorer" | "context";
-    activeContextPanel: "ai" | "tests" | "debug";
+    activeContextPanel: "ai" | "tests" | "debug" | "diff";
 };
 
 export const workspaceLayoutIdentity = (
@@ -37,7 +37,9 @@ export const readWorkbenchLayout = (
         if (
             !parsed ||
             !["explorer", "context"].includes(parsed.activeDock ?? "") ||
-            !["ai", "tests", "debug"].includes(parsed.activeContextPanel ?? "")
+            !["ai", "tests", "debug", "diff"].includes(
+                parsed.activeContextPanel ?? "",
+            )
         )
             return undefined;
         return parsed as WorkbenchLayoutPreference;

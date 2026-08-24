@@ -1,12 +1,17 @@
 //! Tauri application shell shared by `ovim gui` and the `ovim-gui` desktop entry.
 
-use super::{GuiBridge, GuiKeyInput, GuiSnapshot};
+use super::{GuiBridge, GuiKeyInput, GuiSnapshot, GuiVectorSource};
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
+use base64::Engine as _;
+use serde::Serialize;
+use std::io::{Read, Write};
+use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, InvokeBody, Request};
 use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::{DragDropEvent, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
@@ -15,12 +20,186 @@ use tauri::{DragDropEvent, Emitter, Manager, RunEvent, State, WebviewWindow, Win
 struct GuiExitGate(Arc<AtomicBool>);
 
 #[tauri::command]
+async fn gui_gdiff_state(
+    bridge: State<'_, GuiBridge>,
+) -> Result<ovim_core::gdiff::GdiffReview, String> {
+    let workspace = bridge.gdiff_workspace().await?;
+    tauri::async_runtime::spawn_blocking(move || ovim_core::gdiff::review(&workspace))
+        .await
+        .map_err(|error| format!("Gdiff state task failed: {error}"))?
+        .map_err(|error| format!("Could not read Gdiff: {error:#}"))
+}
+
+#[tauri::command]
+async fn gui_gdiff_start(bridge: State<'_, GuiBridge>) -> Result<(), String> {
+    let workspace = bridge.gdiff_workspace().await?;
+    tauri::async_runtime::spawn_blocking(move || ovim_core::gdiff::start(&workspace))
+        .await
+        .map_err(|error| format!("Gdiff launch task failed: {error}"))?
+        .map_err(|error| format!("Could not launch Gdiff: {error:#}"))
+}
+
+#[tauri::command]
+async fn gui_gdiff_comment(
+    bridge: State<'_, GuiBridge>,
+    action: String,
+    path: String,
+    line: u64,
+    text: String,
+) -> Result<Vec<ovim_core::gdiff::GdiffComment>, String> {
+    let workspace = bridge.gdiff_workspace().await?;
+    tauri::async_runtime::spawn_blocking(move || match action.as_str() {
+        "add" => ovim_core::gdiff::add_comment(&workspace, &path, line, &text),
+        "remove" => ovim_core::gdiff::remove_comment(&workspace, &path, line),
+        _ => anyhow::bail!("Unknown Gdiff comment action: {action}"),
+    })
+    .await
+    .map_err(|error| format!("Gdiff comment task failed: {error}"))?
+    .map_err(|error| format!("Could not update Gdiff: {error:#}"))
+}
+
+#[tauri::command]
 async fn gui_snapshot(
     bridge: State<'_, GuiBridge>,
     columns: u16,
     rows: u16,
 ) -> Result<GuiSnapshot, String> {
     bridge.snapshot(columns, rows).await
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuiVectorPreview {
+    data_url: String,
+    width: u32,
+    height: u32,
+    file_name: String,
+}
+
+fn render_vector_preview(source: GuiVectorSource) -> Result<GuiVectorPreview, String> {
+    let mut file = tempfile::Builder::new()
+        .prefix("ovim-vector-")
+        .suffix(".strok")
+        .tempfile()
+        .map_err(|error| format!("Could not create Strøk preview file: {error}"))?;
+    file.write_all(source.source.as_bytes())
+        .map_err(|error| format!("Could not write Strøk preview file: {error}"))?;
+    let mut child = Command::new("strok")
+        .arg("-f")
+        .arg(file.path())
+        .args(["inspect", "--svg"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                "Strøk is not installed or `strok` is not on Ovim's PATH. Install it with `brew install adhvfed/tap/strok`".to_string()
+            } else {
+                format!("Could not run Strøk: {error}")
+            }
+        })?;
+    let stdout = child.stdout.take().expect("piped Strøk preview stdout");
+    let stderr = child.stderr.take().expect("piped Strøk preview stderr");
+    let stdout_task = std::thread::spawn(move || read_vector_output(stdout, 16 * 1024 * 1024));
+    let stderr_task = std::thread::spawn(move || read_vector_output(stderr, 4 * 1024));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err("Strøk preview timed out after 15 seconds".to_string());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(format!("Could not wait for Strøk preview: {error}"));
+            }
+        }
+    }?;
+    let (stdout, stdout_truncated) = stdout_task
+        .join()
+        .map_err(|_| "Strøk preview output reader stopped".to_string())?;
+    let (stderr, _) = stderr_task
+        .join()
+        .map_err(|_| "Strøk preview error reader stopped".to_string())?;
+    if !status.success() {
+        let detail = String::from_utf8_lossy(&stderr);
+        return Err(if detail.trim().is_empty() {
+            "Strøk could not render this document".to_string()
+        } else {
+            detail.trim().chars().take(4_096).collect()
+        });
+    }
+    if stdout_truncated {
+        return Err("Strøk preview SVG exceeds 16 MiB".to_string());
+    }
+    rasterize_vector_svg(&stdout, source.file_name)
+}
+
+fn read_vector_output(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
+    let mut retained = Vec::with_capacity(limit.min(16 * 1024));
+    let mut buffer = [0u8; 16 * 1024];
+    let mut truncated = false;
+    while let Ok(read) = reader.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(remaining)]);
+        truncated |= read > remaining;
+    }
+    (retained, truncated)
+}
+
+fn rasterize_vector_svg(svg: &[u8], file_name: String) -> Result<GuiVectorPreview, String> {
+    let svg = std::str::from_utf8(svg)
+        .map_err(|_| "Strøk preview output was not UTF-8 SVG".to_string())?;
+    let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default())
+        .map_err(|error| format!("Strøk produced invalid SVG: {error}"))?;
+    let natural = tree.size();
+    if natural.width() <= 0.0 || natural.height() <= 0.0 {
+        return Err("Strøk produced an empty vector preview".to_string());
+    }
+    let scale = (2048.0 / natural.width())
+        .min(2048.0 / natural.height())
+        .min(2.0);
+    let width = (natural.width() * scale).ceil().max(1.0) as u32;
+    let height = (natural.height() * scale).ceil().max(1.0) as u32;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
+        .ok_or_else(|| "Strøk preview dimensions are too large".to_string())?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    let png = pixmap
+        .encode_png()
+        .map_err(|error| format!("Could not encode Strøk preview: {error}"))?;
+    Ok(GuiVectorPreview {
+        data_url: format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(png)
+        ),
+        width,
+        height,
+        file_name,
+    })
+}
+
+#[tauri::command]
+async fn gui_vector_preview(bridge: State<'_, GuiBridge>) -> Result<GuiVectorPreview, String> {
+    let source = bridge.vector_source().await?;
+    tauri::async_runtime::spawn_blocking(move || render_vector_preview(source))
+        .await
+        .map_err(|error| format!("Strøk preview worker stopped: {error}"))?
+}
+
+#[tauri::command]
+async fn gui_vector_feedback(bridge: State<'_, GuiBridge>, feedback: String) -> Result<(), String> {
+    bridge.vector_feedback(feedback).await
 }
 
 /// Attach a coalesced, event-driven snapshot stream to one webview.
@@ -356,6 +535,8 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
         .manage(exit_gate)
         .invoke_handler(tauri::generate_handler![
             gui_snapshot,
+            gui_vector_preview,
+            gui_vector_feedback,
             gui_subscribe,
             gui_key,
             gui_paste,
@@ -382,6 +563,9 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_select_debug_frame,
             gui_window_action,
             gui_open_external,
+            gui_gdiff_state,
+            gui_gdiff_start,
+            gui_gdiff_comment,
         ])
         .setup(move |app| {
             install_menu(app)?;
@@ -428,6 +612,23 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
         _ => {}
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod vector_tests {
+    use super::*;
+
+    #[test]
+    fn vector_svg_is_rasterized_as_a_bounded_png_data_url() {
+        let preview = rasterize_vector_svg(
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#f00"/></svg>"##,
+            "sample.strok".to_string(),
+        )
+        .unwrap();
+        assert_eq!(preview.file_name, "sample.strok");
+        assert_eq!((preview.width, preview.height), (80, 40));
+        assert!(preview.data_url.starts_with("data:image/png;base64,iVBOR"));
+    }
 }
 
 #[cfg(test)]

@@ -30,5 +30,8 @@ binary without requiring Node during a Rust build.
 The GUI renders the focused editor pane, tabs, file tree, diagnostics, Git
 state, picker, completion, hover, prompts, and status information. Core Ovim
 remains authoritative for modes, commands, selections, edits, and persistence.
+For `.strok` buffers, a Vector companion tab asks the native bridge to render
+the in-memory source with the installed Strøk CLI; its review form drafts
+file-specific feedback in the authoritative core AI chat.
 Terminal-only surfaces and exact soft-wrap/multi-split layout parity remain
 follow-up work; they do not maintain a second editor implementation in the DOM.

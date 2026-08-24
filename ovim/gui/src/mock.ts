@@ -115,6 +115,7 @@ export const mockSnapshot: GuiSnapshot = {
     lineEnding: "LF",
     modified: true,
     hasUnsavedChanges: true,
+    bufferRevision: 1,
     readOnly: false,
     selectionText: undefined,
     cursor: { line: 12, column: 12, displayColumn: 12 },

@@ -78,12 +78,34 @@ fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
                 summary.detail.unwrap_or_else(|| {
                     "Use your ChatGPT plan for Codex inference inside Ovim.".to_string()
                 }),
-                vec![("Sign in in browser", "Enter"), ("Not now", "Escape")],
+                vec![
+                    ("Sign in", "Enter"),
+                    ("Use device code", "d"),
+                    ("Open browser", "b"),
+                    ("Not now", "Escape"),
+                ],
             ),
             CodexAuthDialogPhase::Refreshing => (
                 "Refreshing Codex sign-in",
                 "Your draft and selection are preserved while Ovim refreshes its credentials."
                     .to_string(),
+                vec![("Cancel", "Escape")],
+            ),
+            CodexAuthDialogPhase::PreparingDeviceCode => (
+                "Preparing device sign-in",
+                "Requesting a one-time code for SSH or a headless machine.".to_string(),
+                vec![("Cancel", "Escape")],
+            ),
+            CodexAuthDialogPhase::WaitingForDeviceCode => (
+                "Finish Codex device sign-in",
+                format!(
+                    "Open {} and enter the one-time code {}. Continue only if you started this login in Ovim.",
+                    summary
+                        .authorize_url
+                        .as_deref()
+                        .unwrap_or("the OpenAI device sign-in page"),
+                    summary.user_code.as_deref().unwrap_or("shown by Ovim")
+                ),
                 vec![("Cancel", "Escape")],
             ),
             CodexAuthDialogPhase::WaitingForBrowser => (
@@ -96,7 +118,12 @@ fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
                 summary.detail.unwrap_or_else(|| {
                     "Codex sign-in failed; your draft is preserved.".to_string()
                 }),
-                vec![("Try again", "Enter"), ("Cancel", "Escape")],
+                vec![
+                    ("Try again", "Enter"),
+                    ("Use device code", "d"),
+                    ("Open browser", "b"),
+                    ("Cancel", "Escape"),
+                ],
             ),
         };
         return Some(GuiChatSetup {
@@ -262,6 +289,7 @@ pub struct GuiSnapshot {
     pub line_ending: String,
     pub modified: bool,
     pub has_unsaved_changes: bool,
+    pub buffer_revision: usize,
     pub read_only: bool,
     pub selection_text: Option<String>,
     pub cursor: GuiCursor,
@@ -657,6 +685,16 @@ enum GuiRequest {
         rows: u16,
         reply: oneshot::Sender<Result<GuiSnapshot, String>>,
     },
+    VectorSource {
+        reply: oneshot::Sender<Result<GuiVectorSource, String>>,
+    },
+    VectorFeedback {
+        feedback: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    GdiffWorkspace {
+        reply: oneshot::Sender<Result<std::path::PathBuf, String>>,
+    },
     Key {
         input: GuiKeyInput,
         reply: oneshot::Sender<Result<(), String>>,
@@ -769,6 +807,12 @@ enum GuiRequest {
     Shutdown,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct GuiVectorSource {
+    pub source: String,
+    pub file_name: String,
+}
+
 /// Send-side handle stored as Tauri application state.
 #[derive(Clone)]
 pub struct GuiBridge {
@@ -830,6 +874,31 @@ impl GuiBridge {
                 rows,
                 reply,
             })
+            .map_err(|_| "The Ovim editor thread has stopped".to_string())?;
+        response
+            .await
+            .map_err(|_| "The Ovim editor thread closed the response".to_string())?
+    }
+
+    pub async fn vector_source(&self) -> Result<GuiVectorSource, String> {
+        let (reply, response) = oneshot::channel();
+        self.requests
+            .send(GuiRequest::VectorSource { reply })
+            .map_err(|_| "The Ovim editor thread has stopped".to_string())?;
+        response
+            .await
+            .map_err(|_| "The Ovim editor thread closed the response".to_string())?
+    }
+
+    pub async fn vector_feedback(&self, feedback: String) -> Result<(), String> {
+        self.request(|reply| GuiRequest::VectorFeedback { feedback, reply })
+            .await
+    }
+
+    pub async fn gdiff_workspace(&self) -> Result<std::path::PathBuf, String> {
+        let (reply, response) = oneshot::channel();
+        self.requests
+            .send(GuiRequest::GdiffWorkspace { reply })
             .map_err(|_| "The Ovim editor thread has stopped".to_string())?;
         response
             .await
@@ -1148,6 +1217,68 @@ fn set_gui_chat_input_cursor(editor: &mut Editor, offset: usize) -> Result<()> {
     Ok(())
 }
 
+fn draft_vector_feedback(editor: &mut Editor, feedback: &str) -> Result<()> {
+    let feedback = feedback.trim();
+    if feedback.is_empty() {
+        anyhow::bail!("Vector feedback cannot be empty");
+    }
+    if feedback.len() > 8 * 1024 {
+        anyhow::bail!("Vector feedback exceeds 8 KiB");
+    }
+    let file_name = editor
+        .buffer()
+        .file_path()
+        .filter(|path| {
+            Path::new(path)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("strok"))
+        })
+        .map(|path| {
+            Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("vector.strok")
+                .to_string()
+        })
+        .ok_or_else(|| anyhow::anyhow!("The active buffer is not a .strok document"))?;
+    if editor.ai_state.chat.is_none() {
+        editor.open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())?;
+    } else {
+        editor.set_mode(Mode::AiChat);
+    }
+    let chat = editor
+        .ai_state
+        .chat
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("AI chat could not be opened"))?;
+    let prompt = format!(
+        "Vector review for `{file_name}`:\n\n{feedback}\n\nUpdate the `.strok` source using Strøk's inspect/audit loop."
+    );
+    if !chat.input.trim().is_empty() {
+        chat.input.push_str("\n\n");
+    }
+    chat.input.push_str(&prompt);
+    chat.input_cursor = chat.input.len();
+    chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
+    refresh_after_input(editor);
+    Ok(())
+}
+
+fn projected_workspace_path(editor: &Editor) -> Option<std::path::PathBuf> {
+    editor
+        .file_tree()
+        .root_path()
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            editor
+                .buffer()
+                .file_path()
+                .and_then(|path| Path::new(path).parent())
+                .map(Path::to_path_buf)
+        })
+}
+
 async fn handle_request(
     request: GuiRequest,
     editor: &mut Editor,
@@ -1166,6 +1297,51 @@ async fn handle_request(
                 handle_viewport_resize(editor, next.0, next.1);
             }
             let _ = reply.send(Ok(snapshot(editor, *revision)));
+            return;
+        }
+        GuiRequest::VectorSource { reply } => {
+            let buffer = editor.buffer();
+            let Some(path) = buffer.file_path() else {
+                let _ = reply.send(Err("The active buffer has no file path".to_string()));
+                return;
+            };
+            let path = Path::new(path);
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("strok"))
+            {
+                let _ = reply.send(Err("The active buffer is not a .strok document".to_string()));
+                return;
+            }
+            let source = buffer.rope().to_string();
+            if source.len() > 4 * 1024 * 1024 {
+                let _ = reply.send(Err(
+                    "The Strøk document exceeds the 4 MiB preview limit".to_string()
+                ));
+                return;
+            }
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("vector.strok")
+                .to_string();
+            let _ = reply.send(Ok(GuiVectorSource { source, file_name }));
+            return;
+        }
+        GuiRequest::VectorFeedback { feedback, reply } => {
+            let result = draft_vector_feedback(editor, &feedback);
+            (reply, result)
+        }
+        GuiRequest::GdiffWorkspace { reply } => {
+            let result = projected_workspace_path(editor)
+                .ok_or_else(|| anyhow::anyhow!("Open a file in a Git worktree first"))
+                .and_then(|path| {
+                    ovim_core::gdiff::worktree_root(&path)
+                        .map_err(|error| anyhow::anyhow!("{error:#}"))
+                });
+            let response = result.map_err(|error| error.to_string());
+            let _ = reply.send(response);
             return;
         }
         GuiRequest::Key { input, reply } => {
@@ -1579,16 +1755,8 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
         .or_else(|| buffer.display_name())
         .unwrap_or("Untitled")
         .to_string();
-    let workspace_path = editor
-        .file_tree()
-        .root_path()
-        .map(|path| path.to_string_lossy().into_owned())
-        .or_else(|| {
-            file_path
-                .as_deref()
-                .and_then(|path| Path::new(path).parent())
-                .map(|path| path.to_string_lossy().into_owned())
-        });
+    let workspace_path =
+        projected_workspace_path(editor).map(|path| path.to_string_lossy().into_owned());
     let project_name = workspace_path
         .as_deref()
         .and_then(|path| Path::new(path).file_name())
@@ -1624,6 +1792,7 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
         line_ending: buffer.line_ending().display_name().to_string(),
         modified: buffer.is_modified(),
         has_unsaved_changes: editor.any_buffer_modified(),
+        buffer_revision: buffer.version(),
         read_only: buffer.is_read_only(),
         selection_text: editor.visual_selection_text(),
         cursor: GuiCursor {
@@ -2878,6 +3047,7 @@ mod tests {
     async fn snapshot_projects_active_code_walkthrough() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         let file = dir.path().join("demo.rs");
         std::fs::write(&file, "fn demo() {}\n").unwrap();
         let mut editor = Editor::default();
@@ -2915,7 +3085,11 @@ mod tests {
             vec![call.clone()],
         );
         conversation.append_tool_result(call.id.clone(), "Walkthrough complete.".into());
-        assert!(editor.replay_code_explanation(&call.id));
+        assert!(
+            editor.replay_code_explanation(&call.id),
+            "{}",
+            editor.status_message()
+        );
         editor.ai_state.chat.as_mut().unwrap().streaming_thinking =
             Some("Inspecting the walkthrough state".into());
 
@@ -3163,5 +3337,32 @@ mod tests {
         assert!(chat.yolo_mode);
         assert_eq!(chat.comprehension_policy, "commit");
         assert!(chat.comprehension_checkpoint.is_none());
+    }
+
+    #[test]
+    fn vector_feedback_opens_chat_and_preserves_an_existing_draft() {
+        let mut editor = Editor::with_content("documentsize 24x24\n");
+        editor.set_file_path("icons/close.STROK".to_string());
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        editor.ai_state.chat.as_mut().unwrap().input = "Keep this context.".to_string();
+
+        draft_vector_feedback(&mut editor, "Make the stroke feel less heavy.").unwrap();
+
+        assert_eq!(editor.mode(), Mode::AiChat);
+        let input = &editor.ai_state.chat.as_ref().unwrap().input;
+        assert!(input.starts_with("Keep this context.\n\n"));
+        assert!(input.contains("Vector review for `close.STROK`"));
+        assert!(input.contains("Make the stroke feel less heavy."));
+        assert_eq!(editor.ai_chat_input_cursor(), input.len());
+    }
+
+    #[test]
+    fn vector_feedback_rejects_non_strok_buffers() {
+        let mut editor = Editor::with_content("hello\n");
+        editor.set_file_path("notes.txt".to_string());
+        assert!(draft_vector_feedback(&mut editor, "change this").is_err());
+        assert!(editor.ai_state.chat.is_none());
     }
 }

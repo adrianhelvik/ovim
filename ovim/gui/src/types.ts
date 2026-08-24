@@ -204,6 +204,16 @@ export interface GuiDebugPanel {
     output: string[];
 }
 
+export interface GuiGdiffReview {
+    installed: boolean;
+    running: boolean;
+    repo: string;
+    spec: string;
+    displaySpec: string;
+    files: string[];
+    comments: Array<{ path: string; line: number; text: string }>;
+}
+
 export interface GuiTheme {
     name: string;
     background: string;
@@ -237,6 +247,7 @@ export interface GuiSnapshot {
     lineEnding: string;
     modified: boolean;
     hasUnsavedChanges: boolean;
+    bufferRevision: number;
     readOnly: boolean;
     selectionText?: string;
     cursor: { line: number; column: number; displayColumn: number };

@@ -16,6 +16,7 @@ import { mockSnapshot } from "./mock";
 import ChatModelPicker from "./ChatModelPicker";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
+import GdiffPanel from "./GdiffPanel";
 import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
@@ -31,6 +32,7 @@ import {
 import type {
     GuiAiChat,
     GuiCodeExplanation,
+    GuiGdiffReview,
     GuiKeyInput,
     GuiLayoutNode,
     GuiPane,
@@ -43,6 +45,13 @@ export { guiKeyInput } from "./guiInput";
 const LINE_HEIGHT = 22;
 const FALLBACK_CELL_WIDTH = 8.15;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+
+interface VectorPreview {
+    dataUrl: string;
+    width: number;
+    height: number;
+    fileName: string;
+}
 
 const openExternalLink = (url: string) => {
     if (!/^(https?:\/\/|mailto:)/i.test(url)) return;
@@ -1090,6 +1099,15 @@ function App() {
     const [pendingExit, setPendingExit] = createSignal<
         "close" | "quit" | undefined
     >();
+    const [vectorView, setVectorView] = createSignal<"source" | "vector">(
+        "source",
+    );
+    const [vectorPreview, setVectorPreview] = createSignal<VectorPreview>();
+    const [vectorPreviewError, setVectorPreviewError] = createSignal("");
+    const [vectorPreviewLoading, setVectorPreviewLoading] = createSignal(false);
+    const [vectorRefresh, setVectorRefresh] = createSignal(0);
+    const [vectorFeedback, setVectorFeedback] = createSignal("");
+    const [vectorFeedbackStatus, setVectorFeedbackStatus] = createSignal("");
     const [compactDocks, setCompactDocks] = createSignal(
         compactDockQuery?.matches ?? false,
     );
@@ -1099,8 +1117,10 @@ function App() {
             : "explorer",
     );
     const [activeContextPanel, setActiveContextPanel] = createSignal<
-        "ai" | "tests" | "debug"
+        "ai" | "tests" | "debug" | "diff"
     >("ai");
+    const [diffDockOpen, setDiffDockOpen] = createSignal(false);
+    const [gdiff, setGdiff] = createSignal<GuiGdiffReview>();
     let editorBody!: HTMLDivElement;
     let inputSink!: HTMLTextAreaElement;
     let chatInput: HTMLTextAreaElement | undefined;
@@ -1115,7 +1135,10 @@ function App() {
     const hasContextDock = createMemo(() =>
         Boolean(
             !walkthrough() &&
-            (view().aiChat || view().testPanel || view().debug),
+            (view().aiChat ||
+                view().testPanel ||
+                view().debug ||
+                diffDockOpen()),
         ),
     );
     let hadContextDock = hasContextDock();
@@ -1123,8 +1146,62 @@ function App() {
         ai: Boolean(view().aiChat),
         tests: Boolean(view().testPanel),
         debug: Boolean(view().debug),
+        diff: diffDockOpen(),
     };
     let layoutWorkspace = "";
+    let vectorFilePath: string | undefined;
+    const activeStrokPath = createMemo(() => {
+        const filePath = view().filePath;
+        return filePath?.toLowerCase().endsWith(".strok")
+            ? filePath
+            : undefined;
+    });
+    const activeStrok = createMemo(() => Boolean(activeStrokPath()));
+    const activeBufferRevision = createMemo(() => view().bufferRevision);
+
+    createEffect(() => {
+        const filePath = view().filePath;
+        if (filePath !== vectorFilePath) {
+            vectorFilePath = filePath;
+            setVectorPreview(undefined);
+            setVectorPreviewError("");
+            setVectorPreviewLoading(false);
+            setVectorFeedback("");
+            setVectorFeedbackStatus("");
+        }
+        if (!filePath?.toLowerCase().endsWith(".strok")) {
+            setVectorView("source");
+        }
+    });
+
+    createEffect(() => {
+        if (!native || !activeStrok() || vectorView() !== "vector") return;
+        void activeStrokPath();
+        void activeBufferRevision();
+        void vectorRefresh();
+        let cancelled = false;
+        const timer = window.setTimeout(() => {
+            setVectorPreviewLoading(true);
+            setVectorPreviewError("");
+            void invoke<VectorPreview>("gui_vector_preview")
+                .then((preview) => {
+                    if (!cancelled) setVectorPreview(preview);
+                })
+                .catch((reason) => {
+                    if (!cancelled) setVectorPreviewError(String(reason));
+                })
+                .finally(() => {
+                    if (!cancelled) setVectorPreviewLoading(false);
+                });
+        }, 180);
+        onCleanup(() => {
+            cancelled = true;
+            window.clearTimeout(timer);
+            setVectorPreviewLoading(false);
+        });
+    });
+
+    const diffWorkspace = () => view().workspacePath || "";
 
     const layoutStorage = () => {
         try {
@@ -1142,6 +1219,7 @@ function App() {
         if (!preference) return;
         setActiveDock(preference.activeDock);
         setActiveContextPanel(preference.activeContextPanel);
+        if (preference.activeContextPanel === "diff") setDiffDockOpen(true);
     });
 
     createEffect(() => {
@@ -1169,6 +1247,7 @@ function App() {
             ai: Boolean(view().aiChat),
             tests: Boolean(view().testPanel),
             debug: Boolean(view().debug),
+            diff: diffDockOpen(),
         };
         if (next.ai && !previousContextAvailability.ai)
             setActiveContextPanel("ai");
@@ -1176,6 +1255,8 @@ function App() {
             setActiveContextPanel("tests");
         if (next.debug && !previousContextAvailability.debug)
             setActiveContextPanel("debug");
+        if (next.diff && !previousContextAvailability.diff)
+            setActiveContextPanel("diff");
         previousContextAvailability = next;
     });
 
@@ -1403,27 +1484,72 @@ function App() {
         void sendLiteral("  ");
     };
 
+    const toggleDiff = () => {
+        const wasActive =
+            diffDockOpen() &&
+            activeDock() === "context" &&
+            activeContextPanel() === "diff";
+        setDiffDockOpen(true);
+        setActiveContextPanel("diff");
+        if (compactDocks() && wasActive) {
+            setActiveDock("explorer");
+            queueMicrotask(focusEditorInput);
+            return;
+        }
+        setActiveDock("context");
+    };
+
     const runEditorShortcut = async (keys: string) => {
         focusEditorInput();
         await sendLiteral(keys);
     };
 
+    const addVectorFeedbackToChat = async () => {
+        const feedback = vectorFeedback().trim();
+        if (!feedback) return;
+        try {
+            await mutateStrict("gui_vector_feedback", { feedback });
+            setVectorFeedback("");
+            setVectorFeedbackStatus(
+                "Added to the AI chat draft — review and send when ready.",
+            );
+            setActiveContextPanel("ai");
+            setActiveDock("context");
+            queueMicrotask(focusChatInput);
+        } catch {
+            setVectorFeedbackStatus("");
+        }
+    };
+
+    const selectWorkbenchTab = (position: number) => {
+        const tabs = view().tabs;
+        if (position === tabs.length && activeStrok()) {
+            setVectorView("vector");
+            return;
+        }
+        const tab = tabs[position];
+        if (!tab) return;
+        setVectorView("source");
+        void mutate("gui_select_tab", { index: tab.index });
+    };
+
     const handleTabNavigation = (event: KeyboardEvent, position: number) => {
         const tabs = view().tabs;
-        if (tabs.length < 2) return;
+        const tabCount = tabs.length + (activeStrok() ? 1 : 0);
+        if (tabCount < 2) return;
         let next = position;
-        if (event.key === "ArrowRight") next = (position + 1) % tabs.length;
+        if (event.key === "ArrowRight") next = (position + 1) % tabCount;
         else if (event.key === "ArrowLeft")
-            next = (position - 1 + tabs.length) % tabs.length;
+            next = (position - 1 + tabCount) % tabCount;
         else if (event.key === "Home") next = 0;
-        else if (event.key === "End") next = tabs.length - 1;
+        else if (event.key === "End") next = tabCount - 1;
         else return;
         event.preventDefault();
-        void mutate("gui_select_tab", { index: tabs[next].index });
+        selectWorkbenchTab(next);
         queueMicrotask(() =>
             document
                 .querySelector<HTMLElement>(
-                    `[data-tab-index="${tabs[next].index}"]`,
+                    `[data-workbench-tab-index="${next}"]`,
                 )
                 ?.focus({ preventScroll: true }),
         );
@@ -2180,6 +2306,14 @@ function App() {
         </Show>
     );
 
+    const DiffPanel = () => (
+        <GdiffPanel
+            native={native}
+            workspace={diffWorkspace()}
+            onReview={setGdiff}
+        />
+    );
+
     const contextPanels = createMemo<ContextPanelDefinition[]>(
         (previous = []) => {
             if (walkthrough()) return [];
@@ -2187,6 +2321,17 @@ function App() {
             const chat = view().aiChat;
             const tests = view().testPanel;
             const debug = view().debug;
+            if (diffDockOpen()) {
+                panels.push({
+                    id: "diff",
+                    label: "Diff",
+                    state: gdiff()?.running
+                        ? `${gdiff()?.comments.length ?? 0} notes`
+                        : "disconnected",
+                    icon: "source-control",
+                    component: DiffPanel,
+                });
+            }
             if (chat) {
                 panels.push({
                     id: "ai",
@@ -2679,9 +2824,14 @@ function App() {
                         />
                         <IconButton
                             icon="source-control"
-                            label="Source control"
-                            shortcut="Unavailable"
-                            disabled
+                            label="Diff collaboration"
+                            shortcut="Gdiff"
+                            selected={
+                                diffDockOpen() &&
+                                activeDock() === "context" &&
+                                activeContextPanel() === "diff"
+                            }
+                            onClick={toggleDiff}
                         />
                         <IconButton
                             icon="ai-spark"
@@ -2828,12 +2978,28 @@ function App() {
                                 <button
                                     type="button"
                                     role="tab"
-                                    aria-selected={tab().active}
+                                    aria-selected={
+                                        tab().active &&
+                                        (!activeStrok() ||
+                                            vectorView() === "source")
+                                    }
                                     aria-controls="editor-surface"
-                                    tabIndex={tab().active ? 0 : -1}
+                                    tabIndex={
+                                        tab().active &&
+                                        (!activeStrok() ||
+                                            vectorView() === "source")
+                                            ? 0
+                                            : -1
+                                    }
                                     data-tab-index={tab().index}
+                                    data-workbench-tab-index={position}
                                     class="tab"
-                                    classList={{ active: tab().active }}
+                                    classList={{
+                                        active:
+                                            tab().active &&
+                                            (!activeStrok() ||
+                                                vectorView() === "source"),
+                                    }}
                                     aria-label={
                                         tab().title +
                                         (tab().modified ? ", modified" : "")
@@ -2843,9 +3009,7 @@ function App() {
                                         (tab().modified ? " · modified" : "")
                                     }
                                     onClick={() => {
-                                        void mutate("gui_select_tab", {
-                                            index: tab().index,
-                                        });
+                                        selectWorkbenchTab(position);
                                         queueMicrotask(focusEditorInput);
                                     }}
                                     onKeyDown={(event) =>
@@ -2864,6 +3028,39 @@ function App() {
                                 </button>
                             )}
                         </Index>
+                        <Show when={activeStrok()}>
+                            <button
+                                type="button"
+                                role="tab"
+                                aria-selected={vectorView() === "vector"}
+                                aria-controls="editor-surface"
+                                tabIndex={vectorView() === "vector" ? 0 : -1}
+                                data-workbench-tab-index={view().tabs.length}
+                                class="tab vector-tab"
+                                classList={{
+                                    active: vectorView() === "vector",
+                                }}
+                                title="Live Strøk render and review"
+                                onClick={() => setVectorView("vector")}
+                                onKeyDown={(event) =>
+                                    handleTabNavigation(
+                                        event,
+                                        view().tabs.length,
+                                    )
+                                }
+                            >
+                                <Icon
+                                    name="ai-spark"
+                                    size={16}
+                                    tone={
+                                        vectorView() === "vector"
+                                            ? "accent"
+                                            : "muted"
+                                    }
+                                />
+                                <span>Vector</span>
+                            </button>
+                        </Show>
                         <span class="tabs-fill" role="presentation" />
                     </div>
 
@@ -2894,8 +3091,107 @@ function App() {
                     <div
                         id="editor-surface"
                         class="editor-body"
+                        classList={{
+                            "vector-view-active":
+                                activeStrok() && vectorView() === "vector",
+                        }}
                         ref={editorBody!}
                     >
+                        <Show when={activeStrok() && vectorView() === "vector"}>
+                            <section
+                                class="vector-workbench"
+                                aria-label="Strøk vector preview"
+                            >
+                                <header class="vector-toolbar">
+                                    <div>
+                                        <strong>{view().fileName}</strong>
+                                        <span>in-memory Strøk preview</span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        data-gui-native-control
+                                        disabled={vectorPreviewLoading()}
+                                        onClick={() =>
+                                            setVectorRefresh(
+                                                (revision) => revision + 1,
+                                            )
+                                        }
+                                    >
+                                        {vectorPreviewLoading()
+                                            ? "Rendering…"
+                                            : "Refresh"}
+                                    </button>
+                                </header>
+                                <div class="vector-canvas">
+                                    <Show
+                                        when={vectorPreview()}
+                                        fallback={
+                                            <p class="vector-state">
+                                                {vectorPreviewLoading()
+                                                    ? "Rendering with Strøk…"
+                                                    : vectorPreviewError() ||
+                                                      "Open the Vector tab to render this document."}
+                                            </p>
+                                        }
+                                    >
+                                        {(preview) => (
+                                            <img
+                                                src={preview().dataUrl}
+                                                width={preview().width}
+                                                height={preview().height}
+                                                alt={`Rendered preview of ${preview().fileName}`}
+                                            />
+                                        )}
+                                    </Show>
+                                    <Show
+                                        when={
+                                            vectorPreviewError() &&
+                                            vectorPreview()
+                                        }
+                                    >
+                                        <p class="vector-error" role="alert">
+                                            {vectorPreviewError()}
+                                        </p>
+                                    </Show>
+                                </div>
+                                <form
+                                    class="vector-feedback"
+                                    onSubmit={(event) => {
+                                        event.preventDefault();
+                                        void addVectorFeedbackToChat();
+                                    }}
+                                >
+                                    <label for="vector-feedback-input">
+                                        Review with the agent
+                                    </label>
+                                    <textarea
+                                        id="vector-feedback-input"
+                                        data-gui-native-control
+                                        maxLength={8 * 1024}
+                                        value={vectorFeedback()}
+                                        placeholder="What should change in this vector?"
+                                        onInput={(event) => {
+                                            setVectorFeedback(
+                                                event.currentTarget.value,
+                                            );
+                                            setVectorFeedbackStatus("");
+                                        }}
+                                    />
+                                    <button
+                                        type="submit"
+                                        data-gui-native-control
+                                        disabled={!vectorFeedback().trim()}
+                                    >
+                                        Add to agent chat
+                                    </button>
+                                    <Show when={vectorFeedbackStatus()}>
+                                        <small role="status">
+                                            {vectorFeedbackStatus()}
+                                        </small>
+                                    </Show>
+                                </form>
+                            </section>
+                        </Show>
                         <textarea
                             ref={inputSink!}
                             class="input-sink"

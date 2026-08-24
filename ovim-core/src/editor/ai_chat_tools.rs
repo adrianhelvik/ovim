@@ -1,5 +1,5 @@
 use crate::ai::chat_types::{ToolCallInfo, ToolSummaryKind};
-use crate::ai::path_policy::sensitive_path_reason;
+use crate::ai::path_policy::{canonicalize_or_normalize, sensitive_path_reason};
 use crate::ai::scope::{Capabilities, ScopeContext};
 use crate::ai::skills::ACTIVATE_SKILL_TOOL;
 use crate::ai::tools::builtins::{OpenBufferState, ToolExecutionContext};
@@ -478,8 +478,8 @@ impl Editor {
         if mode != ToolApprovalMode::AlwaysPrompt {
             if let Some(path) = requested_path.as_ref() {
                 if let Some(root) = approved_once_root {
-                    let root = normalize_path(root);
-                    if path.starts_with(&root) {
+                    let root = canonicalize_or_normalize(root);
+                    if canonicalize_or_normalize(path).starts_with(&root) {
                         return None;
                     }
                 }
@@ -746,7 +746,12 @@ impl Editor {
             );
         let project_scoped_without_open_file = matches!(
             tc.name.as_str(),
-            "list_files" | "search_project" | "workspace_context"
+            "list_files"
+                | "search_project"
+                | "workspace_context"
+                | "gdiff_review"
+                | "gdiff_comment"
+                | "strok_vector"
         );
         let visible_buffer_read = matches!(
             tc.name.as_str(),

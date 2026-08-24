@@ -1,5 +1,6 @@
 use super::*;
 use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
+use crate::ai::path_policy::canonicalize_or_normalize;
 use crate::ai::skills::{SkillCatalog, ACTIVATED_SKILL_MARKER};
 use crate::ai::{FileScope, ToolApprovalMode};
 use crate::editor::ai_tool_execution::find_enclosing_symbol;
@@ -1299,7 +1300,9 @@ fn open_file_with_create_opens_missing_target() {
             .is_some_and(|p| p.ends_with("new_file.rs")));
         assert_eq!(
             editor.registers().get(Some('%')),
-            target.to_string_lossy().to_string()
+            canonicalize_or_normalize(&target)
+                .to_string_lossy()
+                .to_string()
         );
     });
 }
@@ -1621,6 +1624,10 @@ fn project_tools_work_from_unnamed_buffer_when_project_root_is_known() {
         })
         .expect("open chat");
     set_active_profile_project_scope(&mut editor);
+    let profile_name = editor.ai_state.active_profile.clone();
+    if let Some(profile) = editor.ai_state.config.profiles.get_mut(&profile_name) {
+        profile.scope.shell = true;
+    }
     // Pin the approval mode; Editor::default() loads the developer's real
     // AI config, and AlwaysPrompt would fail this test with an approval.
     editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
@@ -1676,6 +1683,46 @@ fn project_tools_work_from_unnamed_buffer_when_project_root_is_known() {
         }
         ToolDispatchOutcome::ApprovalRequired(req) => {
             panic!("unexpected approval request: {}", req.message);
+        }
+    }
+
+    for tool_call in [
+        ToolCallInfo {
+            id: "call_strok_intro".to_string(),
+            name: "strok_vector".to_string(),
+            arguments: serde_json::json!({"operation": "intro"}),
+        },
+        ToolCallInfo {
+            id: "call_gdiff_review".to_string(),
+            name: "gdiff_review".to_string(),
+            arguments: serde_json::json!({}),
+        },
+        ToolCallInfo {
+            id: "call_gdiff_comment".to_string(),
+            name: "gdiff_comment".to_string(),
+            arguments: serde_json::json!({
+                "action": "remove",
+                "path": "Cargo.toml",
+                "line": 1,
+            }),
+        },
+    ] {
+        match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+            ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+                assert!(
+                    !error.contains("No file open."),
+                    "{} was incorrectly blocked by the unnamed buffer: {error}",
+                    tool_call.name
+                );
+                assert!(
+                    !error.contains("unavailable for the active profile or scope")
+                        && !error.contains("requires scope not granted"),
+                    "{} was not exposed with project-chat capabilities: {error}",
+                    tool_call.name
+                );
+            }
+            ToolDispatchOutcome::Completed(ToolResult::Success(_))
+            | ToolDispatchOutcome::ApprovalRequired(_) => {}
         }
     }
 }

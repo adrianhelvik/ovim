@@ -170,6 +170,87 @@ describe("Ovim Solid workbench", () => {
         expect(focus.mock.instances).toContain(tabs[1]);
     });
 
+    it("opens an actionable workspace-scoped Gdiff collaboration tab", async () => {
+        render(() => <App />);
+
+        const diff = screen.getByRole("button", {
+            name: "Diff collaboration",
+        });
+        expect(diff.hasAttribute("disabled")).toBe(false);
+        fireEvent.click(diff);
+
+        expect(await screen.findByRole("tabpanel")).toBeTruthy();
+        expect(screen.getByText("Gdiff review")).toBeTruthy();
+    });
+
+    it("treats the Vector preview as one keyboard-navigable editor tab", async () => {
+        const previousPath = mockSnapshot.filePath;
+        const previousName = mockSnapshot.fileName;
+        mockSnapshot.filePath = "/workspace/ovim/icons/sample.strok";
+        mockSnapshot.fileName = "sample.strok";
+
+        const result = render(() => <App />);
+        try {
+            const source = screen.getByRole("tab", { name: /mod.rs/ });
+            const vector = screen.getByRole("tab", { name: "Vector" });
+            expect(source.getAttribute("aria-selected")).toBe("true");
+            expect(vector.getAttribute("aria-selected")).toBe("false");
+            expect(
+                screen.getAllByRole("tab").filter((tab) => tab.tabIndex === 0),
+            ).toHaveLength(1);
+
+            fireEvent.keyDown(source, { key: "End" });
+            await Promise.resolve();
+            expect(source.getAttribute("aria-selected")).toBe("false");
+            expect(vector.getAttribute("aria-selected")).toBe("true");
+            expect(
+                screen.getAllByRole("tab").filter((tab) => tab.tabIndex === 0),
+            ).toEqual([vector]);
+            expect(
+                screen.getByRole("region", { name: "Strøk vector preview" }),
+            ).toBeTruthy();
+
+            fireEvent.keyDown(vector, { key: "Home" });
+            await Promise.resolve();
+            expect(source.getAttribute("aria-selected")).toBe("true");
+            expect(vector.getAttribute("aria-selected")).toBe("false");
+
+            fireEvent.click(vector);
+            const feedback = screen.getByLabelText("Review with the agent");
+            fireEvent.input(feedback, {
+                target: { value: "Reduce the visual weight." },
+            });
+            fireEvent.click(
+                screen.getByRole("button", { name: "Add to agent chat" }),
+            );
+            await Promise.resolve();
+            expect(
+                screen.getByText(
+                    "Added to the AI chat draft — review and send when ready.",
+                ),
+            ).toBeTruthy();
+            expect((feedback as HTMLTextAreaElement).value).toBe("");
+        } finally {
+            result.unmount();
+            mockSnapshot.filePath = previousPath;
+            mockSnapshot.fileName = previousName;
+        }
+    });
+
+    it("restores the persisted diff panel", async () => {
+        window.localStorage.setItem(
+            "ovim.gui.layout.v1.%2Fworkspace%2Fovim",
+            JSON.stringify({
+                activeDock: "context",
+                activeContextPanel: "diff",
+            }),
+        );
+
+        render(() => <App />);
+
+        expect(await screen.findByText("Gdiff review")).toBeTruthy();
+    });
+
     it("switches existing compact docks without toggling their core state", () => {
         const previousChat = mockSnapshot.aiChat;
         mockSnapshot.aiChat = {
@@ -213,6 +294,16 @@ describe("Ovim Solid workbench", () => {
             fireEvent.click(screen.getByRole("button", { name: "AI chat" }));
             expect(workbench.classList).toContain("active-context-dock");
             expect(mockSnapshot.aiChat).toBeTruthy();
+
+            const diff = screen.getByRole("button", {
+                name: "Diff collaboration",
+            });
+            fireEvent.click(diff);
+            expect(workbench.classList).toContain("active-context-dock");
+            expect(screen.getByText("Gdiff review")).toBeTruthy();
+
+            fireEvent.click(diff);
+            expect(workbench.classList).toContain("active-explorer-dock");
         } finally {
             result.unmount();
             mockSnapshot.aiChat = previousChat;

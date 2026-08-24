@@ -40,4 +40,18 @@ describe("workspace layout persistence", () => {
         values.set("ovim.gui.layout.v1.%2Fwork%2Fbroken", "not json");
         expect(readWorkbenchLayout(storage, "/work/broken")).toBeUndefined();
     });
+
+    it("persists the dedicated diff context tab", () => {
+        const values = new Map<string, string>();
+        const storage = {
+            getItem: (key: string) => values.get(key) ?? null,
+            setItem: (key: string, value: string) => values.set(key, value),
+        };
+        const preference = {
+            activeDock: "context" as const,
+            activeContextPanel: "diff" as const,
+        };
+        writeWorkbenchLayout(storage, "/work/ovim", preference);
+        expect(readWorkbenchLayout(storage, "/work/ovim")).toEqual(preference);
+    });
 });

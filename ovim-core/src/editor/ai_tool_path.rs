@@ -58,10 +58,11 @@ impl Editor {
                     .unwrap_or_else(|_| normalize_path(&joined))
             }
         };
-        let approved_once_root = approved_once_root.map(|p| normalize_path(p));
+        let requested_path_for_approval = canonicalize_or_normalize(&requested_path);
+        let approved_once_root = approved_once_root.map(|p| canonicalize_or_normalize(p));
         let approved_once_match = approved_once_root
             .as_ref()
-            .is_some_and(|root| requested_path.starts_with(root));
+            .is_some_and(|root| requested_path_for_approval.starts_with(root));
         let approved_session_match = self.current_session_approved_root_for(&requested_path);
 
         // A session owns only the exact temp files it created. This check is
@@ -120,7 +121,7 @@ impl Editor {
         }
 
         if let Some(root) = approved_once_root {
-            if requested_path.starts_with(&root) {
+            if requested_path_for_approval.starts_with(&root) {
                 return Ok(ToolPathResolution::Allowed {
                     absolute_path: requested_path,
                     boundary_root: root,
@@ -165,8 +166,9 @@ impl Editor {
 
     pub(super) fn current_session_approved_root_for(&self, path: &Path) -> Option<PathBuf> {
         let chat = self.ai_state.chat.as_ref()?;
+        let path = canonicalize_or_normalize(path);
         for root in &chat.approved_external_roots {
-            let root = normalize_path(root);
+            let root = canonicalize_or_normalize(root);
             if path.starts_with(&root) {
                 return Some(root);
             }
@@ -276,9 +278,7 @@ impl Editor {
                 .map(|cwd| cwd.join(path))
                 .unwrap_or_else(|_| path.to_path_buf())
         };
-        joined
-            .canonicalize()
-            .unwrap_or_else(|_| normalize_path(&joined))
+        canonicalize_or_normalize(&joined)
     }
 }
 

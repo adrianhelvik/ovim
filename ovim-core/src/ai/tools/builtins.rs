@@ -2,9 +2,13 @@ use crate::ai::path_policy::{
     has_parent_traversal, is_path_approved, normalize_path, sensitive_path_reason,
 };
 use crate::ai::scope::{Capabilities, RequiredScope, ScopeContext};
+use crate::ai::truncate_utf8_with_notice;
 use crate::ai::types::{DiagnosticFact, FileScope};
 use crate::editor::grep;
 use crate::unicode::byte_offset_for_grapheme;
+use std::io::Read;
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use super::{ParamType, SideEffect, ToolDefinition, ToolParam, ToolRegistry, ToolResult};
 
@@ -279,8 +283,10 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(read_project_diagnostics_def());
     registry.register(search_project_def());
     registry.register(list_files_def());
+    registry.register(gdiff_review_def());
     registry.register(web_search_def());
     registry.register(web_fetch_def());
+    registry.register(strok_vector_def());
     // LSP tools (dispatched via execute_lsp_tool — always allowed with file scope)
     registry.register(document_symbols_def());
     registry.register(hover_def());
@@ -292,6 +298,7 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(record_comprehension_checkpoint_def());
     // External tools (dispatched via execute_external_tool)
     registry.register(bash_def());
+    registry.register(gdiff_comment_def());
     // Mutation tools (dispatched via execute_mutation_tool, not execute_builtin)
     registry.register(with_expected_revision(edit_range_def()));
     registry.register(with_expected_revision(insert_lines_def()));
@@ -352,9 +359,11 @@ pub fn execute_builtin(
         "read_project_diagnostics" => handle_read_project_diagnostics(args, ctx),
         "search_project" => handle_search_project(args, ctx),
         "list_files" => handle_list_files(args, ctx),
+        "gdiff_review" => handle_gdiff_review(ctx),
         "web_search" | "web_fetch" => ToolResult::Error(format!(
             "'{name}' is an Ovim web tool — must be dispatched through the Exa client"
         )),
+        "strok_vector" => handle_strok_vector(args, ctx),
         "document_symbols" | "hover" | "goto_definition" => ToolResult::Error(format!(
             "'{name}' is an LSP tool — must be dispatched via execute_lsp_tool"
         )),
@@ -362,9 +371,9 @@ pub fn execute_builtin(
             "'explain_with_codebase' is an interactive navigation tool — must be dispatched by the editor"
                 .to_string(),
         ),
-        "bash" => ToolResult::Error(
-            "'bash' is an external tool — must be dispatched via execute_external_tool".to_string(),
-        ),
+        "bash" | "gdiff_comment" => ToolResult::Error(format!(
+            "'{name}' is an external tool — must be dispatched via execute_external_tool"
+        )),
         "edit_range"
         | "insert_lines"
         | "delete_lines"
@@ -482,6 +491,353 @@ fn bash_def() -> ToolDefinition {
                 redirection, substitutions, and compound commands are supported."
                 .to_string(),
         }],
+    }
+}
+
+fn strok_vector_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "strok_vector".to_string(),
+        description: "Read Strøk authoring guidance or inspect and audit a project .strok file. Edit source with Ovim's revision-aware file tools; the Vector tab renders the in-memory buffer. This tool does not mutate files."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        custom_input_schema: None,
+        parameters: vec![
+            ToolParam {
+                name: "operation".to_string(),
+                param_type: ParamType::StringEnum(
+                    super::StringEnum::new(["intro", "guide", "inspect", "audit"])
+                        .expect("Strøk operations are non-empty"),
+                ),
+                required: true,
+                description: "Read-only Strøk operation to run.".to_string(),
+            },
+            ToolParam {
+                name: "path".to_string(),
+                param_type: ParamType::FilePath,
+                required: false,
+                description: "Project-relative .strok file. Required for inspect and audit."
+                    .to_string(),
+            },
+            ToolParam {
+                name: "topic".to_string(),
+                param_type: ParamType::StringEnum(
+                    super::StringEnum::new(["illustration", "icon", "logo", "diagram"])
+                        .expect("Strøk guide topics are non-empty"),
+                ),
+                required: false,
+                description: "Visual-quality topic. Required for guide.".to_string(),
+            },
+            ToolParam {
+                name: "selector".to_string(),
+                param_type: ParamType::String,
+                required: false,
+                description: "Optional shape or place name for inspect.".to_string(),
+            },
+        ],
+    }
+}
+
+fn gdiff_review_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "gdiff_review".to_string(),
+        description: "Read the active gdiff comparison, changed-file list, and shared per-line review comments for this repository. Use this to collaborate with the user in Ovim's Diff tab."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        custom_input_schema: None,
+        parameters: Vec::new(),
+    }
+}
+
+fn gdiff_comment_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "gdiff_comment".to_string(),
+        description: "Add or remove a persistent per-line comment in the active gdiff review. Comments appear live in both gdiff and Ovim's Diff tab. Line numbers refer to the new/right side."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: true,
+            network: false,
+        },
+        side_effect: SideEffect::External,
+        custom_input_schema: None,
+        parameters: vec![
+            ToolParam {
+                name: "action".to_string(),
+                param_type: ParamType::StringEnum(
+                    super::StringEnum::new(["add", "remove"]).expect("valid gdiff actions"),
+                ),
+                required: true,
+                description: "Whether to add/update or remove the comment.".to_string(),
+            },
+            ToolParam {
+                name: "path".to_string(),
+                param_type: ParamType::FilePath,
+                required: true,
+                description: "Repository-relative path in the active diff.".to_string(),
+            },
+            ToolParam {
+                name: "line".to_string(),
+                param_type: ParamType::LineNumber,
+                required: true,
+                description: "One-based new/right-side line number.".to_string(),
+            },
+            ToolParam {
+                name: "text".to_string(),
+                param_type: ParamType::String,
+                required: false,
+                description: "Non-empty comment text, required when action is add.".to_string(),
+            },
+        ],
+    }
+}
+
+#[derive(Debug)]
+struct StrokVectorCommand {
+    project_root: std::path::PathBuf,
+    file: Option<std::path::PathBuf>,
+    in_memory_source: Option<String>,
+    arguments: Vec<String>,
+}
+
+fn strok_vector_command(
+    args: &serde_json::Value,
+    ctx: &ToolExecutionContext,
+) -> Result<StrokVectorCommand, ToolResult> {
+    let operation = args
+        .get("operation")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| ToolResult::Error("'operation' is required".to_string()))?;
+    let project_root = resolve_project_root(ctx)?;
+
+    let (file, in_memory_source, command) = match operation {
+        "intro" => (None, None, vec!["agent-intro".to_string()]),
+        "guide" => {
+            let topic = args
+                .get("topic")
+                .and_then(|value| value.as_str())
+                .filter(|topic| matches!(*topic, "illustration" | "icon" | "logo" | "diagram"))
+                .ok_or_else(|| {
+                    ToolResult::Error(
+                        "'topic' is required for guide (illustration, icon, logo, or diagram)"
+                            .to_string(),
+                    )
+                })?;
+            (None, None, vec!["guide".to_string(), topic.to_string()])
+        }
+        "inspect" | "audit" => {
+            let raw_path = args
+                .get("path")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| ToolResult::Error(format!("'path' is required for {operation}")))?;
+            let (path, _) = resolve_project_relative_path(raw_path, ctx)?;
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("strok"))
+            {
+                return Err(ToolResult::Error(
+                    "Strøk inspection is limited to .strok files".to_string(),
+                ));
+            }
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let in_memory_source = ctx
+                .open_buffers
+                .get(&path)
+                .or_else(|| ctx.open_buffers.get(&canonical))
+                .cloned();
+            if in_memory_source.is_none() && !path.is_file() {
+                return Err(ToolResult::Error(format!(
+                    "Strøk file does not exist: {raw_path}"
+                )));
+            }
+            if in_memory_source
+                .as_ref()
+                .is_some_and(|source| source.len() > 4 * 1024 * 1024)
+            {
+                return Err(ToolResult::Error(
+                    "The in-memory Strøk document exceeds the 4 MiB inspection limit".to_string(),
+                ));
+            }
+            let mut command = vec![operation.to_string()];
+            if operation == "inspect" {
+                if let Some(selector) = args
+                    .get("selector")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    if selector.len() > 4 * 1024 {
+                        return Err(ToolResult::Error(
+                            "Strøk selector exceeds 4 KiB".to_string(),
+                        ));
+                    }
+                    command.push(selector.to_string());
+                }
+                command.extend(["--detail".to_string(), "structural".to_string()]);
+            }
+            command.push("--json".to_string());
+            (Some(path), in_memory_source, command)
+        }
+        _ => {
+            return Err(ToolResult::Error(format!(
+                "unknown Strøk operation: {operation}"
+            )))
+        }
+    };
+    Ok(StrokVectorCommand {
+        project_root,
+        file,
+        in_memory_source,
+        arguments: command,
+    })
+}
+
+fn handle_strok_vector(args: &serde_json::Value, ctx: &ToolExecutionContext) -> ToolResult {
+    let command = match strok_vector_command(args, ctx) {
+        Ok(command) => command,
+        Err(error) => return error,
+    };
+    let mut temporary = None;
+    let file = if let Some(source) = command.in_memory_source.as_deref() {
+        let mut file = match tempfile::Builder::new()
+            .prefix("ovim-strok-inspect-")
+            .suffix(".strok")
+            .tempfile()
+        {
+            Ok(file) => file,
+            Err(error) => {
+                return ToolResult::Error(format!(
+                    "failed to create in-memory Strøk snapshot: {error}"
+                ))
+            }
+        };
+        if let Err(error) = std::io::Write::write_all(&mut file, source.as_bytes()) {
+            return ToolResult::Error(format!("failed to write in-memory Strøk snapshot: {error}"));
+        }
+        let path = file.path().to_path_buf();
+        temporary = Some(file);
+        Some(path)
+    } else {
+        command.file.clone()
+    };
+    let mut arguments = Vec::new();
+    if let Some(file) = file {
+        arguments.extend(["-f".to_string(), file.to_string_lossy().into_owned()]);
+    }
+    arguments.extend(command.arguments);
+    let mut child = match std::process::Command::new("strok")
+        .args(&arguments)
+        .current_dir(command.project_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ToolResult::Error(
+                "Strøk 0.2 or newer is not installed or `strok` is not on Ovim's PATH. Install it with `brew install adhvfed/tap/strok`.".to_string(),
+            )
+        }
+        Err(error) => return ToolResult::Error(format!("failed to run Strøk: {error}")),
+    };
+    let stdout = child.stdout.take().expect("piped Strøk stdout");
+    let stderr = child.stderr.take().expect("piped Strøk stderr");
+    let stdout_task = std::thread::spawn(move || read_bounded_stream(stdout, 64 * 1024));
+    let stderr_task = std::thread::spawn(move || read_bounded_stream(stderr, 16 * 1024));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err("Strøk command timed out after 15 seconds".to_string());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(format!("failed waiting for Strøk: {error}"));
+            }
+        }
+    };
+    drop(temporary);
+    let (stdout, stdout_truncated) = stdout_task.join().unwrap_or_default();
+    let (stderr, stderr_truncated) = stderr_task.join().unwrap_or_default();
+    let status = match status {
+        Ok(status) => status,
+        Err(error) => return ToolResult::Error(error),
+    };
+
+    let stdout = String::from_utf8_lossy(&stdout);
+    let stderr = String::from_utf8_lossy(&stderr);
+    let mut body = stdout.trim_end().to_string();
+    if !stderr.trim().is_empty() {
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str("stderr:\n");
+        body.push_str(stderr.trim_end());
+    }
+    if stdout_truncated || stderr_truncated {
+        body.push_str("\n[output truncated by Ovim]");
+    }
+    let body = truncate_utf8_with_notice(&body, 64 * 1024);
+    if status.success() {
+        ToolResult::Success(body)
+    } else {
+        ToolResult::Error(if body.is_empty() {
+            "Strøk command failed with no output".to_string()
+        } else {
+            body
+        })
+    }
+}
+
+fn read_bounded_stream(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
+    let mut retained = Vec::with_capacity(limit.min(8 * 1024));
+    let mut buffer = [0u8; 8 * 1024];
+    let mut truncated = false;
+    while let Ok(read) = reader.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(remaining)]);
+        truncated |= read > remaining;
+    }
+    (retained, truncated)
+}
+
+fn handle_gdiff_review(ctx: &ToolExecutionContext) -> ToolResult {
+    let root = match resolve_project_root(ctx) {
+        Ok(root) => root,
+        Err(error) => return error,
+    };
+    match crate::gdiff::review(&root) {
+        Ok(review) if review.running => match serde_json::to_string_pretty(&review) {
+            Ok(json) => ToolResult::Success(json),
+            Err(error) => ToolResult::Error(format!("failed to encode gdiff review: {error}")),
+        },
+        Ok(review) if !review.installed => ToolResult::Error(
+            "gdiff is not installed or is not on PATH; install gdiff before opening a shared review"
+                .to_string(),
+        ),
+        Ok(_) => ToolResult::Error(
+            "no gdiff review is running for this repository; ask the user to open the Diff tab and start one"
+                .to_string(),
+        ),
+        Err(error) => ToolResult::Error(format!("failed to read gdiff review: {error:#}")),
     }
 }
 
@@ -2643,5 +2999,86 @@ mod tests {
             ToolResult::Success(s) => assert!(s.contains("API_KEY=secret")),
             ToolResult::Error(e) => panic!("expected YOLO mode to bypass approval, got: {e}"),
         }
+    }
+
+    #[test]
+    fn strok_vector_builds_only_read_only_project_scoped_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mark.strok"), "documentsize 24x24\n").unwrap();
+        let ctx = test_ctx_with_project("", dir.path().to_path_buf());
+
+        let intro = strok_vector_command(&serde_json::json!({"operation": "intro"}), &ctx).unwrap();
+        assert_eq!(intro.arguments, ["agent-intro"]);
+
+        let mut ctx = ctx;
+        let canonical = dir.path().join("mark.strok").canonicalize().unwrap();
+        ctx.open_buffers.insert(
+            canonical,
+            "documentsize 48x48\n# unsaved source\n".to_string(),
+        );
+        let inspect = strok_vector_command(
+            &serde_json::json!({
+                "operation": "inspect",
+                "path": "mark.strok",
+                "selector": "outline"
+            }),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(
+            inspect.arguments,
+            ["inspect", "outline", "--detail", "structural", "--json"]
+        );
+        assert_eq!(
+            inspect.in_memory_source.as_deref(),
+            Some("documentsize 48x48\n# unsaved source\n")
+        );
+        let expected_path = dir.path().join("mark.strok");
+        assert_eq!(inspect.file.as_deref(), Some(expected_path.as_path()));
+
+        let unsaved_path = dir.path().join("new.strok");
+        ctx.open_buffers.insert(
+            unsaved_path.clone(),
+            "documentsize 32x32\n# not on disk yet\n".to_string(),
+        );
+        let audit = strok_vector_command(
+            &serde_json::json!({"operation": "audit", "path": "new.strok"}),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(audit.file.as_deref(), Some(unsaved_path.as_path()));
+        assert_eq!(
+            audit.in_memory_source.as_deref(),
+            Some("documentsize 32x32\n# not on disk yet\n")
+        );
+
+        let uppercase_path = dir.path().join("badge.STROK");
+        ctx.open_buffers
+            .insert(uppercase_path.clone(), "documentsize 16x16\n".to_string());
+        let uppercase = strok_vector_command(
+            &serde_json::json!({"operation": "inspect", "path": "badge.STROK"}),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(uppercase.file.as_deref(), Some(uppercase_path.as_path()));
+
+        let oversized_selector = "x".repeat(4 * 1024 + 1);
+        let error = strok_vector_command(
+            &serde_json::json!({
+                "operation": "inspect",
+                "path": "mark.strok",
+                "selector": oversized_selector,
+            }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert!(matches!(error, ToolResult::Error(message) if message.contains("selector")));
+
+        let error = strok_vector_command(
+            &serde_json::json!({"operation": "audit", "path": "../mark.strok"}),
+            &ctx,
+        )
+        .unwrap_err();
+        assert!(matches!(error, ToolResult::Error(message) if message.contains("traversal")));
     }
 }
