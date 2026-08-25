@@ -279,6 +279,11 @@ async fn gui_set_chat_input_cursor(
 }
 
 #[tauri::command]
+async fn gui_open_ai_chat(bridge: State<'_, GuiBridge>) -> Result<(), String> {
+    bridge.open_ai_chat().await
+}
+
+#[tauri::command]
 async fn gui_update_chat_input(
     bridge: State<'_, GuiBridge>,
     expected_input: String,
@@ -547,6 +552,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_paste,
             gui_attach_image,
             gui_set_cursor,
+            gui_open_ai_chat,
             gui_set_chat_input_cursor,
             gui_update_chat_input,
             gui_set_chat_input_width,

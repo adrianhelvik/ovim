@@ -701,6 +701,9 @@ enum GuiRequest {
         input: GuiKeyInput,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    OpenAiChat {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     UpdateChatInput {
         expected_input: String,
         expected_cursor: usize,
@@ -912,6 +915,10 @@ impl GuiBridge {
         self.request(|reply| GuiRequest::Key { input, reply }).await
     }
 
+    pub async fn open_ai_chat(&self) -> Result<(), String> {
+        self.request(|reply| GuiRequest::OpenAiChat { reply }).await
+    }
+
     pub async fn paste(&self, text: String) -> Result<(), String> {
         self.request(|reply| GuiRequest::Paste { text, reply })
             .await
@@ -1108,20 +1115,22 @@ async fn run_editor(
     if let Some(file) = file {
         let path = Path::new(&file.path);
         let result = if path.is_dir() {
-            editor.open_directory(path)
+            editor.set_workspace_root(path)
         } else {
             editor.load_file_async(path).await
         };
         if let Err(error) = result {
             editor.set_file_path(file.path.clone());
             editor.set_status_message(format!("Could not open {}: {error}", file.path));
-        } else if !path.is_dir() {
-            if let Some(line) = file.line {
-                editor.buffer_mut().cursor_mut().set_position(
-                    line.saturating_sub(1),
-                    GraphemeCol(file.col.unwrap_or(1).saturating_sub(1)),
-                );
-                editor.buffer_mut().validate_cursor_position();
+        } else {
+            if !path.is_dir() {
+                if let Some(line) = file.line {
+                    editor.buffer_mut().cursor_mut().set_position(
+                        line.saturating_sub(1),
+                        GraphemeCol(file.col.unwrap_or(1).saturating_sub(1)),
+                    );
+                    editor.buffer_mut().validate_cursor_position();
+                }
             }
             editor.set_mode(Mode::Normal);
         }
@@ -1219,6 +1228,31 @@ fn set_gui_chat_input_cursor(editor: &mut Editor, offset: usize) -> Result<()> {
     chat.input_cursor = offset;
     chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
     Ok(())
+}
+
+fn activate_gui_ai_chat(editor: &mut Editor) -> Result<()> {
+    if editor.mode() == Mode::AiChat {
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
+        }
+        return Ok(());
+    }
+
+    // A workbench navigation action supersedes a transient picker. Otherwise
+    // the picker would remain latent and reclaim focus when chat closes.
+    if editor.picker().is_some() {
+        editor.close_picker();
+        if editor.mode() == Mode::Picker {
+            editor.set_mode(Mode::Normal);
+        }
+    }
+
+    editor.open_ai_chat(ovim_core::ai::chat_types::ChatOpts {
+        name: "chat".into(),
+        profile: editor.ai_chat_context_profile("chat"),
+        allow_edits: true,
+        ..Default::default()
+    })
 }
 
 fn draft_vector_feedback(editor: &mut Editor, feedback: &str) -> Result<()> {
@@ -1352,6 +1386,14 @@ async fn handle_request(
             let result = input
                 .into_core()
                 .and_then(|event| InputHandler::handle_key_event_no_dirty(editor, event));
+            if result.is_ok() {
+                refresh_after_input(editor);
+                editor.dispatch_pending_intents().await;
+            }
+            (reply, result)
+        }
+        GuiRequest::OpenAiChat { reply } => {
+            let result = activate_gui_ai_chat(editor);
             if result.is_ok() {
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
@@ -2973,6 +3015,39 @@ fn indexed_rgb(index: u8) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gui_chat_activation_dismisses_a_transient_picker() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut editor = Editor::new();
+        editor.set_picker(crate::editor::Picker::new_file_finder(
+            workspace.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+        ));
+        editor.set_mode(Mode::Picker);
+
+        activate_gui_ai_chat(&mut editor).unwrap();
+
+        assert_eq!(editor.mode(), Mode::AiChat);
+        assert!(editor.picker().is_none());
+        editor.close_ai_chat();
+        assert_eq!(editor.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn gui_chat_activation_is_idempotent_and_preserves_the_draft() {
+        let mut editor = Editor::new();
+        let mode = editor.mode();
+        activate_gui_ai_chat(&mut editor).unwrap();
+        editor.ai_state.chat.as_mut().unwrap().input = "keep this draft".into();
+
+        activate_gui_ai_chat(&mut editor).unwrap();
+
+        assert_eq!(editor.mode(), Mode::AiChat);
+        assert_eq!(editor.ai_chat_input(), "keep this draft");
+        editor.close_ai_chat();
+        assert_eq!(editor.mode(), mode);
+    }
 
     #[test]
     fn overlay_columns_use_rendered_tab_and_wide_character_widths() {

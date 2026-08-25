@@ -1582,7 +1582,7 @@ function App() {
         void sendLiteral("-");
     };
 
-    const toggleAiChat = () => {
+    const activateAiChat = () => {
         setActiveContextPanel("ai");
         if (compactDocks() && view().aiChat && activeDock() === "explorer") {
             setActiveDock("context");
@@ -1591,7 +1591,7 @@ function App() {
         }
         setActiveDock("context");
         focusChatInput();
-        void sendLiteral("  ");
+        void mutate("gui_open_ai_chat", {});
     };
 
     const toggleDiff = () => {
@@ -2983,7 +2983,7 @@ function App() {
                                 Boolean(view().aiChat) &&
                                 activeDock() === "context"
                             }
-                            onClick={toggleAiChat}
+                            onClick={activateAiChat}
                         />
                     </div>
                     <IconButton
