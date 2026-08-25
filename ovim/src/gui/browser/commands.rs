@@ -1,6 +1,6 @@
 use tauri::ipc::Channel;
 
-use super::host::{BrowserHost, GuiBrowserBounds, GuiBrowserState};
+use super::host::{BrowserHost, GuiBrowserBounds, GuiBrowserState, GuiBrowserToolbarAction};
 
 #[tauri::command]
 pub async fn gui_browser_open(
@@ -59,9 +59,10 @@ pub fn gui_browser_navigate(
 pub fn gui_browser_toolbar(
     host: tauri::State<'_, BrowserHost>,
     session_id: String,
-    action: String,
+    action: GuiBrowserToolbarAction,
+    count: Option<u32>,
 ) -> Result<(), String> {
-    host.toolbar_action(&session_id, &action)
+    host.toolbar_action(&session_id, action, count.unwrap_or(1))
 }
 
 #[tauri::command]

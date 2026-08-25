@@ -552,6 +552,58 @@ button:focus-visible {
     color: #5a5e68;
     font-size: 11.5px;
 }
+.surface-command-line {
+    position: absolute;
+    z-index: var(--layer-command);
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
+    min-height: 52px;
+    padding: 7px 10px 8px;
+    border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--border));
+    border-radius: var(--radius-3);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto 23px;
+    align-items: center;
+    column-gap: 12px;
+    color: var(--text-primary);
+    background: color-mix(in srgb, var(--surface-2) 96%, var(--canvas));
+    box-shadow: var(--shadow-dialog);
+}
+.surface-command-context {
+    grid-column: 1 / -1;
+    color: var(--accent);
+    font: 700 var(--text-micro)/1 var(--editor-font);
+    letter-spacing: 0.09em;
+}
+.surface-command-line label {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 12px minmax(0, 1fr);
+    align-items: center;
+    color: var(--accent);
+    font: 13px/1 var(--editor-font);
+}
+.surface-command-line input {
+    min-width: 0;
+    height: 23px;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    color: var(--text-primary);
+    background: transparent;
+    font: inherit;
+}
+.surface-command-line em {
+    max-width: min(48vw, 560px);
+    overflow: hidden;
+    color: var(--error);
+    font: 11px/1.2 var(--ui-font);
+    font-style: normal;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .browser-view-active > .input-sink,
 .browser-view-active > .ime-preview,
 .browser-view-active > .editor-content,

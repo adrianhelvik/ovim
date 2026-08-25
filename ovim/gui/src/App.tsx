@@ -22,6 +22,10 @@ import BrowserPanel, {
 } from "./BrowserPanel";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 import GdiffPanel from "./GdiffPanel";
+import SurfaceCommandLine, {
+    type CommandExecutionResult,
+} from "./SurfaceCommandLine";
+import { BROWSER_COMMAND_NAMES, parseBrowserCommand } from "./browserCommands";
 import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
@@ -38,6 +42,7 @@ import {
     activeSourceSelection,
     composeWorkbenchTabs,
     projectBrowserState,
+    workbenchSelectionId,
     type WorkbenchSelection,
 } from "./workbench";
 import type {
@@ -1161,6 +1166,10 @@ function App() {
         return selection.kind === "browser" ? selection.sessionId : undefined;
     };
     const [browserOpening, setBrowserOpening] = createSignal(false);
+    const [browserCommandRequest, setBrowserCommandRequest] = createSignal<{
+        serial: number;
+        sessionId: string;
+    }>();
     const [vectorPreview, setVectorPreview] = createSignal<VectorPreview>();
     const [vectorPreviewError, setVectorPreviewError] = createSignal("");
     const [vectorPreviewLoading, setVectorPreviewLoading] = createSignal(false);
@@ -1191,6 +1200,8 @@ function App() {
     let lastDimensions = { columns: 0, rows: 0 };
     let latestSnapshotRevision: number | undefined;
     let latestBrowserPresentationRevision = 0;
+    let nextBrowserCommandSerial = 1;
+    let browserCommandRefocusSession: string | undefined;
     const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
     const hasContextDock = createMemo(() =>
         Boolean(
@@ -1450,8 +1461,39 @@ function App() {
             }),
         );
     };
+    const openBrowserCommand = (sessionId = activeBrowserId()) => {
+        if (
+            !sessionId ||
+            !browserState().sessions.some(
+                (session) => session.sessionId === sessionId,
+            )
+        )
+            return;
+        presentBrowserSession(sessionId);
+        browserCommandRefocusSession = sessionId;
+        setBrowserCommandRequest({
+            serial: nextBrowserCommandSerial++,
+            sessionId,
+        });
+    };
+    const dismissBrowserCommand = () => {
+        const sessionId = browserCommandRefocusSession;
+        browserCommandRefocusSession = undefined;
+        setBrowserCommandRequest(undefined);
+        if (sessionId) requestAnimationFrame(() => focusBrowser(sessionId));
+        else if (workbenchView() === "source")
+            requestAnimationFrame(focusEditorInput);
+    };
     const acceptBrowserState = (next: BrowserState) => {
         setBrowserState(next);
+        if (
+            browserCommandRequest() &&
+            !next.sessions.some(
+                (session) =>
+                    session.sessionId === browserCommandRequest()?.sessionId,
+            )
+        )
+            setBrowserCommandRequest(undefined);
         const projection = projectBrowserState(
             workbenchSelection(),
             latestBrowserPresentationRevision,
@@ -1519,6 +1561,7 @@ function App() {
             });
     };
     const focusPrimaryInput = () => {
+        if (browserCommandRequest()) return;
         if (workbenchView() === "browser") {
             focusBrowser();
             return;
@@ -1704,7 +1747,7 @@ function App() {
 
     const selectWorkbenchTab = (position: number) => {
         const tab = workbenchTabs()[position];
-        if (!tab) return;
+        if (!tab) return false;
         switch (tab.kind) {
             case "source":
                 setWorkbenchSelection({ kind: "source", tabId: tab.tabId });
@@ -1719,6 +1762,85 @@ function App() {
             case "browser":
                 activateBrowserSession(tab.sessionId);
                 break;
+        }
+        return true;
+    };
+
+    const executeBrowserCommand = async (
+        input: string,
+    ): Promise<CommandExecutionResult> => {
+        const request = browserCommandRequest();
+        if (!request)
+            return { ok: false, message: "No browser tab is selected" };
+        const parsed = parseBrowserCommand(input);
+        if (!parsed.ok) return parsed;
+        try {
+            switch (parsed.command.kind) {
+                case "close":
+                    {
+                        const next = await invoke<BrowserState>(
+                            "gui_browser_close",
+                            { sessionId: request.sessionId },
+                        );
+                        browserCommandRefocusSession = undefined;
+                        acceptBrowserState(next);
+                    }
+                    break;
+                case "navigate":
+                    acceptBrowserState(
+                        await invoke<BrowserState>("gui_browser_navigate", {
+                            sessionId: request.sessionId,
+                            url: parsed.command.url,
+                        }),
+                    );
+                    break;
+                case "history":
+                    await invoke("gui_browser_toolbar", {
+                        sessionId: request.sessionId,
+                        action: parsed.command.direction,
+                        count: parsed.command.count,
+                    });
+                    break;
+                case "reload":
+                case "stop":
+                    await invoke("gui_browser_toolbar", {
+                        sessionId: request.sessionId,
+                        action: parsed.command.kind,
+                    });
+                    break;
+                case "select_relative_tab": {
+                    const tabs = workbenchTabs();
+                    const current = tabs.findIndex(
+                        (tab) =>
+                            tab.id ===
+                            workbenchSelectionId(workbenchSelection()),
+                    );
+                    if (!tabs.length || current < 0)
+                        return {
+                            ok: false,
+                            message: "No workbench tab is selected",
+                        };
+                    const position =
+                        (current +
+                            (parsed.command.delta % tabs.length) +
+                            tabs.length) %
+                        tabs.length;
+                    browserCommandRefocusSession = undefined;
+                    selectWorkbenchTab(position);
+                    break;
+                }
+                case "select_tab":
+                    if (!selectWorkbenchTab(parsed.command.position - 1))
+                        return {
+                            ok: false,
+                            message: `Workbench tab ${parsed.command.position} does not exist`,
+                        };
+                    browserCommandRefocusSession = undefined;
+                    break;
+            }
+            return { ok: true };
+        } catch (reason) {
+            return { ok: false, message: String(reason) };
         }
     };
 
@@ -1781,6 +1903,18 @@ function App() {
             return;
         }
         const nativeControl = isGuiNativeControl(target, inputSink);
+        if (
+            workbenchView() === "browser" &&
+            event.key === ":" &&
+            !nativeControl &&
+            !event.metaKey &&
+            !event.ctrlKey &&
+            !event.altKey
+        ) {
+            event.preventDefault();
+            openBrowserCommand();
+            return;
+        }
         if (primaryModifier && !nativeControl) {
             const key = event.key.toLowerCase();
             if (key === "z" || key === "a" || key === "f") {
@@ -2907,6 +3041,7 @@ function App() {
         observer.observe(editorBody);
         let unlistenMenu: (() => void) | undefined;
         let unlistenClose: (() => void) | undefined;
+        let unlistenBrowserCommand: (() => void) | undefined;
         if (native) {
             void listen<string>("ovim://menu-action", (event) =>
                 performMenuAction(event.payload),
@@ -2917,6 +3052,11 @@ function App() {
                 requestExit(event.payload === "quit" ? "quit" : "close"),
             ).then((unlisten) => {
                 unlistenClose = unlisten;
+            });
+            void listen<string>("ovim://browser-command", (event) =>
+                openBrowserCommand(event.payload),
+            ).then((unlisten) => {
+                unlistenBrowserCommand = unlisten;
             });
             const browserStates = new Channel<BrowserState>();
             browserStates.onmessage = acceptBrowserState;
@@ -2945,6 +3085,7 @@ function App() {
             observer.disconnect();
             unlistenMenu?.();
             unlistenClose?.();
+            unlistenBrowserCommand?.();
         });
     });
 
@@ -3503,10 +3644,19 @@ function App() {
                             session={activeBrowser()}
                             obscured={Boolean(
                                 pendingExit() ||
+                                browserCommandRequest() ||
                                 view().picker ||
                                 view().lspManager,
                             )}
                             onState={acceptBrowserState}
+                        />
+                        <SurfaceCommandLine
+                            active={Boolean(browserCommandRequest())}
+                            requestSerial={browserCommandRequest()?.serial ?? 0}
+                            surface="browser"
+                            completions={BROWSER_COMMAND_NAMES}
+                            onExecute={executeBrowserCommand}
+                            onDismiss={dismissBrowserCommand}
                         />
                         <textarea
                             ref={inputSink!}
@@ -3816,7 +3966,11 @@ function App() {
 
                     <div class="message-line">
                         <Show
-                            when={view().prompt}
+                            when={
+                                workbenchView() === "source"
+                                    ? view().prompt
+                                    : undefined
+                            }
                             fallback={
                                 <span
                                     class="message"
@@ -3850,7 +4004,15 @@ function App() {
                     </div>
 
                     <footer class="statusbar">
-                        <div class="mode-chip">{view().mode}</div>
+                        <div class="mode-chip">
+                            {browserCommandRequest()
+                                ? "COMMAND · BROWSER"
+                                : workbenchView() === "browser"
+                                  ? "BROWSER"
+                                  : workbenchView() === "vector"
+                                    ? "VECTOR"
+                                    : view().mode}
+                        </div>
                         <div class="status-left">
                             <Show when={view().gitBranch}>
                                 <span>

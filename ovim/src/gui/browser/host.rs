@@ -8,10 +8,11 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tauri::ipc::Channel;
 use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
-use tauri::{LogicalPosition, LogicalSize, Url, Webview, WebviewUrl, Window};
+use tauri::{Emitter, LogicalPosition, LogicalSize, Url, Webview, WebviewUrl, Window};
 
 const SNAPSHOT_SCRIPT: &str = include_str!("snapshot.js");
 const ACTION_FUNCTION: &str = include_str!("action.js");
+const KEY_BRIDGE_SCRIPT: &str = include_str!("bridge.js");
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BROWSER_SESSIONS: usize = 8;
 
@@ -58,6 +59,16 @@ pub struct GuiBrowserState {
 pub struct GuiBrowserPresentationRequest {
     pub revision: u64,
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuiBrowserToolbarAction {
+    Back,
+    Forward,
+    Reload,
+    Stop,
+    Focus,
 }
 
 struct HostedBrowser {
@@ -280,10 +291,22 @@ impl BrowserHost {
         let title_weak = weak.clone();
         let load_session_id = session_id.to_string();
         let title_session_id = session_id.to_string();
+        let command_parent = parent.clone();
+        let command_session_id = session_id.to_string();
+        let command_token = format!("{:032x}", rand::random::<u128>());
+        let command_script = key_bridge_script(&command_token);
+        let expected_command_token = command_token.clone();
         let builder = WebviewBuilder::new(session_id, WebviewUrl::External(url))
             .incognito(incognito)
+            .initialization_script(command_script)
             .on_navigation(allowed_browser_url)
-            .on_new_window(|_, _| NewWindowResponse::Deny)
+            .on_new_window(move |url, _| {
+                if is_browser_command_url(&url, &expected_command_token) {
+                    let _ =
+                        command_parent.emit("ovim://browser-command", command_session_id.clone());
+                }
+                NewWindowResponse::Deny
+            })
             .on_download(|_, _| false)
             .on_page_load(move |_, payload| {
                 update_page_load(&weak, &load_session_id, payload.url(), payload.event());
@@ -539,7 +562,12 @@ impl BrowserHost {
         Ok(())
     }
 
-    pub fn toolbar_action(&self, session_id: &str, action: &str) -> Result<(), String> {
+    pub fn toolbar_action(
+        &self,
+        session_id: &str,
+        action: GuiBrowserToolbarAction,
+        count: u32,
+    ) -> Result<(), String> {
         let webview = self
             .inner
             .lock()
@@ -551,12 +579,13 @@ impl BrowserHost {
             .webview
             .clone()
             .ok_or_else(|| "Browser session has no loaded page".to_string())?;
+        let count = count.clamp(1, 100);
         match action {
-            "back" => webview.eval("history.back()"),
-            "forward" => webview.eval("history.forward()"),
-            "reload" => webview.reload(),
-            "focus" => webview.set_focus(),
-            _ => return Err(format!("Unknown browser toolbar action: {action}")),
+            GuiBrowserToolbarAction::Back => webview.eval(format!("history.go(-{count})")),
+            GuiBrowserToolbarAction::Forward => webview.eval(format!("history.go({count})")),
+            GuiBrowserToolbarAction::Reload => webview.reload(),
+            GuiBrowserToolbarAction::Stop => webview.eval("window.stop()"),
+            GuiBrowserToolbarAction::Focus => webview.set_focus(),
         }
         .map_err(|error| format!("Browser toolbar action failed: {error}"))
     }
@@ -783,6 +812,17 @@ fn allowed_browser_url(url: &Url) -> bool {
         && url.password().is_none()
 }
 
+fn key_bridge_script(token: &str) -> String {
+    debug_assert!(token.chars().all(|character| character.is_ascii_hexdigit()));
+    KEY_BRIDGE_SCRIPT.replace("__OVIM_BRIDGE_TOKEN__", token)
+}
+
+fn is_browser_command_url(url: &Url, token: &str) -> bool {
+    url.scheme() == "ovim-browser"
+        && url.host_str() == Some("command")
+        && url.path().strip_prefix('/') == Some(token)
+}
+
 fn browser_error(kind: BrowserErrorKind, message: impl Into<String>) -> BrowserError {
     BrowserError::new(kind, message)
 }
@@ -957,6 +997,25 @@ mod tests {
         assert!(SNAPSHOT_SCRIPT.contains("MAX_ELEMENTS = 200"));
         assert!(ACTION_FUNCTION.contains("manual browser control"));
         assert!(!ACTION_FUNCTION.contains("eval("));
+        assert!(KEY_BRIDGE_SCRIPT.contains("ovim-browser://command"));
+        assert!(KEY_BRIDGE_SCRIPT.contains("event.isTrusted"));
+        assert!(!KEY_BRIDGE_SCRIPT.contains("__TAURI_INTERNALS__"));
+    }
+
+    #[test]
+    fn browser_command_bridge_requires_its_per_webview_token() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let script = key_bridge_script(token);
+        assert!(script.contains(&format!("ovim-browser://command/{token}")));
+        assert!(!script.contains("__OVIM_BRIDGE_TOKEN__"));
+        assert!(is_browser_command_url(
+            &Url::parse(&format!("ovim-browser://command/{token}")).unwrap(),
+            token,
+        ));
+        assert!(!is_browser_command_url(
+            &Url::parse("ovim-browser://command/attacker").unwrap(),
+            token,
+        ));
     }
 
     #[test]

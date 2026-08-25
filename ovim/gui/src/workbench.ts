@@ -20,6 +20,17 @@ export const activeSourceSelection = (
     tabId: sourceTabs.find((tab) => tab.active)?.id ?? sourceTabs[0]?.id ?? 0,
 });
 
+export const workbenchSelectionId = (selection: WorkbenchSelection) => {
+    switch (selection.kind) {
+        case "source":
+            return `source:${selection.tabId}`;
+        case "vector":
+            return `vector:${selection.sourceTabId}`;
+        case "browser":
+            return `browser:${selection.sessionId}`;
+    }
+};
+
 export const composeWorkbenchTabs = (
     sourceTabs: SourceTab[],
     includeVector: boolean,

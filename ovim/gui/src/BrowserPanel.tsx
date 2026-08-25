@@ -1,6 +1,7 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "./Icon";
+import { normalizeBrowserAddress } from "./browserCommands";
 
 export interface BrowserSession {
     sessionId: string;
@@ -36,12 +37,6 @@ interface BrowserBounds {
     height: number;
     visible: boolean;
 }
-
-const normalizeAddress = (value: string) => {
-    const address = value.trim();
-    if (!address || /^[a-z][a-z\d+.-]*:/i.test(address)) return address;
-    return `https://${address}`;
-};
 
 export const browserTabTitle = (session: BrowserSession) => {
     const title = session.title.trim();
@@ -106,7 +101,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
 
     const navigate = async () => {
         const sessionId = session()?.sessionId;
-        const url = normalizeAddress(address());
+        const url = normalizeBrowserAddress(address());
         if (!sessionId || !url) return;
         setAddress(url);
         setError("");

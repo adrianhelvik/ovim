@@ -38,6 +38,7 @@ clap = { version = "4.4", features = ["derive"] }
 lsp-types = "0.97"
 mlua = { version = "0.9", features = ["lua54", "vendored", "async", "serialize"], optional = true }
 reqwest = { version = "0.12.23", features = ["json", "blocking"] }
+rand = "0.8"
 dirs = "5.0"
 prometheus = { version = "0.13", optional = true }
 which = "6.0"
@@ -73,7 +74,6 @@ ropey = "1.6"
 tree-sitter = "0.25"
 streaming-iterator = "0.1.9"
 insta = "1.40"
-rand = "0.8"
 proptest = "1.5"
 
 [build-dependencies]
