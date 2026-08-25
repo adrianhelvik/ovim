@@ -262,6 +262,7 @@ export interface GuiSnapshot {
     layout: GuiLayoutNode;
     panes: GuiPane[];
     tabs: Array<{
+        id: number;
         index: number;
         title: string;
         active: boolean;

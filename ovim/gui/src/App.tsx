@@ -59,7 +59,7 @@ interface VectorPreview {
 }
 
 export type WorkbenchTabReference =
-    | { id: string; kind: "source"; index: number }
+    | { id: string; kind: "source"; index: number; tabId: number }
     | { id: "vector"; kind: "vector" }
     | { id: string; kind: "browser"; sessionId: string };
 
@@ -69,9 +69,10 @@ export const composeWorkbenchTabs = (
     browserSessions: BrowserSession[],
 ): WorkbenchTabReference[] => [
     ...sourceTabs.map((tab) => ({
-        id: `source:${tab.index}`,
+        id: `source:${tab.id}`,
         kind: "source" as const,
         index: tab.index,
+        tabId: tab.id,
     })),
     ...(includeVector
         ? [{ id: "vector" as const, kind: "vector" as const }]

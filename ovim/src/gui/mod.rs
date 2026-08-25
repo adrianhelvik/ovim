@@ -387,6 +387,7 @@ pub struct GuiSegment {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiTab {
+    pub id: u64,
     pub index: usize,
     pub title: String,
     pub active: bool,
@@ -1870,6 +1871,10 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
                         .is_some_and(|buffer| buffer.is_modified())
                 };
                 GuiTab {
+                    id: editor
+                        .tab_page_manager()
+                        .tab(index)
+                        .map_or(0, ovim_core::editor::TabPage::id),
                     index,
                     title: editor.get_tab_title(index),
                     active,

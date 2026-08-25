@@ -85,8 +85,8 @@ describe("Ovim Solid workbench", () => {
         expect(
             composeWorkbenchTabs(mockSnapshot.tabs, true, browserSessions),
         ).toEqual([
-            { id: "source:0", kind: "source", index: 0 },
-            { id: "source:1", kind: "source", index: 1 },
+            { id: "source:1", kind: "source", index: 0, tabId: 1 },
+            { id: "source:2", kind: "source", index: 1, tabId: 2 },
             { id: "vector", kind: "vector" },
             {
                 id: "browser:browser-1",

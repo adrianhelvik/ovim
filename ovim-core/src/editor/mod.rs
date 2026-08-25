@@ -150,7 +150,7 @@ pub use search::Search;
 pub use search_context::{SearchContext, VisualSearchState};
 pub use services::EditorServices;
 pub use single_line_input::SingleLineInput;
-pub use tabpage::{TabPage, TabPageManager};
+pub use tabpage::{TabPage, TabPageId, TabPageManager};
 pub use test_panel::{format_duration, TestPanelState, TestRun, TestRunStatus};
 pub use textobjects::{TextObjectRange, TextObjects};
 pub use theme_state::ThemeState;
