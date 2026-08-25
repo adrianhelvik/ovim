@@ -44,7 +44,8 @@ closing the tab destroys its session. The web development view cannot create
 browser tabs because it has no native child-webview primitive.
 
 The AI browser tools are advertised only when this live host is attached and
-the active chat profile sets `scope_network = true`. See
+the active chat profile sets `scope_network = true`; the built-in `codex_sol`
+chat profile enables it by default. See
 [`user-docs/ai.md`](../../user-docs/ai.md#shared-embedded-browser-ovim-gui) for
 the control and security boundary.
 

@@ -75,8 +75,9 @@ keeps at most eight browser tabs and destroys a child webview when its tab is
 closed, so no browser session is kept open by default. The terminal frontend
 does not attach a browser host, so these tools are omitted there.
 
-Browser tools are opt-in per AI profile. Add `scope_network = true` to the
-profile used for `chat`; if that profile has a non-empty `tools` allowlist, add
+The built-in `codex_sol` chat profile enables browser access by default. Custom
+or overridden profiles remain opt-in: add `scope_network = true` to the profile
+used for `chat`; if that profile has a non-empty `tools` allowlist, add
 `browser_session`, `browser_navigate`, `browser_snapshot`, and `browser_act` as
 well. The Codex configuration example below shows the network setting. Manual
 browsing in the Browser tab does not depend on the AI profile.
