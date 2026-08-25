@@ -2004,7 +2004,7 @@ async fn batch_shell_unknown_outcome_clears_waiting_and_closes_tool_calls() {
     if let Some(chat) = editor.ai_state.chat.as_mut() {
         chat.pending_shell_execution = Some(super::super::ai_chat_state::PendingShellExecution {
             tool_call: shell_call,
-            continuation: super::super::ai_chat_state::ShellExecutionContinuation::Batch {
+            continuation: super::super::ai_chat_state::ToolExecutionContinuation::Batch {
                 runtime_tool: None,
                 runtime_turn: None,
                 remaining_tool_calls: vec![follow_up],

@@ -150,7 +150,7 @@ impl Editor {
         if self.poll_pending_shell_execution() {
             return true;
         }
-        if self.poll_pending_web_execution() {
+        if self.poll_pending_background_tool() {
             return true;
         }
         let current_branch_generation = self
@@ -327,6 +327,39 @@ impl Editor {
                         self.clear_streaming_state();
                         return true;
                     }
+                    if self.is_background_ai_tool(&call.name) {
+                        let continuation =
+                            super::ai_chat_state::ToolExecutionContinuation::Dynamic {
+                                runtime_tool: tool.clone(),
+                                runtime_turn: turn.clone(),
+                                response,
+                            };
+                        match self.begin_pending_background_tool(call.clone(), continuation) {
+                            Ok(()) => {
+                                changed = true;
+                                continue;
+                            }
+                            Err((result, continuation)) => {
+                                let super::ai_chat_state::ToolExecutionContinuation::Dynamic {
+                                    runtime_tool,
+                                    runtime_turn,
+                                    response,
+                                } = *continuation
+                                else {
+                                    unreachable!()
+                                };
+                                self.finish_dynamic_tool(
+                                    &runtime_turn,
+                                    &runtime_tool,
+                                    &call,
+                                    response,
+                                    result,
+                                );
+                                changed = true;
+                                continue;
+                            }
+                        }
+                    }
                     if matches!(
                         call.name.as_str(),
                         crate::ai::tools::subagents::WAIT_AGENT_TOOL
@@ -334,7 +367,7 @@ impl Editor {
                             | crate::ai::tools::subagents::FOLLOWUP_AGENT_TOOL
                     ) {
                         let continuation =
-                            super::ai_chat_state::SubagentControlContinuation::Dynamic {
+                            super::ai_chat_state::ToolExecutionContinuation::Dynamic {
                                 runtime_tool: tool.clone(),
                                 runtime_turn: turn.clone(),
                                 response,
@@ -345,7 +378,7 @@ impl Editor {
                                 continue;
                             }
                             Err((result, continuation)) => {
-                                let super::ai_chat_state::SubagentControlContinuation::Dynamic {
+                                let super::ai_chat_state::ToolExecutionContinuation::Dynamic {
                                     runtime_tool,
                                     runtime_turn,
                                     response,
@@ -968,7 +1001,7 @@ impl Editor {
             };
             self.start_pending_shell_execution(
                 call,
-                super::ai_chat_state::ShellExecutionContinuation::Dynamic {
+                super::ai_chat_state::ToolExecutionContinuation::Dynamic {
                     runtime_tool: tool,
                     runtime_turn: turn,
                     response,
@@ -996,7 +1029,7 @@ impl Editor {
     pub(super) fn start_pending_shell_execution(
         &mut self,
         call: ToolCallInfo,
-        continuation: super::ai_chat_state::ShellExecutionContinuation,
+        continuation: super::ai_chat_state::ToolExecutionContinuation,
         command: String,
         workdir: std::path::PathBuf,
         artifact_store: crate::run_log::ArtifactStore,
@@ -1157,12 +1190,12 @@ impl Editor {
             chat.evict_old_shell_transcripts();
         }
         let (runtime_turn, runtime_tool) = match &pending.continuation {
-            super::ai_chat_state::ShellExecutionContinuation::Dynamic {
+            super::ai_chat_state::ToolExecutionContinuation::Dynamic {
                 runtime_turn,
                 runtime_tool,
                 ..
             } => (Some(runtime_turn), Some(runtime_tool)),
-            super::ai_chat_state::ShellExecutionContinuation::Batch {
+            super::ai_chat_state::ToolExecutionContinuation::Batch {
                 runtime_turn,
                 runtime_tool,
                 ..
@@ -1227,7 +1260,7 @@ impl Editor {
                 }
             }
             match pending.continuation {
-                super::ai_chat_state::ShellExecutionContinuation::Dynamic {
+                super::ai_chat_state::ToolExecutionContinuation::Dynamic {
                     runtime_turn,
                     response,
                     ..
@@ -1238,7 +1271,7 @@ impl Editor {
                         "shell execution could not be durably observed".into(),
                     );
                 }
-                super::ai_chat_state::ShellExecutionContinuation::Batch {
+                super::ai_chat_state::ToolExecutionContinuation::Batch {
                     runtime_turn,
                     remaining_tool_calls,
                     ..
@@ -1271,7 +1304,7 @@ impl Editor {
             }
         } else {
             match pending.continuation {
-                super::ai_chat_state::ShellExecutionContinuation::Dynamic {
+                super::ai_chat_state::ToolExecutionContinuation::Dynamic {
                     runtime_turn,
                     runtime_tool,
                     response,
@@ -1282,7 +1315,7 @@ impl Editor {
                     response,
                     observation.result,
                 ),
-                super::ai_chat_state::ShellExecutionContinuation::Batch {
+                super::ai_chat_state::ToolExecutionContinuation::Batch {
                     runtime_turn,
                     runtime_tool,
                     remaining_tool_calls,
@@ -1322,13 +1355,13 @@ impl Editor {
         true
     }
 
-    fn poll_pending_web_execution(&mut self) -> bool {
+    fn poll_pending_background_tool(&mut self) -> bool {
         let received = {
             let Some(pending) = self
                 .ai_state
                 .chat
                 .as_mut()
-                .and_then(|chat| chat.pending_web_execution.as_mut())
+                .and_then(|chat| chat.pending_background_tool.as_mut())
             else {
                 return false;
             };
@@ -1336,14 +1369,11 @@ impl Editor {
                 Ok(outcome) => outcome,
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    crate::ai::exa::WebToolOutcome {
-                        result: crate::ai::tools::ToolResult::Error(
-                            "Exa web task stopped without returning a result".into(),
+                    super::ai_chat_state::BackgroundToolOutcome::plain(
+                        crate::ai::tools::ToolResult::Error(
+                            "background tool stopped without returning a result".into(),
                         ),
-                        credential_rejected: false,
-                        environment_override: false,
-                        setup_error: None,
-                    }
+                    )
                 }
             }
         };
@@ -1351,34 +1381,67 @@ impl Editor {
             .ai_state
             .chat
             .as_mut()
-            .and_then(|chat| chat.pending_web_execution.take())
-            .expect("pending web execution exists");
+            .and_then(|chat| chat.pending_background_tool.take())
+            .expect("pending background tool exists");
 
-        if let (Some(turn), Some(tool)) =
-            (pending.runtime_turn.as_ref(), pending.runtime_tool.as_ref())
+        if let super::ai_chat_state::BackgroundToolAftermath::Exa {
+            credential_rejected,
+            environment_override,
+            setup_error,
+        } = received.aftermath
         {
-            if let Err(error) = self.ai_runtime_finish_tool(turn, tool, &received.result) {
-                self.ai_runtime_fail_turn(format!("failed to record web tool result: {error}"));
-                self.clear_streaming_state();
-                return true;
+            if credential_rejected {
+                self.note_exa_credential_rejected(environment_override);
+            } else if let Some(error) = setup_error {
+                self.open_exa_setup_dialog(Some(error));
             }
         }
-        self.record_tool_event_summary(&pending.tool_call, &received.result);
-        let result_content =
-            self.format_tool_result_with_target(&pending.tool_call, &received.result);
-        if let Some(conversation) = self.conversation_mut() {
-            conversation.append_tool_result(pending.tool_call.id.clone(), result_content);
-        }
-        if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.tool_call_count = chat.tool_call_count.saturating_add(1);
-        }
-        if received.credential_rejected {
-            self.note_exa_credential_rejected(received.environment_override);
-        } else if let Some(error) = received.setup_error {
-            self.open_exa_setup_dialog(Some(error));
-        }
         self.set_status_message(String::new());
-        self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name)
+        match pending.continuation {
+            super::ai_chat_state::ToolExecutionContinuation::Dynamic {
+                runtime_tool,
+                runtime_turn,
+                response,
+            } => {
+                self.finish_dynamic_tool(
+                    &runtime_turn,
+                    &runtime_tool,
+                    &pending.tool_call,
+                    response,
+                    received.result,
+                );
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.waiting = true;
+                }
+                true
+            }
+            super::ai_chat_state::ToolExecutionContinuation::Batch {
+                runtime_tool,
+                runtime_turn,
+                remaining_tool_calls,
+                model_name,
+            } => {
+                if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
+                    && let Err(error) = self.ai_runtime_finish_tool(turn, tool, &received.result)
+                {
+                    self.ai_runtime_fail_turn(format!(
+                        "failed to record background tool result: {error}"
+                    ));
+                    self.clear_streaming_state();
+                    return true;
+                }
+                self.record_tool_event_summary(&pending.tool_call, &received.result);
+                let result_content =
+                    self.format_tool_result_with_target(&pending.tool_call, &received.result);
+                if let Some(conversation) = self.conversation_mut() {
+                    conversation.append_tool_result(pending.tool_call.id, result_content);
+                }
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.tool_call_count = chat.tool_call_count.saturating_add(1);
+                }
+                self.execute_tool_call_batch(remaining_tool_calls, model_name)
+            }
+        }
     }
 
     fn fail_specific_dynamic_turn(

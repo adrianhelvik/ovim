@@ -1,4 +1,6 @@
+mod ai_background_tools;
 mod ai_base_manifest;
+mod ai_browser;
 mod ai_chat;
 mod ai_chat_code_attachment;
 mod ai_chat_commands;

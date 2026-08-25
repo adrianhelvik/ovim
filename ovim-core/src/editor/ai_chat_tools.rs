@@ -1221,7 +1221,7 @@ impl Editor {
 
         self.start_pending_shell_execution(
             pending.tool_call,
-            super::ai_chat_state::ShellExecutionContinuation::Batch {
+            super::ai_chat_state::ToolExecutionContinuation::Batch {
                 runtime_tool: pending.runtime_tool,
                 runtime_turn,
                 remaining_tool_calls: pending.remaining_tool_calls,
@@ -1368,7 +1368,7 @@ impl Editor {
                     | crate::ai::tools::subagents::INTERRUPT_AGENT_TOOL
                     | crate::ai::tools::subagents::FOLLOWUP_AGENT_TOOL
             ) {
-                let continuation = super::ai_chat_state::SubagentControlContinuation::Batch {
+                let continuation = super::ai_chat_state::ToolExecutionContinuation::Batch {
                     runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
                     runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
                     remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
@@ -1454,7 +1454,7 @@ impl Editor {
                                 }
                                 self.start_pending_shell_execution(
                                     tc.clone(),
-                                    super::ai_chat_state::ShellExecutionContinuation::Batch {
+                                    super::ai_chat_state::ToolExecutionContinuation::Batch {
                                         runtime_tool: runtime_tool
                                             .as_ref()
                                             .map(|(_, tool)| tool.clone()),
@@ -1477,37 +1477,32 @@ impl Editor {
                 None
             };
 
-            if matches!(tc.name.as_str(), "web_search" | "web_fetch")
-                && self.ai_chat_uses_direct_codex()
-            {
-                let call = tc.clone();
-                let worker_call = call.clone();
-                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                let task = tokio::task::spawn_blocking(move || {
-                    let outcome =
-                        crate::ai::exa::execute(&worker_call.name, &worker_call.arguments);
-                    let _ = result_tx.send(outcome);
-                });
-                if let Some(chat) = self.ai_state.chat.as_mut() {
-                    chat.tool_call_count = chat.tool_call_count.saturating_add(executed_in_batch);
-                    chat.pending_web_execution = Some(super::ai_chat_state::PendingWebExecution {
-                        tool_call: call,
-                        runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
-                        runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
-                        remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
-                        model_name,
-                        receiver: result_rx,
-                        task,
-                    });
-                    chat.waiting = true;
+            let background_outcome = if self.is_background_ai_tool(&tc.name) {
+                let continuation = super::ai_chat_state::ToolExecutionContinuation::Batch {
+                    runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
+                    runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
+                    remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
+                    model_name: model_name.clone(),
+                };
+                match self.begin_pending_background_tool(tc.clone(), continuation) {
+                    Ok(()) => {
+                        if let Some(chat) = self.ai_state.chat.as_mut() {
+                            chat.tool_call_count =
+                                chat.tool_call_count.saturating_add(executed_in_batch);
+                        }
+                        return true;
+                    }
+                    Err((result, _continuation)) => Some(ToolDispatchOutcome::Completed(result)),
                 }
-                self.set_status_message("Searching the web with Exa".to_string());
-                return true;
-            }
+            } else {
+                None
+            };
 
             let outcome = if let Some(outcome) = subagent_control_outcome {
                 outcome
             } else if let Some(outcome) = shell_outcome {
+                outcome
+            } else if let Some(outcome) = background_outcome {
                 outcome
             } else if tc.name == "explain_with_codebase" {
                 let continuation = CodeExplanationContinuation::Batch {
