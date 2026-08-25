@@ -20,7 +20,7 @@ const panel = (
 
 describe("ContextDock", () => {
     it("mounts one context surface and switches it through accessible tabs", () => {
-        render(() => (
+        const result = render(() => (
             <ContextDock
                 panels={[
                     panel("ai", "AI chat"),
@@ -30,6 +30,11 @@ describe("ContextDock", () => {
             />
         ));
 
+        expect(
+            result.container
+                .querySelector(".side-dock")
+                ?.classList.contains("has-context-tabs"),
+        ).toBe(true);
         expect(screen.getByRole("tabpanel").textContent).toContain(
             "AI chat content",
         );
@@ -47,7 +52,7 @@ describe("ContextDock", () => {
             panel("ai", "AI chat"),
             panel("tests", "Tests"),
         ]);
-        render(() => <ContextDock panels={panels()} />);
+        const result = render(() => <ContextDock panels={panels()} />);
 
         const ai = screen.getByRole("tab", { name: "AI chat" });
         fireEvent.keyDown(ai, { key: "ArrowRight" });
@@ -60,6 +65,11 @@ describe("ContextDock", () => {
         );
 
         setPanels([panel("ai", "AI chat")]);
+        expect(
+            result.container
+                .querySelector(".side-dock")
+                ?.classList.contains("has-context-tabs"),
+        ).toBe(false);
         expect(
             screen.getByRole("tabpanel", { name: "AI chat" }).textContent,
         ).toContain("AI chat content");

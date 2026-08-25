@@ -907,181 +907,198 @@ export const ChatPanel = (props: {
                     </button>
                 </div>
             </header>
-            <Show when={props.chat.agents.length}>
-                <section class="chat-agents" aria-label="Agent navigation">
-                    <button
-                        type="button"
-                        aria-current={
-                            !props.chat.selectedAgentId ? "true" : undefined
+            <div class="chat-body">
+                <Show when={props.chat.agents.length}>
+                    <section class="chat-agents" aria-label="Agent navigation">
+                        <button
+                            type="button"
+                            aria-current={
+                                !props.chat.selectedAgentId ? "true" : undefined
+                            }
+                            classList={{
+                                selected: !props.chat.selectedAgentId,
+                                cursor:
+                                    props.chat.focus === "treePanel" &&
+                                    props.chat.agentCursor === 0,
+                            }}
+                            onClick={() => {
+                                props.onAgent?.();
+                                queueMicrotask(props.focusInput);
+                            }}
+                        >
+                            <span>
+                                <b>Primary conversation</b>
+                                <small>{props.chat.profile}</small>
+                            </span>
+                            <em>root</em>
+                        </button>
+                        <For each={props.chat.agents}>
+                            {(agent, index) => (
+                                <button
+                                    type="button"
+                                    aria-current={
+                                        props.chat.selectedAgentId === agent.id
+                                            ? "true"
+                                            : undefined
+                                    }
+                                    classList={{
+                                        selected:
+                                            props.chat.selectedAgentId ===
+                                            agent.id,
+                                        followed:
+                                            props.chat.followedAgentId ===
+                                            agent.id,
+                                        cursor:
+                                            props.chat.focus === "treePanel" &&
+                                            props.chat.agentCursor ===
+                                                index() + 1,
+                                    }}
+                                    style={{
+                                        "padding-left": `${9 + agent.depth * 12}px`,
+                                    }}
+                                    onClick={() => {
+                                        props.onAgent?.(agent.id);
+                                        queueMicrotask(props.focusInput);
+                                    }}
+                                >
+                                    <Show
+                                        when={
+                                            props.chat.followedAgentId ===
+                                            agent.id
+                                        }
+                                    >
+                                        <Icon name="status-success" size={16} />
+                                    </Show>
+                                    <span>
+                                        <b>{agent.taskName}</b>
+                                        <small>{agent.model}</small>
+                                    </span>
+                                    <em>
+                                        {props.chat.followedAgentId === agent.id
+                                            ? "following · "
+                                            : ""}
+                                        {agent.lifecycle.replaceAll("_", " ")}
+                                    </em>
+                                </button>
+                            )}
+                        </For>
+                    </section>
+                </Show>
+                <div class="chat-transcript">
+                    <div
+                        class="chat-messages"
+                        ref={transcript}
+                        onScroll={() =>
+                            setFollowing(isNearChatBottom(transcript))
                         }
-                        classList={{
-                            selected: !props.chat.selectedAgentId,
-                            cursor:
-                                props.chat.focus === "treePanel" &&
-                                props.chat.agentCursor === 0,
-                        }}
-                        onClick={() => {
-                            props.onAgent?.();
-                            queueMicrotask(props.focusInput);
-                        }}
                     >
-                        <span>
-                            <b>Primary conversation</b>
-                            <small>{props.chat.profile}</small>
-                        </span>
-                        <em>root</em>
-                    </button>
-                    <For each={props.chat.agents}>
-                        {(agent, index) => (
-                            <button
-                                type="button"
-                                aria-current={
-                                    props.chat.selectedAgentId === agent.id
-                                        ? "true"
-                                        : undefined
-                                }
-                                classList={{
-                                    selected:
-                                        props.chat.selectedAgentId === agent.id,
-                                    followed:
-                                        props.chat.followedAgentId === agent.id,
-                                    cursor:
-                                        props.chat.focus === "treePanel" &&
-                                        props.chat.agentCursor === index() + 1,
-                                }}
-                                style={{
-                                    "padding-left": `${9 + agent.depth * 12}px`,
-                                }}
-                                onClick={() => {
-                                    props.onAgent?.(agent.id);
-                                    queueMicrotask(props.focusInput);
-                                }}
-                            >
+                        <Show when={transcriptEmpty()}>
+                            <div class="panel-empty chat-empty">
+                                <Icon name="ai-spark" size={20} tone="accent" />
+                                <b>Start a conversation</b>
+                                <span>
+                                    Ask about the current file, selection, or
+                                    workspace.
+                                </span>
+                            </div>
+                        </Show>
+                        <Index each={transcriptItems()}>
+                            {(item) => (
                                 <Show
                                     when={
-                                        props.chat.followedAgentId === agent.id
+                                        item().kind === "activity"
+                                            ? (item() as Extract<
+                                                  ChatTranscriptItem,
+                                                  { kind: "activity" }
+                                              >)
+                                            : undefined
+                                    }
+                                    fallback={
+                                        <ChatMessageView
+                                            message={
+                                                (
+                                                    item() as Extract<
+                                                        ChatTranscriptItem,
+                                                        { kind: "message" }
+                                                    >
+                                                ).message
+                                            }
+                                            onSelect={props.onMessage}
+                                        />
                                     }
                                 >
-                                    <Icon name="status-success" size={16} />
+                                    {(activity) => (
+                                        <ChatActivityGroup
+                                            item={activity()}
+                                            onSelect={props.onMessage}
+                                        />
+                                    )}
                                 </Show>
-                                <span>
-                                    <b>{agent.taskName}</b>
-                                    <small>{agent.model}</small>
-                                </span>
-                                <em>
-                                    {props.chat.followedAgentId === agent.id
-                                        ? "following · "
-                                        : ""}
-                                    {agent.lifecycle.replaceAll("_", " ")}
-                                </em>
-                            </button>
-                        )}
-                    </For>
-                </section>
-            </Show>
-            <div class="chat-transcript">
-                <div
-                    class="chat-messages"
-                    ref={transcript}
-                    onScroll={() => setFollowing(isNearChatBottom(transcript))}
-                >
-                    <Show when={transcriptEmpty()}>
-                        <div class="panel-empty chat-empty">
-                            <Icon name="ai-spark" size={20} tone="accent" />
-                            <b>Start a conversation</b>
-                            <span>
-                                Ask about the current file, selection, or
-                                workspace.
-                            </span>
-                        </div>
+                            )}
+                        </Index>
+                        <Show when={props.chat.streaming}>
+                            {(content) => (
+                                <article class="chat-message assistant streaming">
+                                    <header>
+                                        <b>assistant</b>
+                                        <small>streaming</small>
+                                    </header>
+                                    <Markdown text={content()} />
+                                </article>
+                            )}
+                        </Show>
+                        <For each={props.chat.queuedInputs}>
+                            {(item) => (
+                                <QueuedChatMessage
+                                    item={item}
+                                    onAction={(id, action) => {
+                                        props.onQueuedAction?.(id, action);
+                                        queueMicrotask(props.focusInput);
+                                    }}
+                                />
+                            )}
+                        </For>
+                    </div>
+                    <Show when={!following()}>
+                        <button
+                            type="button"
+                            class="chat-jump"
+                            onClick={() => {
+                                jumpToLatest();
+                                props.focusInput();
+                            }}
+                        >
+                            {props.chat.activity !== "idle"
+                                ? "New activity"
+                                : "New messages"}
+                            <Icon name="chevron-down" size={16} />
+                        </button>
                     </Show>
-                    <Index each={transcriptItems()}>
-                        {(item) => (
-                            <Show
-                                when={
-                                    item().kind === "activity"
-                                        ? (item() as Extract<
-                                              ChatTranscriptItem,
-                                              { kind: "activity" }
-                                          >)
-                                        : undefined
-                                }
-                                fallback={
-                                    <ChatMessageView
-                                        message={
-                                            (
-                                                item() as Extract<
-                                                    ChatTranscriptItem,
-                                                    { kind: "message" }
-                                                >
-                                            ).message
-                                        }
-                                        onSelect={props.onMessage}
-                                    />
-                                }
-                            >
-                                {(activity) => (
-                                    <ChatActivityGroup
-                                        item={activity()}
-                                        onSelect={props.onMessage}
-                                    />
-                                )}
-                            </Show>
-                        )}
-                    </Index>
-                    <Show when={props.chat.streaming}>
-                        {(content) => (
-                            <article class="chat-message assistant streaming">
-                                <header>
-                                    <b>assistant</b>
-                                    <small>streaming</small>
-                                </header>
-                                <Markdown text={content()} />
-                            </article>
-                        )}
-                    </Show>
-                    <For each={props.chat.queuedInputs}>
-                        {(item) => (
-                            <QueuedChatMessage
-                                item={item}
-                                onAction={(id, action) => {
-                                    props.onQueuedAction?.(id, action);
-                                    queueMicrotask(props.focusInput);
-                                }}
-                            />
-                        )}
-                    </For>
                 </div>
-                <Show when={!following()}>
-                    <button
-                        type="button"
-                        class="chat-jump"
-                        onClick={() => {
-                            jumpToLatest();
-                            props.focusInput();
-                        }}
-                    >
-                        {props.chat.activity !== "idle"
-                            ? "New activity"
-                            : "New messages"}
-                        <Icon name="chevron-down" size={16} />
-                    </button>
+                <Show when={props.chat.approval}>
+                    {(approval) => (
+                        <div
+                            class="approval-card"
+                            role="status"
+                            aria-live="polite"
+                        >
+                            <b>Approval required</b>
+                            <span>{approval()}</span>
+                            <small>
+                                Use the keyboard choices shown by Ovim.
+                            </small>
+                        </div>
+                    )}
+                </Show>
+                <Show when={props.chat.setup}>
+                    {(setup) => (
+                        <ChatSetupCard
+                            setup={setup()}
+                            onKey={props.onSetupKey}
+                        />
+                    )}
                 </Show>
             </div>
-            <Show when={props.chat.approval}>
-                {(approval) => (
-                    <div class="approval-card" role="status" aria-live="polite">
-                        <b>Approval required</b>
-                        <span>{approval()}</span>
-                        <small>Use the keyboard choices shown by Ovim.</small>
-                    </div>
-                )}
-            </Show>
-            <Show when={props.chat.setup}>
-                {(setup) => (
-                    <ChatSetupCard setup={setup()} onKey={props.onSetupKey} />
-                )}
-            </Show>
             <ChatComposer
                 chat={props.chat}
                 revision={props.revision}
