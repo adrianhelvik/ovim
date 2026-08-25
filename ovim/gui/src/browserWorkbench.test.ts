@@ -102,7 +102,10 @@ describe("browser workbench controller", () => {
                     setError: vi.fn(),
                 });
                 void controller.open().then(() => {
-                    expect(invoke).toHaveBeenCalledWith("gui_browser_open");
+                    expect(invoke).toHaveBeenCalledWith(
+                        "gui_browser_open",
+                        undefined,
+                    );
                     expect(selection()).toEqual({
                         kind: "browser",
                         sessionId: "browser-1",

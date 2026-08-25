@@ -27,12 +27,24 @@ pub(super) struct GuiBrowserKeyEvent {
     pub session_id: String,
     pub intent: GuiBrowserKeyIntent,
     pub count: u32,
+    pub url: Option<String>,
 }
 
-pub(super) fn key_bridge_script(token: &str, vim_keys_enabled: bool) -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BrowserKeyRequest {
+    pub intent: GuiBrowserKeyIntent,
+    pub count: u32,
+    pub url: Option<String>,
+}
+
+pub(super) fn key_bridge_script(token: &str, state_token: &str, vim_keys_enabled: bool) -> String {
     debug_assert!(token.chars().all(|character| character.is_ascii_hexdigit()));
+    debug_assert!(state_token
+        .chars()
+        .all(|character| character.is_ascii_hexdigit()));
     KEY_BRIDGE_SCRIPT
         .replace("__OVIM_BRIDGE_TOKEN__", token)
+        .replace("__OVIM_STATE_TOKEN__", state_token)
         .replace(
             "__OVIM_VIM_KEYS_ENABLED__",
             if vim_keys_enabled { "true" } else { "false" },
@@ -44,7 +56,7 @@ pub(super) fn key_bridge_control_script(token: &str, vim_keys_enabled: bool) -> 
     format!("window.__OVIM_BROWSER_KEY_BRIDGE__?.setVimKeys('{token}', {vim_keys_enabled});")
 }
 
-pub(super) fn browser_key_intent(url: &Url, token: &str) -> Option<(GuiBrowserKeyIntent, u32)> {
+pub(super) fn browser_key_request(url: &Url, token: &str) -> Option<BrowserKeyRequest> {
     if url.scheme() != "ovim-browser" || url.host_str() != Some("key") {
         return None;
     }
@@ -76,5 +88,8 @@ pub(super) fn browser_key_intent(url: &Url, token: &str) -> Option<(GuiBrowserKe
         .find_map(|(name, value)| (name == "count").then(|| value.parse().ok()).flatten())
         .unwrap_or(1)
         .clamp(1, 100);
-    Some((intent, count))
+    let url = url
+        .query_pairs()
+        .find_map(|(name, value)| (name == "url").then(|| value.into_owned()));
+    Some(BrowserKeyRequest { intent, count, url })
 }

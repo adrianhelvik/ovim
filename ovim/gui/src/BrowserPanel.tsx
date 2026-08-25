@@ -30,6 +30,7 @@ interface BrowserPanelProps {
     active: boolean;
     obscured: boolean;
     session?: BrowserSession;
+    addressFocusRequest?: { serial: number; sessionId: string };
     onNavigate: (sessionId: string, url: string) => Promise<void>;
     onToolbar: (
         sessionId: string,
@@ -64,6 +65,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
     let addressInput: HTMLInputElement | undefined;
     let boundsFrame: number | undefined;
     let projectedSessionId = "";
+    let handledAddressFocusSerial = 0;
 
     const session = () => props.session;
     const browserVisible = () =>
@@ -72,6 +74,21 @@ export default function BrowserPanel(props: BrowserPanelProps) {
         Boolean(session()) &&
         !props.obscured &&
         document.visibilityState !== "hidden";
+
+    createEffect(() => {
+        const request = props.addressFocusRequest;
+        if (
+            !request ||
+            request.serial <= handledAddressFocusSerial ||
+            request.sessionId !== session()?.sessionId
+        )
+            return;
+        handledAddressFocusSerial = request.serial;
+        queueMicrotask(() => {
+            addressInput?.focus({ preventScroll: true });
+            addressInput?.select();
+        });
+    });
 
     const sendBounds = (visible = browserVisible()) => {
         if (!props.native) return;

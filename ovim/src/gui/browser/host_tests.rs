@@ -1,3 +1,4 @@
+use super::super::bridge::BrowserKeyRequest;
 use super::*;
 
 #[test]
@@ -28,27 +29,41 @@ fn scripts_keep_snapshot_and_action_surfaces_bounded() {
 #[test]
 fn browser_command_bridge_requires_its_per_webview_token() {
     let token = "0123456789abcdef0123456789abcdef";
-    let script = key_bridge_script(token, false);
-    assert!(script.contains(&format!("const token = \"{token}\"")));
-    assert!(script.contains("ovim-browser://key/${token}/${intent}"));
+    let state_token = "abcdef0123456789abcdef0123456789";
+    let script = key_bridge_script(token, state_token, false);
+    assert!(script.contains(&format!("const commandToken = \"{token}\"")));
+    assert!(script.contains(state_token));
+    assert!(script.contains("ovim-browser://key/"));
     assert!(!script.contains("__OVIM_BRIDGE_TOKEN__"));
+    assert!(!script.contains("__OVIM_STATE_TOKEN__"));
     assert!(!script.contains("__OVIM_VIM_KEYS_ENABLED__"));
-    assert!(script.contains("let vimKeysEnabled = false"));
+    assert!(script.contains("enabled: false"));
     assert_eq!(
-        browser_key_intent(
+        browser_key_request(
             &Url::parse(&format!("ovim-browser://key/{token}/next_tab?count=4")).unwrap(),
             token,
         ),
-        Some((GuiBrowserKeyIntent::NextTab, 4)),
+        Some(BrowserKeyRequest {
+            intent: GuiBrowserKeyIntent::NextTab,
+            count: 4,
+            url: None,
+        }),
     );
     assert_eq!(
-        browser_key_intent(
-            &Url::parse(&format!("ovim-browser://key/{token}/back?count=1000")).unwrap(),
+        browser_key_request(
+            &Url::parse(&format!(
+                "ovim-browser://key/{token}/new_tab?count=1000&url=https%3A%2F%2Fexample.com%2F"
+            ))
+            .unwrap(),
             token,
         ),
-        Some((GuiBrowserKeyIntent::Back, 100)),
+        Some(BrowserKeyRequest {
+            intent: GuiBrowserKeyIntent::NewTab,
+            count: 100,
+            url: Some("https://example.com/".into()),
+        }),
     );
-    assert!(browser_key_intent(
+    assert!(browser_key_request(
         &Url::parse("ovim-browser://key/attacker/command").unwrap(),
         token,
     )
@@ -115,7 +130,7 @@ async fn user_tabs_stay_unloaded_until_the_first_navigation() {
     let (_, requests) = ovim_core::browser::browser_channel();
     let host = BrowserHost::new(requests);
 
-    let state = host.open_for_user().await.unwrap();
+    let state = host.open_for_user(None).await.unwrap();
     assert_eq!(state.sessions.len(), 1);
     assert_eq!(state.active_session_id.as_deref(), Some("browser-1"));
     assert_eq!(state.sessions[0].url, "");

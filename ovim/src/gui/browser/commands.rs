@@ -5,8 +5,9 @@ use super::host::{BrowserHost, GuiBrowserBounds, GuiBrowserState, GuiBrowserTool
 #[tauri::command]
 pub async fn gui_browser_open(
     host: tauri::State<'_, BrowserHost>,
+    url: Option<String>,
 ) -> Result<GuiBrowserState, String> {
-    host.open_for_user().await
+    host.open_for_user(url.as_deref()).await
 }
 
 #[tauri::command]

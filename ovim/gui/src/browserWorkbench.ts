@@ -82,7 +82,7 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
             present(selection.sessionId);
         else options.setSelection(selection);
     };
-    const open = async () => {
+    const open = async (url?: string) => {
         const current = state();
         if (
             !options.native ||
@@ -93,7 +93,10 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
         setOpening(true);
         options.setError("");
         try {
-            const next = await invoke<BrowserState>("gui_browser_open");
+            const next = await invoke<BrowserState>(
+                "gui_browser_open",
+                url ? { url } : undefined,
+            );
             accept(next);
             if (next.activeSessionId) present(next.activeSessionId);
         } catch (reason) {

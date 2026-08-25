@@ -69,6 +69,10 @@ describe("BrowserPanel", () => {
         invoke.mockResolvedValue(undefined);
         const [active, setActive] = createSignal(true);
         const [obscured, setObscured] = createSignal(false);
+        const [addressFocusRequest, setAddressFocusRequest] = createSignal<{
+            serial: number;
+            sessionId: string;
+        }>();
         const [browserState, setBrowserState] = createSignal(state());
         const navigate = vi.fn(async (_sessionId: string, url: string) => {
             setBrowserState(state([session({ url })]));
@@ -84,6 +88,7 @@ describe("BrowserPanel", () => {
                 active={active()}
                 obscured={obscured()}
                 session={browserState().sessions[0]}
+                addressFocusRequest={addressFocusRequest()}
                 onNavigate={navigate}
                 onToolbar={toolbar}
                 onClose={close}
@@ -131,6 +136,13 @@ describe("BrowserPanel", () => {
                 }),
             );
             expect(setVimKeys).toHaveBeenCalledWith("browser-1", false);
+
+            setAddressFocusRequest({ serial: 1, sessionId: "browser-1" });
+            await waitFor(() =>
+                expect(document.activeElement).toBe(
+                    screen.getByLabelText("Browser address"),
+                ),
+            );
 
             setObscured(true);
             await waitFor(() =>

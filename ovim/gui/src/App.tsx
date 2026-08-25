@@ -20,6 +20,7 @@ import BrowserPanel, {
     type BrowserState,
 } from "./BrowserPanel";
 import { createBrowserWorkbench } from "./browserWorkbench";
+import { createBrowserKeyRouter, type BrowserKeyEvent } from "./browserKeys";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 import GdiffPanel from "./GdiffPanel";
 import SurfaceCommandLine, {
@@ -1161,6 +1162,8 @@ function App() {
         serial: number;
         sessionId: string;
     }>();
+    const [browserAddressFocusRequest, setBrowserAddressFocusRequest] =
+        createSignal<{ serial: number; sessionId: string }>();
     const [vectorPreview, setVectorPreview] = createSignal<VectorPreview>();
     const [vectorPreviewError, setVectorPreviewError] = createSignal("");
     const [vectorPreviewLoading, setVectorPreviewLoading] = createSignal(false);
@@ -1191,6 +1194,7 @@ function App() {
     let lastDimensions = { columns: 0, rows: 0 };
     let latestSnapshotRevision: number | undefined;
     let nextBrowserCommandSerial = 1;
+    let nextBrowserAddressFocusSerial = 1;
     let browserCommandRefocusSession: string | undefined;
     const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
     const hasContextDock = createMemo(() =>
@@ -1473,6 +1477,20 @@ function App() {
             sessionId,
         });
     };
+    const focusBrowserAddress = (sessionId = activeBrowserId()) => {
+        if (
+            !sessionId ||
+            !browserState().sessions.some(
+                (session) => session.sessionId === sessionId,
+            )
+        )
+            return;
+        presentBrowserSession(sessionId);
+        setBrowserAddressFocusRequest({
+            serial: nextBrowserAddressFocusSerial++,
+            sessionId,
+        });
+    };
     const dismissBrowserCommand = () => {
         const sessionId = browserCommandRefocusSession;
         browserCommandRefocusSession = undefined;
@@ -1558,6 +1576,24 @@ function App() {
         await sendLiteral("ggVG");
     };
 
+    const routeBrowserKey = createBrowserKeyRouter({
+        tabs: workbenchTabs,
+        selection: workbenchSelection,
+        hasSession: (sessionId) =>
+            browserState().sessions.some(
+                (session) => session.sessionId === sessionId,
+            ),
+        openTab: openBrowserSession,
+        closeTab: closeBrowserSession,
+        focusAddress: focusBrowserAddress,
+        openCommand: openBrowserCommand,
+        runToolbar: runBrowserToolbar,
+        selectTab: (position) => selectWorkbenchTab(position),
+    });
+    const performBrowserKey = (event: BrowserKeyEvent) => {
+        void routeBrowserKey(event).catch((reason) => setError(String(reason)));
+    };
+
     const performMenuAction = (action: string) => {
         const active = document.activeElement;
         const nativeEditor =
@@ -1570,7 +1606,40 @@ function App() {
                 void editorCommand("wa");
                 break;
             case "file.close":
-                requestExit("close");
+                if (activeBrowserId())
+                    performBrowserKey({
+                        sessionId: activeBrowserId(),
+                        intent: "close_tab",
+                    });
+                else requestExit("close");
+                break;
+            case "browser.new-tab":
+                performBrowserKey({ intent: "new_tab" });
+                break;
+            case "browser.focus-address":
+                performBrowserKey({
+                    sessionId: activeBrowserId(),
+                    intent: "focus_address",
+                });
+                break;
+            case "browser.back":
+            case "browser.forward":
+            case "browser.reload":
+                performBrowserKey({
+                    sessionId: activeBrowserId(),
+                    intent: action.slice("browser.".length) as
+                        "back" | "forward" | "reload",
+                });
+                break;
+            case "browser.previous-tab":
+            case "browser.next-tab":
+                performBrowserKey({
+                    sessionId: activeBrowserId(),
+                    intent:
+                        action === "browser.previous-tab"
+                            ? "previous_tab"
+                            : "next_tab",
+                });
                 break;
             case "app.quit":
                 requestExit("quit");
@@ -1810,13 +1879,39 @@ function App() {
         }
         if (primaryModifier && event.key.toLowerCase() === "w") {
             event.preventDefault();
-            requestExit("close");
+            performMenuAction("file.close");
+            return;
+        }
+        if (primaryModifier && event.key.toLowerCase() === "t") {
+            event.preventDefault();
+            performMenuAction("browser.new-tab");
             return;
         }
         if (primaryModifier && event.key.toLowerCase() === "q") {
             event.preventDefault();
             requestExit("quit");
             return;
+        }
+        if (primaryModifier && workbenchView() === "browser") {
+            const browserAction =
+                event.key.toLowerCase() === "l"
+                    ? "browser.focus-address"
+                    : event.key.toLowerCase() === "r"
+                      ? "browser.reload"
+                      : event.code === "BracketLeft"
+                        ? event.shiftKey
+                            ? "browser.previous-tab"
+                            : "browser.back"
+                        : event.code === "BracketRight"
+                          ? event.shiftKey
+                              ? "browser.next-tab"
+                              : "browser.forward"
+                          : undefined;
+            if (browserAction) {
+                event.preventDefault();
+                performMenuAction(browserAction);
+                return;
+            }
         }
         const nativeControl = isGuiNativeControl(target, inputSink);
         if (
@@ -2957,7 +3052,7 @@ function App() {
         observer.observe(editorBody);
         let unlistenMenu: (() => void) | undefined;
         let unlistenClose: (() => void) | undefined;
-        let unlistenBrowserCommand: (() => void) | undefined;
+        let unlistenBrowserKey: (() => void) | undefined;
         if (native) {
             void listen<string>("ovim://menu-action", (event) =>
                 performMenuAction(event.payload),
@@ -2969,10 +3064,10 @@ function App() {
             ).then((unlisten) => {
                 unlistenClose = unlisten;
             });
-            void listen<string>("ovim://browser-command", (event) =>
-                openBrowserCommand(event.payload),
+            void listen<BrowserKeyEvent>("ovim://browser-key", (event) =>
+                performBrowserKey(event.payload),
             ).then((unlisten) => {
-                unlistenBrowserCommand = unlisten;
+                unlistenBrowserKey = unlisten;
             });
             const browserStates = new Channel<BrowserState>();
             browserStates.onmessage = acceptBrowserState;
@@ -3001,7 +3096,7 @@ function App() {
             observer.disconnect();
             unlistenMenu?.();
             unlistenClose?.();
-            unlistenBrowserCommand?.();
+            unlistenBrowserKey?.();
         });
     });
 
@@ -3394,6 +3489,7 @@ function App() {
                             native={native}
                             active={workbenchView() === "browser"}
                             session={activeBrowser()}
+                            addressFocusRequest={browserAddressFocusRequest()}
                             obscured={Boolean(
                                 pendingExit() ||
                                 browserCommandRequest() ||

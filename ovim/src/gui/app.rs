@@ -463,6 +463,13 @@ fn gui_open_external(url: String) -> Result<(), String> {
 
 /// Run the native application on the calling thread until its last window closes.
 fn install_menu(app: &tauri::App) -> Result<()> {
+    let new_browser_tab = MenuItem::with_id(
+        app,
+        "browser.new-tab",
+        "New Browser Tab",
+        true,
+        Some("CmdOrCtrl+T"),
+    )?;
     let save = MenuItem::with_id(app, "file.save", "Save", true, Some("CmdOrCtrl+S"))?;
     let save_all = MenuItem::with_id(
         app,
@@ -471,7 +478,7 @@ fn install_menu(app: &tauri::App) -> Result<()> {
         true,
         Some("CmdOrCtrl+Alt+S"),
     )?;
-    let close = MenuItem::with_id(app, "file.close", "Close Window", true, Some("CmdOrCtrl+W"))?;
+    let close = MenuItem::with_id(app, "file.close", "Close Tab", true, Some("CmdOrCtrl+W"))?;
     let quit = MenuItem::with_id(app, "app.quit", "Quit Ovim", true, Some("CmdOrCtrl+Q"))?;
     let undo = MenuItem::with_id(app, "edit.undo", "Undo", true, Some("CmdOrCtrl+Z"))?;
     let redo = MenuItem::with_id(app, "edit.redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?;
@@ -483,6 +490,30 @@ fn install_menu(app: &tauri::App) -> Result<()> {
         Some("CmdOrCtrl+A"),
     )?;
     let find = MenuItem::with_id(app, "edit.find", "Find", true, Some("CmdOrCtrl+F"))?;
+    let focus_address = MenuItem::with_id(
+        app,
+        "browser.focus-address",
+        "Open Location",
+        true,
+        Some("CmdOrCtrl+L"),
+    )?;
+    let back = MenuItem::with_id(app, "browser.back", "Back", true, Some("CmdOrCtrl+["))?;
+    let forward = MenuItem::with_id(app, "browser.forward", "Forward", true, Some("CmdOrCtrl+]"))?;
+    let reload = MenuItem::with_id(app, "browser.reload", "Reload", true, Some("CmdOrCtrl+R"))?;
+    let previous_tab = MenuItem::with_id(
+        app,
+        "browser.previous-tab",
+        "Previous Tab",
+        true,
+        Some("CmdOrCtrl+Shift+["),
+    )?;
+    let next_tab = MenuItem::with_id(
+        app,
+        "browser.next-tab",
+        "Next Tab",
+        true,
+        Some("CmdOrCtrl+Shift+]"),
+    )?;
 
     let app_menu = SubmenuBuilder::new(app, "Ovim")
         .about(None)
@@ -494,6 +525,8 @@ fn install_menu(app: &tauri::App) -> Result<()> {
         .item(&quit)
         .build()?;
     let file_menu = SubmenuBuilder::new(app, "File")
+        .item(&new_browser_tab)
+        .separator()
         .item(&save)
         .item(&save_all)
         .separator()
@@ -511,6 +544,16 @@ fn install_menu(app: &tauri::App) -> Result<()> {
         .item(&find)
         .build()?;
     let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
+    let navigation_menu = SubmenuBuilder::new(app, "Navigate")
+        .item(&focus_address)
+        .separator()
+        .item(&back)
+        .item(&forward)
+        .item(&reload)
+        .separator()
+        .item(&previous_tab)
+        .item(&next_tab)
+        .build()?;
     let window_menu = SubmenuBuilder::new(app, "Window")
         .minimize()
         .maximize()
@@ -518,7 +561,14 @@ fn install_menu(app: &tauri::App) -> Result<()> {
         .bring_all_to_front()
         .build()?;
     let menu = MenuBuilder::new(app)
-        .items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu])
+        .items(&[
+            &app_menu,
+            &file_menu,
+            &edit_menu,
+            &view_menu,
+            &navigation_menu,
+            &window_menu,
+        ])
         .build()?;
     app.set_menu(menu)?;
     Ok(())

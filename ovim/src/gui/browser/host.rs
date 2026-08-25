@@ -6,12 +6,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, Weak};
 use tauri::ipc::Channel;
 use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
-use tauri::{Emitter, LogicalPosition, LogicalSize, Url, Webview, WebviewUrl, Window};
+use tauri::{Emitter, EventTarget, LogicalPosition, LogicalSize, Url, Webview, WebviewUrl, Window};
 
 #[cfg(test)]
 use super::bridge::KEY_BRIDGE_SCRIPT;
 use super::bridge::{
-    browser_key_intent, key_bridge_control_script, key_bridge_script, GuiBrowserKeyEvent,
+    browser_key_request, key_bridge_control_script, key_bridge_script, GuiBrowserKeyEvent,
     GuiBrowserKeyIntent,
 };
 use super::document::{
@@ -213,8 +213,11 @@ impl BrowserHost {
         }
     }
 
-    pub async fn open_for_user(&self) -> Result<GuiBrowserState, String> {
-        self.start(true, None, false)
+    pub async fn open_for_user(
+        &self,
+        initial_url: Option<&str>,
+    ) -> Result<GuiBrowserState, String> {
+        self.start(true, initial_url, false)
             .await
             .map_err(|error| error.message)?;
         Ok(self.state())
@@ -330,15 +333,16 @@ impl BrowserHost {
         let command_parent = parent.clone();
         let command_session_id = session_id.to_string();
         let command_token = format!("{:032x}", rand::random::<u128>());
-        let command_script = key_bridge_script(&command_token, vim_keys_enabled);
+        let state_token = format!("{:032x}", rand::random::<u128>());
+        let command_script = key_bridge_script(&command_token, &state_token, vim_keys_enabled);
         let expected_command_token = command_token.clone();
         let builder = WebviewBuilder::new(session_id, WebviewUrl::External(url))
             .incognito(incognito)
             .initialization_script_for_all_frames(command_script)
             .on_navigation(allowed_browser_url)
             .on_new_window(move |url, _| {
-                if let Some((intent, count)) = browser_key_intent(&url, &expected_command_token) {
-                    match intent {
+                if let Some(request) = browser_key_request(&url, &expected_command_token) {
+                    match request.intent {
                         GuiBrowserKeyIntent::ModeInsert => update_key_mode(
                             &key_weak,
                             &command_session_id,
@@ -350,12 +354,14 @@ impl BrowserHost {
                             GuiBrowserKeyMode::Normal,
                         ),
                         _ => {
-                            let _ = command_parent.emit(
+                            let _ = command_parent.emit_to(
+                                EventTarget::webview("main"),
                                 "ovim://browser-key",
                                 GuiBrowserKeyEvent {
                                     session_id: command_session_id.clone(),
-                                    intent,
-                                    count,
+                                    intent: request.intent,
+                                    count: request.count,
+                                    url: request.url,
                                 },
                             );
                         }
@@ -366,9 +372,7 @@ impl BrowserHost {
             .on_download(|_, _| false)
             .on_page_load(move |webview, payload| {
                 update_page_load(&weak, &load_session_id, payload.url(), payload.event());
-                if matches!(payload.event(), PageLoadEvent::Finished) {
-                    sync_key_bridge_state(&load_key_weak, &load_session_id, &webview);
-                }
+                sync_key_bridge_state(&load_key_weak, &load_session_id, &webview);
             })
             .on_document_title_changed(move |_, title| {
                 update_title(&title_weak, &title_session_id, title);
@@ -695,26 +699,6 @@ impl BrowserHost {
         enabled: bool,
     ) -> Result<GuiBrowserState, String> {
         let control = {
-            let inner = self
-                .inner
-                .lock()
-                .map_err(|_| "Browser host lock failed".to_string())?;
-            let browser = inner
-                .browsers
-                .iter()
-                .find(|browser| browser.session.session_id == session_id)
-                .ok_or_else(|| format!("Browser session not found: {session_id}"))?;
-            browser
-                .webview
-                .clone()
-                .zip(browser.command_token.as_deref().map(str::to_owned))
-        };
-        if let Some((webview, token)) = control {
-            webview
-                .eval(key_bridge_control_script(&token, enabled))
-                .map_err(|error| format!("Could not update browser Vim keys: {error}"))?;
-        }
-        {
             let mut inner = self
                 .inner
                 .lock()
@@ -726,6 +710,13 @@ impl BrowserHost {
                 .ok_or_else(|| format!("Browser session not found: {session_id}"))?;
             browser.vim_keys_enabled = enabled;
             browser.key_mode = GuiBrowserKeyMode::Normal;
+            browser
+                .webview
+                .clone()
+                .zip(browser.command_token.as_deref().map(str::to_owned))
+        };
+        if let Some((webview, token)) = control {
+            let _ = webview.eval(key_bridge_control_script(&token, enabled));
         }
         self.publish_state();
         Ok(self.state())
