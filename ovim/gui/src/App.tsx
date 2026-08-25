@@ -17,14 +17,15 @@ import ChatModelPicker from "./ChatModelPicker";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
 import BrowserPanel, {
     browserTabTitle,
-    type BrowserSession,
     type BrowserState,
 } from "./BrowserPanel";
+import { createBrowserWorkbench } from "./browserWorkbench";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 import GdiffPanel from "./GdiffPanel";
 import SurfaceCommandLine, {
     type CommandExecutionResult,
 } from "./SurfaceCommandLine";
+import WorkbenchTabStrip from "./WorkbenchTabStrip";
 import { BROWSER_COMMAND_NAMES, parseBrowserCommand } from "./browserCommands";
 import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton, type IconTone } from "./Icon";
@@ -41,7 +42,6 @@ import {
 import {
     activeSourceSelection,
     composeWorkbenchTabs,
-    projectBrowserState,
     workbenchSelectionId,
     type WorkbenchSelection,
 } from "./workbench";
@@ -1157,15 +1157,6 @@ function App() {
             activeSourceSelection(mockSnapshot.tabs),
         );
     const workbenchView = () => workbenchSelection().kind;
-    const [browserState, setBrowserState] = createSignal<BrowserState>({
-        sessions: [],
-        maxSessions: 8,
-    });
-    const activeBrowserId = () => {
-        const selection = workbenchSelection();
-        return selection.kind === "browser" ? selection.sessionId : undefined;
-    };
-    const [browserOpening, setBrowserOpening] = createSignal(false);
     const [browserCommandRequest, setBrowserCommandRequest] = createSignal<{
         serial: number;
         sessionId: string;
@@ -1199,7 +1190,6 @@ function App() {
     let wheelRemainder = 0;
     let lastDimensions = { columns: 0, rows: 0 };
     let latestSnapshotRevision: number | undefined;
-    let latestBrowserPresentationRevision = 0;
     let nextBrowserCommandSerial = 1;
     let browserCommandRefocusSession: string | undefined;
     const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
@@ -1227,13 +1217,30 @@ function App() {
             ? filePath
             : undefined;
     });
-    const activeBrowser = createMemo<BrowserSession | undefined>(() => {
-        const sessionId = activeBrowserId();
-        return browserState().sessions.find(
-            (session) => session.sessionId === sessionId,
-        );
-    });
     const activeStrok = createMemo(() => Boolean(activeStrokPath()));
+    const browserWorkbench = createBrowserWorkbench({
+        native,
+        sourceTabs: () => view().tabs,
+        includeVector: activeStrok,
+        selection: workbenchSelection,
+        setSelection: setWorkbenchSelection,
+        setError,
+        onSessionsChanged: (next) => {
+            if (
+                browserCommandRequest() &&
+                !next.sessions.some(
+                    (session) =>
+                        session.sessionId ===
+                        browserCommandRequest()?.sessionId,
+                )
+            )
+                setBrowserCommandRequest(undefined);
+        },
+    });
+    const browserState = browserWorkbench.state;
+    const browserOpening = browserWorkbench.opening;
+    const activeBrowserId = browserWorkbench.activeSessionId;
+    const activeBrowser = browserWorkbench.activeSession;
     const workbenchTabs = createMemo(() =>
         composeWorkbenchTabs(
             view().tabs,
@@ -1442,25 +1449,11 @@ function App() {
         if (chatInput?.isConnected) chatInput.focus({ preventScroll: true });
         else focusEditorInput();
     };
-    const focusBrowser = (sessionId = activeBrowserId()) => {
-        if (native && sessionId)
-            void invoke("gui_browser_toolbar", {
-                sessionId,
-                action: "focus",
-            }).catch(() => {});
-    };
-    const presentBrowserSession = (sessionId: string) => {
-        setWorkbenchSelection({ kind: "browser", sessionId });
-        requestAnimationFrame(() =>
-            requestAnimationFrame(() => {
-                if (
-                    workbenchView() === "browser" &&
-                    activeBrowserId() === sessionId
-                )
-                    focusBrowser(sessionId);
-            }),
-        );
-    };
+    const focusBrowser = browserWorkbench.focus;
+    const presentBrowserSession = browserWorkbench.present;
+    const acceptBrowserState = browserWorkbench.accept;
+    const openBrowserSession = browserWorkbench.open;
+    const activateBrowserSession = browserWorkbench.activate;
     const openBrowserCommand = (sessionId = activeBrowserId()) => {
         if (
             !sessionId ||
@@ -1483,82 +1476,6 @@ function App() {
         if (sessionId) requestAnimationFrame(() => focusBrowser(sessionId));
         else if (workbenchView() === "source")
             requestAnimationFrame(focusEditorInput);
-    };
-    const acceptBrowserState = (next: BrowserState) => {
-        setBrowserState(next);
-        if (
-            browserCommandRequest() &&
-            !next.sessions.some(
-                (session) =>
-                    session.sessionId === browserCommandRequest()?.sessionId,
-            )
-        )
-            setBrowserCommandRequest(undefined);
-        const projection = projectBrowserState(
-            workbenchSelection(),
-            latestBrowserPresentationRevision,
-            view().tabs,
-            activeStrok(),
-            next,
-        );
-        latestBrowserPresentationRevision = projection.presentationRevision;
-        if (projection.acknowledgeRevision !== undefined) {
-            if (native)
-                void invoke("gui_browser_ack_presentation", {
-                    revision: projection.acknowledgeRevision,
-                }).catch((reason) => setError(String(reason)));
-        }
-        const selection = projection.selection;
-        if (
-            selection.kind === "browser" &&
-            (workbenchView() !== "browser" ||
-                selection.sessionId !== activeBrowserId())
-        )
-            presentBrowserSession(selection.sessionId);
-        else setWorkbenchSelection(selection);
-    };
-    const openBrowserSession = async () => {
-        const current = browserState();
-        if (
-            !native ||
-            browserOpening() ||
-            current.sessions.length >= current.maxSessions
-        )
-            return;
-        setBrowserOpening(true);
-        setError("");
-        try {
-            const next = await invoke<BrowserState>("gui_browser_open");
-            acceptBrowserState(next);
-            const sessionId = next.activeSessionId;
-            if (sessionId) {
-                presentBrowserSession(sessionId);
-            }
-        } catch (reason) {
-            setError(String(reason));
-        } finally {
-            setBrowserOpening(false);
-        }
-    };
-    const activateBrowserSession = (sessionId: string) => {
-        if (
-            !browserState().sessions.some(
-                (session) => session.sessionId === sessionId,
-            )
-        )
-            return;
-        if (!native) {
-            presentBrowserSession(sessionId);
-            return;
-        }
-        void invoke<BrowserState>("gui_browser_activate", { sessionId })
-            .then((next) => {
-                acceptBrowserState(next);
-                presentBrowserSession(sessionId);
-            })
-            .catch((reason) => {
-                setError(String(reason));
-            });
     };
     const focusPrimaryInput = () => {
         if (browserCommandRequest()) return;
@@ -3310,182 +3227,18 @@ function App() {
                 </Show>
 
                 <section class="editor-stack">
-                    <div class="tabs" role="tablist" aria-label="Open tabs">
-                        <Index each={view().tabs}>
-                            {(tab, position) => (
-                                <button
-                                    type="button"
-                                    role="tab"
-                                    aria-selected={
-                                        tab().active &&
-                                        workbenchView() === "source"
-                                    }
-                                    aria-controls="editor-surface"
-                                    tabIndex={
-                                        tab().active &&
-                                        workbenchView() === "source"
-                                            ? 0
-                                            : -1
-                                    }
-                                    data-tab-index={tab().index}
-                                    data-workbench-tab-index={position}
-                                    class="tab"
-                                    classList={{
-                                        active:
-                                            tab().active &&
-                                            workbenchView() === "source",
-                                    }}
-                                    aria-label={
-                                        tab().title +
-                                        (tab().modified ? ", modified" : "")
-                                    }
-                                    title={
-                                        tab().title +
-                                        (tab().modified ? " · modified" : "")
-                                    }
-                                    onClick={() => {
-                                        selectWorkbenchTab(position);
-                                        queueMicrotask(focusEditorInput);
-                                    }}
-                                    onKeyDown={(event) =>
-                                        handleTabNavigation(event, position)
-                                    }
-                                >
-                                    <Icon
-                                        name="file"
-                                        size={16}
-                                        tone={tab().active ? "accent" : "muted"}
-                                    />
-                                    <span>{tab().title}</span>
-                                    <Show when={tab().modified}>
-                                        <span class="modified-dot" />
-                                    </Show>
-                                </button>
-                            )}
-                        </Index>
-                        <Show when={activeStrok()}>
-                            <button
-                                type="button"
-                                role="tab"
-                                aria-selected={workbenchView() === "vector"}
-                                aria-controls="editor-surface"
-                                tabIndex={workbenchView() === "vector" ? 0 : -1}
-                                data-workbench-tab-index={workbenchTabs().findIndex(
-                                    (tab) => tab.kind === "vector",
-                                )}
-                                class="tab vector-tab"
-                                classList={{
-                                    active: workbenchView() === "vector",
-                                }}
-                                title="Live Strøk render and review"
-                                onClick={() => {
-                                    const vector = workbenchTabs().find(
-                                        (tab) => tab.kind === "vector",
-                                    );
-                                    if (vector?.kind === "vector")
-                                        setWorkbenchSelection({
-                                            kind: "vector",
-                                            sourceTabId: vector.sourceTabId,
-                                        });
-                                }}
-                                onKeyDown={(event) =>
-                                    handleTabNavigation(
-                                        event,
-                                        workbenchTabs().findIndex(
-                                            (tab) => tab.kind === "vector",
-                                        ),
-                                    )
-                                }
-                            >
-                                <Icon
-                                    name="ai-spark"
-                                    size={16}
-                                    tone={
-                                        workbenchView() === "vector"
-                                            ? "accent"
-                                            : "muted"
-                                    }
-                                />
-                                <span>Vector</span>
-                            </button>
-                        </Show>
-                        <For each={browserState().sessions}>
-                            {(session) => {
-                                const position = () =>
-                                    workbenchTabs().findIndex(
-                                        (tab) =>
-                                            tab.kind === "browser" &&
-                                            tab.sessionId === session.sessionId,
-                                    );
-                                const active = () =>
-                                    workbenchView() === "browser" &&
-                                    activeBrowserId() === session.sessionId;
-                                const title = () => browserTabTitle(session);
-                                return (
-                                    <button
-                                        type="button"
-                                        role="tab"
-                                        aria-selected={active()}
-                                        aria-controls="editor-surface"
-                                        aria-label={`Browser: ${title()}`}
-                                        tabIndex={active() ? 0 : -1}
-                                        data-workbench-tab-index={position()}
-                                        class="tab browser-tab"
-                                        classList={{ active: active() }}
-                                        title={`${title()} · ${session.url}`}
-                                        onClick={() =>
-                                            activateBrowserSession(
-                                                session.sessionId,
-                                            )
-                                        }
-                                        onKeyDown={(event) =>
-                                            handleTabNavigation(
-                                                event,
-                                                position(),
-                                            )
-                                        }
-                                    >
-                                        <Icon
-                                            name="search"
-                                            size={16}
-                                            tone={active() ? "accent" : "muted"}
-                                        />
-                                        <span>{title()}</span>
-                                        <Show when={session.loading}>
-                                            <span
-                                                class="browser-tab-loading"
-                                                aria-label="Loading"
-                                            />
-                                        </Show>
-                                    </button>
-                                );
-                            }}
-                        </For>
-                        <button
-                            type="button"
-                            class="new-browser-tab"
-                            data-gui-native-control
-                            disabled={
-                                !native ||
-                                browserOpening() ||
-                                browserState().sessions.length >=
-                                    browserState().maxSessions
-                            }
-                            aria-label="New browser tab"
-                            title={
-                                native
-                                    ? browserState().sessions.length >=
-                                      browserState().maxSessions
-                                        ? `Browser tab limit (${browserState().maxSessions}) reached`
-                                        : "New browser tab"
-                                    : "Browser tabs require the native desktop app"
-                            }
-                            onClick={() => void openBrowserSession()}
-                        >
-                            <span aria-hidden="true">+</span>
-                        </button>
-                        <span class="tabs-fill" role="presentation" />
-                    </div>
+                    <WorkbenchTabStrip
+                        native={native}
+                        sourceTabs={view().tabs}
+                        tabs={workbenchTabs()}
+                        selection={workbenchSelection()}
+                        browserState={browserState()}
+                        browserOpening={browserOpening()}
+                        onSelect={selectWorkbenchTab}
+                        onSourceFocus={() => queueMicrotask(focusEditorInput)}
+                        onNewBrowser={() => void openBrowserSession()}
+                        onNavigate={handleTabNavigation}
+                    />
 
                     <div class="breadcrumbs">
                         <Show

@@ -34,14 +34,22 @@ For `.strok` buffers, a Vector companion tab asks the native bridge to render
 the in-memory source with the installed Strøk CLI; its review form drafts
 file-specific feedback in the authoritative core AI chat.
 
-Browser tabs are also frontend-specific. Their shared Solid toolbar reserves a
-measured viewport for the selected native Tauri child webview; the Rust
-`BrowserHost` owns the bounded session collection, active-child visibility,
-navigation policy, page generations, and DOM evaluation. UI and AI requests
-go through that one host, so they cannot race independent browser
-implementations. No child webview exists until a browser tab is created, and
-closing the tab destroys its session. The web development view cannot create
-browser tabs because it has no native child-webview primitive.
+Browser tabs are also frontend-specific. `workbench.ts` composes stable source,
+Vector, and Browser item identities into one selection model. Their shared
+Solid toolbar reserves a measured viewport for the selected native Tauri child
+webview; the Rust `BrowserHost` owns the bounded session collection,
+active-child visibility, navigation policy, page generations, and DOM
+evaluation. UI and AI requests go through that one host, so they cannot race
+independent browser implementations. A new manual Browser tab is an unloaded
+logical session: no child webview exists until its first navigation. Closing
+the tab destroys both. The web development view cannot create browser tabs
+because it has no native child-webview primitive.
+
+Colon commands use the reusable `SurfaceCommandLine` with a browser-specific
+grammar (`:goto`, `:back`, `:forward`, `:reload`, `:stop`, `:q`, and workbench
+tab navigation). A tokenized initialization script in the remote child webview
+can request that command line after a trusted `:` keypress, but it cannot invoke
+Tauri commands or control Ovim directly.
 
 The AI browser tools are advertised only when this live host is attached and
 the active chat profile sets `scope_network = true`; the built-in `codex_sol`

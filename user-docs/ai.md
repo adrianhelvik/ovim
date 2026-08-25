@@ -75,6 +75,14 @@ keeps at most eight browser tabs and destroys a child webview when its tab is
 closed, so no browser session is kept open by default. The terminal frontend
 does not attach a browser host, so these tools are omitted there.
 
+A manually created tab starts empty and focuses its address field; Ovim creates
+the child webview only after the first navigation. In a loaded page, press `:`
+outside an editable page field to open the Browser command line. It supports
+`:goto <address>`, `:back [count]`, `:forward [count]`, `:reload`, `:stop`,
+`:q`, `:tabnext [count]`, `:tabprev [count]`, and `:tabgoto <number>`. Browser
+commands are contextual: `:w` reports that writing is unavailable instead of
+saving a hidden editor buffer.
+
 The built-in `codex_sol` chat profile enables browser access by default. Custom
 or overridden profiles remain opt-in: add `scope_network = true` to the profile
 used for `chat`; if that profile has a non-empty `tools` allowlist, add
@@ -88,7 +96,9 @@ manual control:
 - Browser sessions use an ephemeral data store. Only credential-free HTTP and
   HTTPS navigation is accepted; popups and downloads are denied.
 - `browser_session` can list the live tabs. Its `start` action always creates a
-  new session; `show`, `hide`, and `close` affect only the named session.
+  new session and accepts an optional initial `url`, allowing an agent to open
+  the intended page atomically; `show`, `hide`, and `close` affect only the
+  named session.
 - Snapshots contain at most 48 KiB of visible text and 200 interactive
   elements. Password and file-input values are never returned.
 - Every action must cite the exact document and snapshot generation. A page

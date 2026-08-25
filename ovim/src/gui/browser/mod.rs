@@ -1,4 +1,6 @@
+mod bridge;
 mod commands;
+mod document;
 mod host;
 
 pub use commands::*;
