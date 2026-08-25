@@ -4,7 +4,7 @@ use crate::ai::scope::{Capabilities, ScopeContext};
 use crate::ai::skills::ACTIVATE_SKILL_TOOL;
 use crate::ai::tools::builtins::{OpenBufferState, ToolExecutionContext};
 use crate::ai::tools::schema;
-use crate::ai::tools::{SideEffect, ToolResult};
+use crate::ai::tools::{RuntimeServices, SideEffect, ToolResult};
 use crate::ai::{redact_high_risk_tokens, truncate_utf8_with_notice, ToolApprovalMode};
 use std::path::{Path, PathBuf};
 
@@ -102,6 +102,23 @@ impl Editor {
         caps
     }
 
+    pub(crate) fn build_chat_runtime_services(&self) -> RuntimeServices {
+        let profile_name = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.opts.profile.clone())
+            .unwrap_or_else(|| self.ai_state.active_profile.clone());
+        let browser_authorized = self
+            .ai_state
+            .config
+            .resolve_profile(&profile_name)
+            .is_some_and(|profile| profile.scope.network);
+        RuntimeServices {
+            browser: browser_authorized && self.services().browser().is_some(),
+        }
+    }
+
     /// Build tool JSON schemas for the current chat session's provider.
     pub(crate) fn build_tool_schemas_for_chat(
         &self,
@@ -113,7 +130,7 @@ impl Editor {
         let mut tools = self
             .ai_state
             .tool_registry
-            .tools_for_profile(profile, &caps)
+            .tools_for_profile_with_services(profile, &caps, self.build_chat_runtime_services())
             .into_iter()
             .filter(|tool| {
                 !crate::ai::tools::subagents::is_parent_control_tool(&tool.name)

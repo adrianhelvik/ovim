@@ -1,3 +1,4 @@
+pub mod browser;
 pub mod builtins;
 pub mod schema;
 pub mod subagents;
@@ -18,6 +19,24 @@ pub enum SideEffect {
     Navigation,
     Mutation,
     External,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeService {
+    Browser,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RuntimeServices {
+    pub browser: bool,
+}
+
+impl RuntimeServices {
+    fn contains(self, service: RuntimeService) -> bool {
+        match service {
+            RuntimeService::Browser => self.browser,
+        }
+    }
 }
 
 /// Parameter type for JSON schema generation.
@@ -247,20 +266,33 @@ pub enum ToolResult {
 /// Registry of all available tools.
 pub struct ToolRegistry {
     tools: HashMap<String, ToolDefinition>,
+    runtime_requirements: HashMap<String, RuntimeService>,
 }
 
 impl ToolRegistry {
     /// Create a new registry with all built-in tools pre-registered.
     pub fn new() -> Self {
-        let mut reg = Self {
-            tools: HashMap::new(),
-        };
+        let mut reg = Self::empty();
         builtins::register_builtins(&mut reg);
+        browser::register_browser_tools(&mut reg);
         reg
+    }
+
+    fn empty() -> Self {
+        Self {
+            tools: HashMap::new(),
+            runtime_requirements: HashMap::new(),
+        }
     }
 
     /// Register a tool definition.
     pub fn register(&mut self, tool: ToolDefinition) {
+        self.runtime_requirements.remove(&tool.name);
+        self.tools.insert(tool.name.clone(), tool);
+    }
+
+    pub fn register_for_service(&mut self, tool: ToolDefinition, service: RuntimeService) {
+        self.runtime_requirements.insert(tool.name.clone(), service);
         self.tools.insert(tool.name.clone(), tool);
     }
 
@@ -271,9 +303,21 @@ impl ToolRegistry {
 
     /// Return all tools whose required scope fits within the given capabilities.
     pub fn tools_for_scope(&self, caps: &Capabilities) -> Vec<&ToolDefinition> {
+        self.tools_for_scope_with_services(caps, RuntimeServices::default())
+    }
+
+    pub fn tools_for_scope_with_services(
+        &self,
+        caps: &Capabilities,
+        services: RuntimeServices,
+    ) -> Vec<&ToolDefinition> {
         self.tools
             .values()
-            .filter(|t| caps.contains(&t.required_scope) && caps.allows_side_effect(t.side_effect))
+            .filter(|tool| {
+                self.runtime_requirement_is_available(&tool.name, services)
+                    && caps.contains(&tool.required_scope)
+                    && caps.allows_side_effect(tool.side_effect)
+            })
             .collect()
     }
 
@@ -284,9 +328,21 @@ impl ToolRegistry {
         profile: &AiProfileConfig,
         caps: &Capabilities,
     ) -> Vec<&ToolDefinition> {
+        self.tools_for_profile_with_services(profile, caps, RuntimeServices::default())
+    }
+
+    pub fn tools_for_profile_with_services(
+        &self,
+        profile: &AiProfileConfig,
+        caps: &Capabilities,
+        services: RuntimeServices,
+    ) -> Vec<&ToolDefinition> {
         self.tools
             .values()
             .filter(|t| {
+                if !self.runtime_requirement_is_available(&t.name, services) {
+                    return false;
+                }
                 // Must fit within capabilities (scope + side effect)
                 if !caps.contains(&t.required_scope) || !caps.allows_side_effect(t.side_effect) {
                     return false;
@@ -298,6 +354,12 @@ impl ToolRegistry {
                 true
             })
             .collect()
+    }
+
+    fn runtime_requirement_is_available(&self, tool_name: &str, services: RuntimeServices) -> bool {
+        self.runtime_requirements
+            .get(tool_name)
+            .is_none_or(|required| services.contains(*required))
     }
 }
 
@@ -329,9 +391,7 @@ mod tests {
 
     #[test]
     fn registry_register_and_get() {
-        let mut reg = ToolRegistry {
-            tools: HashMap::new(),
-        };
+        let mut reg = ToolRegistry::empty();
         reg.register(make_tool("read_file", FileScope::File, SideEffect::Read));
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("nonexistent").is_none());
@@ -339,9 +399,7 @@ mod tests {
 
     #[test]
     fn tools_for_scope_filters_correctly() {
-        let mut reg = ToolRegistry {
-            tools: HashMap::new(),
-        };
+        let mut reg = ToolRegistry::empty();
         reg.register(make_tool("read_file", FileScope::File, SideEffect::Read));
         reg.register(make_tool(
             "search_project",
@@ -370,9 +428,7 @@ mod tests {
 
     #[test]
     fn tools_for_profile_respects_tool_list() {
-        let mut reg = ToolRegistry {
-            tools: HashMap::new(),
-        };
+        let mut reg = ToolRegistry::empty();
         reg.register(make_tool("read_file", FileScope::File, SideEffect::Read));
         reg.register(make_tool(
             "read_selection",
@@ -442,6 +498,11 @@ mod tests {
         assert!(reg.get("select_text").is_some());
         // External tools
         assert!(reg.get("bash").is_some());
+        // Optional frontend tools are registered but catalog-gated.
+        assert!(reg.get(browser::BROWSER_SESSION_TOOL).is_some());
+        assert!(reg.get(browser::BROWSER_NAVIGATE_TOOL).is_some());
+        assert!(reg.get(browser::BROWSER_SNAPSHOT_TOOL).is_some());
+        assert!(reg.get(browser::BROWSER_ACT_TOOL).is_some());
         // Mutation tools
         assert!(reg.get("edit_range").is_some());
         assert!(reg.get("insert_lines").is_some());
@@ -504,5 +565,32 @@ mod tests {
         assert!(names.contains(&"apply_patch_at_path"));
         assert!(names.contains(&"snapshot_file"));
         assert!(names.contains(&"restore_file"));
+    }
+
+    #[test]
+    fn runtime_services_gate_browser_tools_independently_of_scope() {
+        let reg = ToolRegistry::new();
+        let caps = Capabilities {
+            file_scope: FileScope::Project,
+            shell: true,
+            network: true,
+            allow_mutations: true,
+        };
+
+        let without_browser = reg.tools_for_scope(&caps);
+        assert!(!without_browser
+            .iter()
+            .any(|tool| browser::is_browser_tool(&tool.name)));
+
+        let with_browser =
+            reg.tools_for_scope_with_services(&caps, RuntimeServices { browser: true });
+        for expected in [
+            browser::BROWSER_SESSION_TOOL,
+            browser::BROWSER_NAVIGATE_TOOL,
+            browser::BROWSER_SNAPSHOT_TOOL,
+            browser::BROWSER_ACT_TOOL,
+        ] {
+            assert!(with_browser.iter().any(|tool| tool.name == expected));
+        }
     }
 }

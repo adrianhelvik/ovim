@@ -18,7 +18,11 @@ impl Editor {
             || !self
                 .ai_state
                 .tool_registry
-                .tools_for_profile(profile, &self.build_chat_capabilities())
+                .tools_for_profile_with_services(
+                    profile,
+                    &self.build_chat_capabilities(),
+                    self.build_chat_runtime_services(),
+                )
                 .iter()
                 .any(|tool| tool.name == ACTIVATE_SKILL_TOOL)
         {
@@ -55,7 +59,7 @@ impl Editor {
         let mut tools = self
             .ai_state
             .tool_registry
-            .tools_for_profile(profile, &caps)
+            .tools_for_profile_with_services(profile, &caps, self.build_chat_runtime_services())
             .into_iter()
             .filter(|tool| {
                 !crate::ai::tools::subagents::is_parent_control_tool(&tool.name)
