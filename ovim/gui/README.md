@@ -33,5 +33,18 @@ remains authoritative for modes, commands, selections, edits, and persistence.
 For `.strok` buffers, a Vector companion tab asks the native bridge to render
 the in-memory source with the installed Strøk CLI; its review form drafts
 file-specific feedback in the authoritative core AI chat.
+
+The Browser workbench is also frontend-specific. Its Solid toolbar reserves a
+measured viewport for a native Tauri child webview; the Rust `BrowserHost` owns
+the session, navigation policy, page generations, and DOM evaluation. UI and
+AI requests go through that one host, so they cannot race independent browser
+implementations. The web development view renders the Browser workbench's
+desktop-only fallback because it has no native child-webview primitive.
+
+The AI browser tools are advertised only when this live host is attached and
+the active chat profile sets `scope_network = true`. See
+[`user-docs/ai.md`](../../user-docs/ai.md#shared-embedded-browser-ovim-gui) for
+the control and security boundary.
+
 Terminal-only surfaces and exact soft-wrap/multi-split layout parity remain
 follow-up work; they do not maintain a second editor implementation in the DOM.

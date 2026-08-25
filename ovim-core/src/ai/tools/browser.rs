@@ -116,7 +116,7 @@ fn browser_snapshot_def() -> ToolDefinition {
 fn browser_act_def() -> ToolDefinition {
     ToolDefinition {
         name: BROWSER_ACT_TOOL.into(),
-        description: "Interact with a current browser snapshot. Use only references from browser_snapshot and pass its exact document_id and snapshot_id. Password fields, file pickers, downloads, and permission prompts are blocked."
+        description: "Interact with a current browser snapshot. Use only references from browser_snapshot and pass its exact document_id and snapshot_id. Agent clicks are limited to navigation links; password fields, file pickers, and submission controls require manual browser control."
             .into(),
         required_scope: browser_scope(),
         // Browser interaction can change external state. The existing chat
@@ -174,7 +174,8 @@ fn browser_act_def() -> ToolDefinition {
                 name: "key".into(),
                 param_type: ParamType::String,
                 required: false,
-                description: "Key for a press action, such as Enter or Escape.".into(),
+                description: "Safe navigation key for a press action, such as Escape, Tab, or ArrowDown. Enter is not available to the agent."
+                    .into(),
             },
             ToolParam {
                 name: "delta_y".into(),

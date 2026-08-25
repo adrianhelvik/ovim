@@ -65,6 +65,40 @@ temporary rate limits and server failures receive one bounded retry. Web tools
 are read-only Ovim operations: they do not invoke a shell and do not require a
 Codex sandbox or Terra approval.
 
+### Shared embedded browser (`ovim-gui`)
+
+The native GUI has a **Browser** workbench tab backed by a Tauri child webview.
+It is a single session shared by you and the primary AI chat: either side can
+open it and navigate it, and the agent can inspect the page as bounded visible
+text plus referenced interactive elements. The terminal frontend does not
+attach a browser host, so these tools are omitted there.
+
+Browser tools are opt-in per AI profile. Add `scope_network = true` to the
+profile used for `chat`; if that profile has a non-empty `tools` allowlist, add
+`browser_session`, `browser_navigate`, `browser_snapshot`, and `browser_act` as
+well. The Codex configuration example below shows the network setting. Manual
+browsing in the Browser tab does not depend on the AI profile.
+
+The initial implementation deliberately keeps agent control narrower than
+manual control:
+
+- Browser sessions use an ephemeral data store. Only credential-free HTTP and
+  HTTPS navigation is accepted; popups and downloads are denied.
+- Snapshots contain at most 48 KiB of visible text and 200 interactive
+  elements. Password and file-input values are never returned.
+- Every action must cite the exact document and snapshot generation. A page
+  change or one completed action makes prior element references stale.
+- The agent can scroll, use safe navigation keys, fill ordinary text/select
+  fields, expand summaries, and follow validated links. It cannot activate
+  buttons, submit forms, press Enter, fill passwords, or choose files; take
+  manual control for those steps.
+- Page content is labeled untrusted in every tool result. It is evidence for
+  the task, never an instruction source.
+
+`browser_act` is an external-effect tool and is withheld from read-only chats.
+The lifecycle, navigation, and snapshot tools remain available when the live
+GUI host and the profile's network scope are both present.
+
 Auto mode is the default. Read-only local inspection and tests run immediately;
 context-dependent commands are reviewed by subscription-backed Terra at low
 effort. Terra treats routine project-local formatting, building, linting, and
@@ -333,6 +367,7 @@ vim.ai.setup({
       provider = "codex",
       model = "gpt-5.6-sol",
       reasoning_effort = "medium",
+      scope_network = true,
     },
     codex_luna = {
       provider = "codex",
