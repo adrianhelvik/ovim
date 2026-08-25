@@ -22,7 +22,7 @@ import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
-import { trapDialogFocus } from "./focus";
+import { isGuiNativeControl, trapDialogFocus } from "./focus";
 import { anchoredOverlayPosition } from "./overlayPosition";
 import { retainProjection, shouldAcceptRevision } from "./stateProjection";
 import {
@@ -1608,13 +1608,7 @@ function App() {
             requestExit("quit");
             return;
         }
-        const nativeControl =
-            target !== inputSink &&
-            Boolean(
-                target?.closest?.(
-                    "a[href], button, input, select, textarea, [contenteditable='true'], [data-gui-native-control]",
-                ),
-            );
+        const nativeControl = isGuiNativeControl(target, inputSink);
         if (primaryModifier && !nativeControl) {
             const key = event.key.toLowerCase();
             if (key === "z" || key === "a" || key === "f") {
@@ -2721,7 +2715,16 @@ function App() {
         window.addEventListener("copy", handleCopy);
         window.addEventListener("cut", handleCut);
         const restoreInputFocus = () => {
-            if (!pendingExit()) focusPrimaryInput();
+            // Switching from the child webview to its toolbar focuses the main
+            // webview before WebKit assigns focus to the clicked control. Wait
+            // for that transition so we do not immediately steal focus back.
+            queueMicrotask(() => {
+                if (
+                    !pendingExit() &&
+                    !isGuiNativeControl(document.activeElement, inputSink)
+                )
+                    focusPrimaryInput();
+            });
         };
         window.addEventListener("focus", restoreInputFocus);
         const updateCompactDocks = (event: MediaQueryListEvent) =>
