@@ -71,6 +71,8 @@ describe("Ovim Solid workbench", () => {
                 visible: false,
                 loading: false,
                 documentId: 1,
+                vimKeysEnabled: true,
+                keyMode: "normal" as const,
             },
             {
                 sessionId: "browser-2",
@@ -79,6 +81,8 @@ describe("Ovim Solid workbench", () => {
                 visible: false,
                 loading: false,
                 documentId: 1,
+                vimKeysEnabled: true,
+                keyMode: "normal" as const,
             },
         ];
 
@@ -111,6 +115,8 @@ describe("Ovim Solid workbench", () => {
                     visible: false,
                     loading: false,
                     documentId: 2,
+                    vimKeysEnabled: true,
+                    keyMode: "normal" as const,
                 },
             ],
             activeSessionId: "browser-4",

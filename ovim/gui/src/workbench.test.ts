@@ -23,6 +23,8 @@ const browserState = (
         visible: false,
         loading: false,
         documentId: 1,
+        vimKeysEnabled: true,
+        keyMode: "normal",
     })),
     activeSessionId,
     maxSessions: 8,

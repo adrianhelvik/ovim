@@ -586,6 +586,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             super::browser::gui_browser_navigate,
             super::browser::gui_browser_toolbar,
             super::browser::gui_browser_close,
+            super::browser::gui_browser_set_vim_keys,
         ])
         .setup(move |app| {
             install_menu(app)?;

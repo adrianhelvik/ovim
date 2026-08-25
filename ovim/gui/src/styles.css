@@ -495,6 +495,19 @@ button:focus-visible {
     font-size: var(--text-micro);
     white-space: nowrap;
 }
+.browser-toolbar .browser-key-toggle {
+    gap: 5px;
+    padding-inline: 7px;
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    font: 550 var(--text-micro)/1 var(--editor-font);
+    white-space: nowrap;
+}
+.browser-toolbar .browser-key-toggle[aria-pressed="true"] {
+    border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface-1));
+}
 .browser-page-meta {
     min-width: 0;
     padding: 0 12px;
@@ -627,6 +640,7 @@ button:focus-visible {
 }
 @media (max-width: 980px) {
     .browser-agent-state,
+    .browser-key-toggle span,
     .browser-page-meta > span {
         display: none;
     }

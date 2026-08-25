@@ -44,6 +44,8 @@ describe("browser workbench controller", () => {
                 visible: false,
                 loading: false,
                 documentId: 1,
+                vimKeysEnabled: true,
+                keyMode: "normal" as const,
             };
             controller.accept({
                 sessions: [session],
@@ -76,6 +78,8 @@ describe("browser workbench controller", () => {
             visible: false,
             loading: false,
             documentId: 0,
+            vimKeysEnabled: true,
+            keyMode: "normal" as const,
         };
         invoke.mockResolvedValue({
             sessions: [session],
@@ -118,6 +122,8 @@ describe("browser workbench controller", () => {
             visible: false,
             loading: false,
             documentId: 0,
+            vimKeysEnabled: true,
+            keyMode: "normal" as const,
         };
         const navigated = {
             ...original,
@@ -140,6 +146,18 @@ describe("browser workbench controller", () => {
             if (command === "gui_browser_navigate")
                 return Promise.resolve({
                     sessions: [navigated],
+                    activeSessionId: navigated.sessionId,
+                    maxSessions: 8,
+                });
+            if (command === "gui_browser_set_vim_keys")
+                return Promise.resolve({
+                    sessions: [
+                        {
+                            ...navigated,
+                            vimKeysEnabled: false,
+                            keyMode: "normal",
+                        },
+                    ],
                     activeSessionId: navigated.sessionId,
                     maxSessions: 8,
                 });
@@ -191,6 +209,18 @@ describe("browser workbench controller", () => {
                         action: "back",
                         count: 2,
                     });
+
+                    await controller.setVimKeys(original.sessionId, false);
+                    expect(invoke).toHaveBeenCalledWith(
+                        "gui_browser_set_vim_keys",
+                        {
+                            sessionId: original.sessionId,
+                            enabled: false,
+                        },
+                    );
+                    expect(controller.activeSession()?.vimKeysEnabled).toBe(
+                        false,
+                    );
 
                     const firstClose = controller.close(original.sessionId);
                     const duplicateClose = controller.close(original.sessionId);

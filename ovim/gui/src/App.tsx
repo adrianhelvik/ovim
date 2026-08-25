@@ -1456,6 +1456,7 @@ function App() {
     const closeBrowserSession = browserWorkbench.close;
     const navigateBrowserSession = browserWorkbench.navigate;
     const runBrowserToolbar = browserWorkbench.toolbar;
+    const setBrowserVimKeys = browserWorkbench.setVimKeys;
     const activateBrowserSession = browserWorkbench.activate;
     const openBrowserCommand = (sessionId = activeBrowserId()) => {
         if (
@@ -3402,6 +3403,7 @@ function App() {
                             onNavigate={navigateBrowserSession}
                             onToolbar={runBrowserToolbar}
                             onClose={closeBrowserSession}
+                            onVimKeysChange={setBrowserVimKeys}
                         />
                         <SurfaceCommandLine
                             active={Boolean(browserCommandRequest())}

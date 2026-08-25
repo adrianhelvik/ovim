@@ -25,6 +25,8 @@ const session = (overrides: Partial<BrowserSession> = {}): BrowserSession => ({
     visible: true,
     loading: false,
     documentId: 1,
+    vimKeysEnabled: true,
+    keyMode: "normal",
     ...overrides,
 });
 
@@ -72,6 +74,7 @@ describe("BrowserPanel", () => {
             setBrowserState(state([session({ url })]));
         });
         const toolbar = vi.fn().mockResolvedValue(undefined);
+        const setVimKeys = vi.fn().mockResolvedValue(undefined);
         const close = vi.fn(async () => {
             setBrowserState(state([], undefined));
         });
@@ -84,6 +87,7 @@ describe("BrowserPanel", () => {
                 onNavigate={navigate}
                 onToolbar={toolbar}
                 onClose={close}
+                onVimKeysChange={setVimKeys}
             />
         ));
         try {
@@ -121,6 +125,12 @@ describe("BrowserPanel", () => {
             );
             expect(toolbar).toHaveBeenCalledWith("browser-1", "back");
             expect(toolbar).toHaveBeenCalledWith("browser-1", "reload");
+            fireEvent.click(
+                screen.getByRole("button", {
+                    name: "Disable Vim-style page keys",
+                }),
+            );
+            expect(setVimKeys).toHaveBeenCalledWith("browser-1", false);
 
             setObscured(true);
             await waitFor(() =>
@@ -153,6 +163,7 @@ describe("BrowserPanel", () => {
                 onNavigate={vi.fn().mockResolvedValue(undefined)}
                 onToolbar={vi.fn().mockResolvedValue(undefined)}
                 onClose={vi.fn().mockResolvedValue(undefined)}
+                onVimKeysChange={vi.fn().mockResolvedValue(undefined)}
             />
         ));
         try {
@@ -189,6 +200,7 @@ describe("BrowserPanel", () => {
                 onNavigate={navigate}
                 onToolbar={vi.fn().mockResolvedValue(undefined)}
                 onClose={vi.fn().mockResolvedValue(undefined)}
+                onVimKeysChange={vi.fn().mockResolvedValue(undefined)}
             />
         ));
         try {
@@ -248,6 +260,7 @@ describe("BrowserPanel", () => {
                 onNavigate={vi.fn().mockResolvedValue(undefined)}
                 onToolbar={toolbar}
                 onClose={vi.fn().mockResolvedValue(undefined)}
+                onVimKeysChange={vi.fn().mockResolvedValue(undefined)}
             />
         ));
         try {

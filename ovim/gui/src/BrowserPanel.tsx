@@ -11,6 +11,8 @@ export interface BrowserSession {
     visible: boolean;
     loading: boolean;
     documentId: number;
+    vimKeysEnabled: boolean;
+    keyMode: "normal" | "insert";
 }
 
 export interface BrowserState {
@@ -34,6 +36,7 @@ interface BrowserPanelProps {
         action: BrowserToolbarAction,
     ) => Promise<void>;
     onClose: (sessionId: string) => Promise<void>;
+    onVimKeysChange: (sessionId: string, enabled: boolean) => Promise<void>;
 }
 
 interface BrowserBounds {
@@ -124,6 +127,20 @@ export default function BrowserPanel(props: BrowserPanelProps) {
         setError("");
         try {
             await props.onClose(sessionId);
+        } catch (reason) {
+            setError(String(reason));
+        }
+    };
+
+    const toggleVimKeys = async () => {
+        const current = session();
+        if (!props.native || !current) return;
+        setError("");
+        try {
+            await props.onVimKeysChange(
+                current.sessionId,
+                !current.vimKeysEnabled,
+            );
         } catch (reason) {
             setError(String(reason));
         }
@@ -239,6 +256,36 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                 </form>
 
                 <div class="browser-session-controls">
+                    <Show when={session()}>
+                        {(current) => (
+                            <button
+                                type="button"
+                                class="browser-key-toggle"
+                                data-gui-native-control
+                                aria-pressed={current().vimKeysEnabled}
+                                aria-label={
+                                    current().vimKeysEnabled
+                                        ? "Disable Vim-style page keys"
+                                        : "Enable Vim-style page keys"
+                                }
+                                title={
+                                    current().vimKeysEnabled
+                                        ? "Vim-style page keys are on · i enters Insert mode · ? shows help"
+                                        : "Vim-style page keys are off · browser shortcuts still work"
+                                }
+                                onClick={() => void toggleVimKeys()}
+                            >
+                                <Icon name="command" size={16} />
+                                <span>
+                                    {current().vimKeysEnabled
+                                        ? current().keyMode === "insert"
+                                            ? "Insert"
+                                            : "Vim keys"
+                                        : "Keys off"}
+                                </span>
+                            </button>
+                        )}
+                    </Show>
                     <Show when={session()}>
                         <span
                             class="browser-agent-state"

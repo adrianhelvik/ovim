@@ -72,3 +72,12 @@ pub fn gui_browser_close(
 ) -> Result<GuiBrowserState, String> {
     host.close_for_user(&session_id)
 }
+
+#[tauri::command]
+pub fn gui_browser_set_vim_keys(
+    host: tauri::State<'_, BrowserHost>,
+    session_id: String,
+    enabled: bool,
+) -> Result<GuiBrowserState, String> {
+    host.set_vim_keys_enabled(&session_id, enabled)
+}

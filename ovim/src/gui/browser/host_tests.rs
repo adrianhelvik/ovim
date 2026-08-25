@@ -20,7 +20,7 @@ fn scripts_keep_snapshot_and_action_surfaces_bounded() {
     assert!(SNAPSHOT_SCRIPT.contains("MAX_ELEMENTS = 200"));
     assert!(ACTION_FUNCTION.contains("manual browser control"));
     assert!(!ACTION_FUNCTION.contains("eval("));
-    assert!(KEY_BRIDGE_SCRIPT.contains("ovim-browser://command"));
+    assert!(KEY_BRIDGE_SCRIPT.contains("ovim-browser://key"));
     assert!(KEY_BRIDGE_SCRIPT.contains("event.isTrusted"));
     assert!(!KEY_BRIDGE_SCRIPT.contains("__TAURI_INTERNALS__"));
 }
@@ -28,17 +28,34 @@ fn scripts_keep_snapshot_and_action_surfaces_bounded() {
 #[test]
 fn browser_command_bridge_requires_its_per_webview_token() {
     let token = "0123456789abcdef0123456789abcdef";
-    let script = key_bridge_script(token);
-    assert!(script.contains(&format!("ovim-browser://command/{token}")));
+    let script = key_bridge_script(token, false);
+    assert!(script.contains(&format!("const token = \"{token}\"")));
+    assert!(script.contains("ovim-browser://key/${token}/${intent}"));
     assert!(!script.contains("__OVIM_BRIDGE_TOKEN__"));
-    assert!(is_browser_command_url(
-        &Url::parse(&format!("ovim-browser://command/{token}")).unwrap(),
+    assert!(!script.contains("__OVIM_VIM_KEYS_ENABLED__"));
+    assert!(script.contains("let vimKeysEnabled = false"));
+    assert_eq!(
+        browser_key_intent(
+            &Url::parse(&format!("ovim-browser://key/{token}/next_tab?count=4")).unwrap(),
+            token,
+        ),
+        Some((GuiBrowserKeyIntent::NextTab, 4)),
+    );
+    assert_eq!(
+        browser_key_intent(
+            &Url::parse(&format!("ovim-browser://key/{token}/back?count=1000")).unwrap(),
+            token,
+        ),
+        Some((GuiBrowserKeyIntent::Back, 100)),
+    );
+    assert!(browser_key_intent(
+        &Url::parse("ovim-browser://key/attacker/command").unwrap(),
         token,
-    ));
-    assert!(!is_browser_command_url(
-        &Url::parse("ovim-browser://command/attacker").unwrap(),
-        token,
-    ));
+    )
+    .is_none());
+    let control = key_bridge_control_script(token, true);
+    assert!(control.contains(token));
+    assert!(control.contains("setVimKeys"));
 }
 
 #[test]
@@ -104,7 +121,13 @@ async fn user_tabs_stay_unloaded_until_the_first_navigation() {
     assert_eq!(state.sessions[0].url, "");
     assert!(!state.sessions[0].loading);
     assert_eq!(state.sessions[0].document_id, 0);
+    assert!(state.sessions[0].vim_keys_enabled);
+    assert_eq!(state.sessions[0].key_mode, GuiBrowserKeyMode::Normal);
     assert!(host.inner.lock().unwrap().browsers[0].webview.is_none());
+
+    let state = host.set_vim_keys_enabled("browser-1", false).unwrap();
+    assert!(!state.sessions[0].vim_keys_enabled);
+    assert_eq!(state.sessions[0].key_mode, GuiBrowserKeyMode::Normal);
 
     let snapshot_error = host.snapshot("browser-1").await.unwrap_err();
     assert_eq!(snapshot_error.kind, BrowserErrorKind::InvalidRequest);

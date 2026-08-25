@@ -132,6 +132,15 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
         requireSession(sessionId);
         await invoke("gui_browser_toolbar", { sessionId, action, count });
     };
+    const setVimKeys = async (sessionId: string, enabled: boolean) => {
+        requireSession(sessionId);
+        accept(
+            await invoke<BrowserState>("gui_browser_set_vim_keys", {
+                sessionId,
+                enabled,
+            }),
+        );
+    };
     const activate = (sessionId: string) => {
         if (!hasSession(sessionId)) return;
         if (!options.native) {
@@ -156,6 +165,7 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
         close,
         navigate,
         toolbar,
+        setVimKeys,
         activate,
         present,
         focus,
