@@ -1,5 +1,6 @@
 //! Tauri application shell shared by `ovim gui` and the `ovim-gui` desktop entry.
 
+use super::browser::BrowserHost;
 use super::{GuiBridge, GuiKeyInput, GuiSnapshot, GuiVectorSource};
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
@@ -525,13 +526,17 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
     crate::lsp_init::set_headless_mode(false);
     let _ = crate::lsp::init_lsp_logging();
 
-    let bridge = GuiBridge::spawn(file, resume)?;
+    let (browser_client, browser_requests) = ovim_core::browser::browser_channel();
+    let browser_host = BrowserHost::new(browser_requests);
+    let services = ovim_core::editor::EditorServices::default().with_browser(browser_client);
+    let bridge = GuiBridge::spawn(file, resume, services)?;
     let shutdown_bridge = bridge.clone();
     let exit_gate = GuiExitGate::default();
     let setup_exit_gate = exit_gate.clone();
     let run_exit_gate = exit_gate.clone();
     let application = tauri::Builder::default()
         .manage(bridge)
+        .manage(browser_host)
         .manage(exit_gate)
         .invoke_handler(tauri::generate_handler![
             gui_snapshot,
@@ -566,10 +571,19 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_gdiff_state,
             gui_gdiff_start,
             gui_gdiff_comment,
+            super::browser::gui_browser_open,
+            super::browser::gui_browser_state,
+            super::browser::gui_browser_set_bounds,
+            super::browser::gui_browser_navigate,
+            super::browser::gui_browser_toolbar,
+            super::browser::gui_browser_close,
         ])
         .setup(move |app| {
             install_menu(app)?;
             if let Some(window) = app.get_webview_window("main") {
+                app.state::<BrowserHost>()
+                    .attach(app.handle().clone(), window.as_ref().window())
+                    .map_err(anyhow::Error::msg)?;
                 window
                     .set_title("Ovim")
                     .context("Failed to set the GUI window title")?;

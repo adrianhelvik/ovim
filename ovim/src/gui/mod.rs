@@ -8,10 +8,12 @@
 
 #[cfg(feature = "gui")]
 pub mod app;
+#[cfg(feature = "gui")]
+pub mod browser;
 
 use crate::cli::FileArg;
 use crate::color::Color;
-use crate::editor::{Editor, InputHandler};
+use crate::editor::{Editor, EditorServices, InputHandler};
 use crate::frontend::{
     handle_viewport_resize, process_editor_tick, process_external_file_change,
     process_picker_results, refresh_after_input, FrontendChannels,
@@ -821,7 +823,7 @@ pub struct GuiBridge {
 }
 
 impl GuiBridge {
-    pub fn spawn(file: Option<FileArg>, resume: bool) -> Result<Self> {
+    pub fn spawn(file: Option<FileArg>, resume: bool, services: EditorServices) -> Result<Self> {
         let (request_tx, request_rx) = mpsc::unbounded_channel();
         let (update_tx, _) = watch::channel(None);
         let (ready_tx, ready_rx) = std_mpsc::sync_channel(1);
@@ -841,6 +843,7 @@ impl GuiBridge {
                 runtime.block_on(run_editor(
                     file,
                     resume,
+                    services,
                     request_rx,
                     editor_updates,
                     ready_tx,
@@ -1091,11 +1094,12 @@ impl GuiBridge {
 async fn run_editor(
     file: Option<FileArg>,
     resume: bool,
+    services: EditorServices,
     mut requests: mpsc::UnboundedReceiver<GuiRequest>,
     updates: watch::Sender<Option<GuiSnapshot>>,
     ready: std_mpsc::SyncSender<Result<(), String>>,
 ) {
-    let mut editor = Editor::new();
+    let mut editor = Editor::new().with_services(services);
     if let Err(error) = editor.enable_lua() {
         editor.set_status_message(format!("Lua configuration: {error}"));
     }
