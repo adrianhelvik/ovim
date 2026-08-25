@@ -6,6 +6,7 @@ export type BrowserKeyIntent =
     | "close_tab"
     | "focus_address"
     | "reload"
+    | "find"
     | "back"
     | "forward"
     | "previous_tab"
@@ -20,6 +21,33 @@ export interface BrowserKeyEvent {
     url?: string;
 }
 
+export type BrowserShortcutAction =
+    | "file.close"
+    | "browser.new-tab"
+    | "browser.focus-address"
+    | "browser.reload"
+    | "browser.back"
+    | "browser.forward"
+    | "browser.previous-tab"
+    | "browser.next-tab";
+
+export const browserShortcutAction = (
+    event: Pick<KeyboardEvent, "key" | "code" | "shiftKey">,
+    browserActive: boolean,
+): BrowserShortcutAction | undefined => {
+    const key = event.key.toLowerCase();
+    if (key === "w") return "file.close";
+    if (key === "t") return "browser.new-tab";
+    if (!browserActive) return undefined;
+    if (key === "l") return "browser.focus-address";
+    if (key === "r") return "browser.reload";
+    if (event.code === "BracketLeft")
+        return event.shiftKey ? "browser.previous-tab" : "browser.back";
+    if (event.code === "BracketRight")
+        return event.shiftKey ? "browser.next-tab" : "browser.forward";
+    return undefined;
+};
+
 interface BrowserKeyRouterOptions {
     tabs: () => WorkbenchTabReference[];
     selection: () => WorkbenchSelection;
@@ -30,7 +58,7 @@ interface BrowserKeyRouterOptions {
     openCommand: (sessionId: string) => void;
     runToolbar: (
         sessionId: string,
-        action: "back" | "forward" | "reload",
+        action: "back" | "forward" | "reload" | "find",
         count?: number,
     ) => Promise<void>;
     selectTab: (position: number) => boolean;
@@ -92,6 +120,9 @@ export const createBrowserKeyRouter = (options: BrowserKeyRouterOptions) => {
                 break;
             case "reload":
                 await options.runToolbar(sessionId, "reload");
+                break;
+            case "find":
+                await options.runToolbar(sessionId, "find");
                 break;
             case "back":
             case "forward":

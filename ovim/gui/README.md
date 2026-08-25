@@ -47,9 +47,19 @@ because it has no native child-webview primitive.
 
 Colon commands use the reusable `SurfaceCommandLine` with a browser-specific
 grammar (`:goto`, `:back`, `:forward`, `:reload`, `:stop`, `:q`, and workbench
-tab navigation). A tokenized initialization script in the remote child webview
-can request that command line after a trusted `:` keypress, but it cannot invoke
-Tauri commands or control Ovim directly.
+tab navigation). Browser shortcuts, page key requests, and colon commands all
+reach the same typed `browserWorkbench` controller; the toolbar does not own a
+parallel mutation path. A tokenized initialization script in the remote child
+webview can send only a small set of typed intents after trusted keypresses. It
+cannot invoke Tauri commands or control Ovim directly.
+
+The injected key bridge is split by concern under `browser/key_bridge/` and is
+initialized in every frame. It synchronizes only the per-tab enabled and
+Normal/Insert state across frames; the per-webview command token never enters
+that message channel. Editable fields pass ordinary keys through, `i` enters an
+explicit Insert mode, and `Esc` returns to Normal mode. The toolbar toggle
+disables unmodified Vim-style keys for that tab without disabling native app
+shortcuts such as `Cmd/Ctrl+W`, `Cmd/Ctrl+T`, or `Cmd/Ctrl+L`.
 
 The AI browser tools are advertised only when this live host is attached and
 the active chat profile sets `scope_network = true`; the built-in `codex_sol`

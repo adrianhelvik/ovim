@@ -83,6 +83,33 @@ outside an editable page field to open the Browser command line. It supports
 commands are contextual: `:w` reports that writing is unavailable instead of
 saving a hidden editor buffer.
 
+Browser tabs also have a Vimium-inspired Normal mode. These keys never capture
+ordinary typing in an input, textarea, select, contenteditable region, ARIA
+textbox, or conservatively detected custom-element editor. Press `i` to pass
+all page keys through explicitly; `Esc` returns to Normal mode. The **Vim
+keys** control in the browser toolbar disables or reenables unmodified page
+bindings for that tab. Native application shortcuts remain available while
+page bindings are off.
+
+| Keys | Browser action |
+| --- | --- |
+| `h` `j` `k` `l`, `d` `u`, `gg` `G` | Scroll; half-page; top or bottom |
+| `f`, `F` | Follow a visible control; open a visible link in a new tab |
+| `H`, `L`, `r` | Back, forward, reload |
+| `o`, `:` | Focus the address field; open the Browser command line |
+| `t`, `x` | Open or close a Browser tab |
+| `J` `K`, `gt` `gT`, `g0` `g$` | Move through the integrated workbench tabs |
+| `gi`, `/`, `n` `N`, `yy` | Focus an input; find; repeat find; copy the address |
+| `i`, `Esc`, `?` | Insert mode; Normal mode; key reference |
+
+A numeric prefix repeats supported actions, up to 100. The usual desktop
+shortcuts are contextual too: `Cmd/Ctrl+T` opens an unloaded Browser tab,
+`Cmd/Ctrl+W` closes the selected Browser tab, `Cmd/Ctrl+L` focuses its address,
+`Cmd/Ctrl+R` reloads, `Cmd/Ctrl+F` finds in the page, `Cmd/Ctrl+[` and
+`Cmd/Ctrl+]` move through history, and adding `Shift` to the bracket shortcuts
+moves through workbench tabs. Outside a Browser tab, existing editor/window
+behavior is preserved.
+
 The built-in `codex_sol` chat profile enables browser access by default. Custom
 or overridden profiles remain opt-in: add `scope_network = true` to the profile
 used for `chat`; if that profile has a non-empty `tools` allowlist, add

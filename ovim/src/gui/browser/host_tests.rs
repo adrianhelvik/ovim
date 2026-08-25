@@ -71,6 +71,10 @@ fn browser_command_bridge_requires_its_per_webview_token() {
     let control = key_bridge_control_script(token, true);
     assert!(control.contains(token));
     assert!(control.contains("setVimKeys"));
+    let find = key_bridge_find_script(token);
+    assert!(find.contains(token));
+    assert!(find.contains("run"));
+    assert!(find.contains("find"));
 }
 
 #[test]

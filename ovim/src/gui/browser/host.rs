@@ -11,8 +11,8 @@ use tauri::{Emitter, EventTarget, LogicalPosition, LogicalSize, Url, Webview, We
 #[cfg(test)]
 use super::bridge::KEY_BRIDGE_SCRIPT;
 use super::bridge::{
-    browser_key_request, key_bridge_control_script, key_bridge_script, GuiBrowserKeyEvent,
-    GuiBrowserKeyIntent,
+    browser_key_request, key_bridge_control_script, key_bridge_find_script, key_bridge_script,
+    GuiBrowserKeyEvent, GuiBrowserKeyIntent,
 };
 use super::document::{
     eval_json, ActionPayload, SnapshotPayload, ACTION_FUNCTION, SNAPSHOT_SCRIPT,
@@ -97,6 +97,7 @@ pub enum GuiBrowserToolbarAction {
     Reload,
     Stop,
     Focus,
+    Find,
 }
 
 struct HostedBrowser {
@@ -632,17 +633,19 @@ impl BrowserHost {
         action: GuiBrowserToolbarAction,
         count: u32,
     ) -> Result<(), String> {
-        let webview = self
-            .inner
-            .lock()
-            .map_err(|_| "Browser host lock failed".to_string())?
-            .browsers
-            .iter()
-            .find(|browser| browser.session.session_id == session_id)
-            .ok_or_else(|| format!("Browser session not found: {session_id}"))?
-            .webview
-            .clone()
-            .ok_or_else(|| "Browser session has no loaded page".to_string())?;
+        let (webview, command_token) = {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser host lock failed".to_string())?;
+            let browser = inner
+                .browsers
+                .iter()
+                .find(|browser| browser.session.session_id == session_id)
+                .ok_or_else(|| format!("Browser session not found: {session_id}"))?;
+            (browser.webview.clone(), browser.command_token.clone())
+        };
+        let webview = webview.ok_or_else(|| "Browser session has no loaded page".to_string())?;
         let count = count.clamp(1, 100);
         match action {
             GuiBrowserToolbarAction::Back => webview.eval(format!("history.go(-{count})")),
@@ -650,6 +653,11 @@ impl BrowserHost {
             GuiBrowserToolbarAction::Reload => webview.reload(),
             GuiBrowserToolbarAction::Stop => webview.eval("window.stop()"),
             GuiBrowserToolbarAction::Focus => webview.set_focus(),
+            GuiBrowserToolbarAction::Find => {
+                let token =
+                    command_token.ok_or_else(|| "Browser key bridge is unavailable".to_string())?;
+                webview.eval(key_bridge_find_script(&token))
+            }
         }
         .map_err(|error| format!("Browser toolbar action failed: {error}"))
     }

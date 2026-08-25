@@ -478,7 +478,7 @@ fn install_menu(app: &tauri::App) -> Result<()> {
         true,
         Some("CmdOrCtrl+Alt+S"),
     )?;
-    let close = MenuItem::with_id(app, "file.close", "Close Tab", true, Some("CmdOrCtrl+W"))?;
+    let close = MenuItem::with_id(app, "file.close", "Close", true, Some("CmdOrCtrl+W"))?;
     let quit = MenuItem::with_id(app, "app.quit", "Quit Ovim", true, Some("CmdOrCtrl+Q"))?;
     let undo = MenuItem::with_id(app, "edit.undo", "Undo", true, Some("CmdOrCtrl+Z"))?;
     let redo = MenuItem::with_id(app, "edit.redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?;

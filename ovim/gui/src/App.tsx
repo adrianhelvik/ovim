@@ -20,7 +20,11 @@ import BrowserPanel, {
     type BrowserState,
 } from "./BrowserPanel";
 import { createBrowserWorkbench } from "./browserWorkbench";
-import { createBrowserKeyRouter, type BrowserKeyEvent } from "./browserKeys";
+import {
+    browserShortcutAction,
+    createBrowserKeyRouter,
+    type BrowserKeyEvent,
+} from "./browserKeys";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 import GdiffPanel from "./GdiffPanel";
 import SurfaceCommandLine, {
@@ -1661,14 +1665,21 @@ function App() {
                 else void selectAllEditorText();
                 break;
             case "edit.find":
-                focusEditorInput();
-                void sendKey({
-                    key: "/",
-                    shift: false,
-                    control: false,
-                    alt: false,
-                    meta: false,
-                });
+                if (activeBrowserId())
+                    performBrowserKey({
+                        sessionId: activeBrowserId(),
+                        intent: "find",
+                    });
+                else {
+                    focusEditorInput();
+                    void sendKey({
+                        key: "/",
+                        shift: false,
+                        control: false,
+                        alt: false,
+                        meta: false,
+                    });
+                }
                 break;
         }
     };
@@ -1877,41 +1888,18 @@ function App() {
             performMenuAction(event.altKey ? "file.save-all" : "file.save");
             return;
         }
-        if (primaryModifier && event.key.toLowerCase() === "w") {
-            event.preventDefault();
-            performMenuAction("file.close");
-            return;
-        }
-        if (primaryModifier && event.key.toLowerCase() === "t") {
-            event.preventDefault();
-            performMenuAction("browser.new-tab");
-            return;
-        }
         if (primaryModifier && event.key.toLowerCase() === "q") {
             event.preventDefault();
             requestExit("quit");
             return;
         }
-        if (primaryModifier && workbenchView() === "browser") {
-            const browserAction =
-                event.key.toLowerCase() === "l"
-                    ? "browser.focus-address"
-                    : event.key.toLowerCase() === "r"
-                      ? "browser.reload"
-                      : event.code === "BracketLeft"
-                        ? event.shiftKey
-                            ? "browser.previous-tab"
-                            : "browser.back"
-                        : event.code === "BracketRight"
-                          ? event.shiftKey
-                              ? "browser.next-tab"
-                              : "browser.forward"
-                          : undefined;
-            if (browserAction) {
-                event.preventDefault();
-                performMenuAction(browserAction);
-                return;
-            }
+        const browserShortcut = primaryModifier
+            ? browserShortcutAction(event, workbenchView() === "browser")
+            : undefined;
+        if (browserShortcut) {
+            event.preventDefault();
+            performMenuAction(browserShortcut);
+            return;
         }
         const nativeControl = isGuiNativeControl(target, inputSink);
         if (

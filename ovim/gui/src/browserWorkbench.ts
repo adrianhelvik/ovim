@@ -4,7 +4,8 @@ import type { BrowserSession, BrowserState } from "./BrowserPanel";
 import type { GuiSnapshot } from "./types";
 import { projectBrowserState, type WorkbenchSelection } from "./workbench";
 
-export type BrowserToolbarAction = "back" | "forward" | "reload" | "stop";
+export type BrowserToolbarAction =
+    "back" | "forward" | "reload" | "stop" | "focus" | "find";
 
 interface BrowserWorkbenchOptions {
     native: boolean;

@@ -269,48 +269,61 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                             setAddress(event.currentTarget.value)
                         }
                         onBlur={() => setAddress(session()?.url ?? address())}
+                        onKeyDown={(event) => {
+                            const sessionId = session()?.sessionId;
+                            if (event.key !== "Escape" || !sessionId) return;
+                            event.preventDefault();
+                            setAddress(session()?.url ?? "");
+                            void props
+                                .onToolbar(sessionId, "focus")
+                                .catch((reason) => setError(String(reason)));
+                        }}
                     />
                 </form>
 
                 <div class="browser-session-controls">
                     <Show when={session()}>
                         {(current) => (
-                            <button
-                                type="button"
-                                class="browser-key-toggle"
-                                data-gui-native-control
-                                aria-pressed={current().vimKeysEnabled}
-                                aria-label={
-                                    current().vimKeysEnabled
-                                        ? "Disable Vim-style page keys"
-                                        : "Enable Vim-style page keys"
-                                }
-                                title={
-                                    current().vimKeysEnabled
-                                        ? "Vim-style page keys are on · i enters Insert mode · ? shows help"
-                                        : "Vim-style page keys are off · browser shortcuts still work"
-                                }
-                                onClick={() => void toggleVimKeys()}
-                            >
-                                <Icon name="command" size={16} />
-                                <span>
-                                    {current().vimKeysEnabled
-                                        ? current().keyMode === "insert"
-                                            ? "Insert"
-                                            : "Vim keys"
-                                        : "Keys off"}
+                            <>
+                                <button
+                                    type="button"
+                                    class="browser-key-toggle"
+                                    data-gui-native-control
+                                    aria-pressed={current().vimKeysEnabled}
+                                    aria-label={
+                                        current().vimKeysEnabled
+                                            ? "Disable Vim-style page keys"
+                                            : "Enable Vim-style page keys"
+                                    }
+                                    title={
+                                        current().vimKeysEnabled
+                                            ? "Vim-style page keys are on · i enters Insert mode · ? shows help"
+                                            : "Vim-style page keys are off · browser shortcuts still work"
+                                    }
+                                    onClick={() => void toggleVimKeys()}
+                                >
+                                    <Icon name="command" size={16} />
+                                    <span>
+                                        {current().vimKeysEnabled
+                                            ? current().keyMode === "insert"
+                                                ? "Insert"
+                                                : "Vim keys"
+                                            : "Keys off"}
+                                    </span>
+                                </button>
+                                <span
+                                    class="browser-agent-state"
+                                    title="The AI agent and you can inspect the same browser session"
+                                >
+                                    <Icon
+                                        name="agent"
+                                        size={16}
+                                        tone="accent"
+                                    />
+                                    shared session
                                 </span>
-                            </button>
+                            </>
                         )}
-                    </Show>
-                    <Show when={session()}>
-                        <span
-                            class="browser-agent-state"
-                            title="The AI agent and you can inspect the same browser session"
-                        >
-                            <Icon name="agent" size={16} tone="accent" />
-                            shared session
-                        </span>
                     </Show>
                     <button
                         type="button"

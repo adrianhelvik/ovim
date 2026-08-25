@@ -1,7 +1,12 @@
 use serde::Serialize;
 use tauri::Url;
 
-pub(super) const KEY_BRIDGE_SCRIPT: &str = include_str!("bridge.js");
+pub(super) const KEY_BRIDGE_SCRIPT: &str = concat!(
+    include_str!("key_bridge/bootstrap.js"),
+    include_str!("key_bridge/hints.js"),
+    include_str!("key_bridge/chrome.js"),
+    include_str!("key_bridge/keyboard.js"),
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +59,11 @@ pub(super) fn key_bridge_script(token: &str, state_token: &str, vim_keys_enabled
 pub(super) fn key_bridge_control_script(token: &str, vim_keys_enabled: bool) -> String {
     debug_assert!(token.chars().all(|character| character.is_ascii_hexdigit()));
     format!("window.__OVIM_BROWSER_KEY_BRIDGE__?.setVimKeys('{token}', {vim_keys_enabled});")
+}
+
+pub(super) fn key_bridge_find_script(token: &str) -> String {
+    debug_assert!(token.chars().all(|character| character.is_ascii_hexdigit()));
+    format!("window.__OVIM_BROWSER_KEY_BRIDGE__?.run('{token}', 'find');")
 }
 
 pub(super) fn browser_key_request(url: &Url, token: &str) -> Option<BrowserKeyRequest> {

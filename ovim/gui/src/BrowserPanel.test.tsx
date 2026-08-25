@@ -143,6 +143,10 @@ describe("BrowserPanel", () => {
                     screen.getByLabelText("Browser address"),
                 ),
             );
+            fireEvent.keyDown(screen.getByLabelText("Browser address"), {
+                key: "Escape",
+            });
+            expect(toolbar).toHaveBeenCalledWith("browser-1", "focus");
 
             setObscured(true);
             await waitFor(() =>

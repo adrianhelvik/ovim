@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBrowserKeyRouter } from "./browserKeys";
+import { browserShortcutAction, createBrowserKeyRouter } from "./browserKeys";
 import type { WorkbenchTabReference } from "./workbench";
 
 const tabs: WorkbenchTabReference[] = [
@@ -29,6 +29,33 @@ const setup = () => {
 };
 
 describe("browser key router", () => {
+    it("maps native shortcuts without stealing browser-only keys elsewhere", () => {
+        expect(
+            browserShortcutAction(
+                { key: "w", code: "KeyW", shiftKey: false },
+                false,
+            ),
+        ).toBe("file.close");
+        expect(
+            browserShortcutAction(
+                { key: "t", code: "KeyT", shiftKey: false },
+                false,
+            ),
+        ).toBe("browser.new-tab");
+        expect(
+            browserShortcutAction(
+                { key: "l", code: "KeyL", shiftKey: false },
+                false,
+            ),
+        ).toBeUndefined();
+        expect(
+            browserShortcutAction(
+                { key: "{", code: "BracketLeft", shiftKey: true },
+                true,
+            ),
+        ).toBe("browser.previous-tab");
+    });
+
     it("routes browser actions through the shared workbench controller", async () => {
         const { route, actions } = setup();
 
@@ -36,12 +63,14 @@ describe("browser key router", () => {
         await route({ sessionId: "one", intent: "focus_address" });
         await route({ sessionId: "one", intent: "back", count: 3 });
         await route({ sessionId: "one", intent: "reload" });
+        await route({ sessionId: "one", intent: "find" });
         await route({ sessionId: "one", intent: "close_tab" });
 
         expect(actions.openCommand).toHaveBeenCalledWith("one");
         expect(actions.focusAddress).toHaveBeenCalledWith("one");
         expect(actions.runToolbar).toHaveBeenCalledWith("one", "back", 3);
         expect(actions.runToolbar).toHaveBeenCalledWith("one", "reload");
+        expect(actions.runToolbar).toHaveBeenCalledWith("one", "find");
         expect(actions.closeTab).toHaveBeenCalledWith("one");
     });
 
