@@ -67,11 +67,13 @@ Codex sandbox or Terra approval.
 
 ### Shared embedded browser (`ovim-gui`)
 
-The native GUI has a **Browser** workbench tab backed by a Tauri child webview.
-It is a single session shared by you and the primary AI chat: either side can
-open it and navigate it, and the agent can inspect the page as bounded visible
-text plus referenced interactive elements. The terminal frontend does not
-attach a browser host, so these tools are omitted there.
+The native GUI can add **Browser** tabs backed by Tauri child webviews. Click
+the `+` control in the editor tab strip to create one; each tab is an
+independent ephemeral session shared by you and the primary AI chat. Either
+side can create, select, navigate, inspect, or close a session by its ID. Ovim
+keeps at most eight browser tabs and destroys a child webview when its tab is
+closed, so no browser session is kept open by default. The terminal frontend
+does not attach a browser host, so these tools are omitted there.
 
 Browser tools are opt-in per AI profile. Add `scope_network = true` to the
 profile used for `chat`; if that profile has a non-empty `tools` allowlist, add
@@ -84,6 +86,8 @@ manual control:
 
 - Browser sessions use an ephemeral data store. Only credential-free HTTP and
   HTTPS navigation is accepted; popups and downloads are denied.
+- `browser_session` can list the live tabs. Its `start` action always creates a
+  new session; `show`, `hide`, and `close` affect only the named session.
 - Snapshots contain at most 48 KiB of visible text and 200 interactive
   elements. Password and file-input values are never returned.
 - Every action must cite the exact document and snapshot generation. A page

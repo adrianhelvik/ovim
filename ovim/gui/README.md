@@ -34,12 +34,14 @@ For `.strok` buffers, a Vector companion tab asks the native bridge to render
 the in-memory source with the installed Strøk CLI; its review form drafts
 file-specific feedback in the authoritative core AI chat.
 
-The Browser workbench is also frontend-specific. Its Solid toolbar reserves a
-measured viewport for a native Tauri child webview; the Rust `BrowserHost` owns
-the session, navigation policy, page generations, and DOM evaluation. UI and
-AI requests go through that one host, so they cannot race independent browser
-implementations. The web development view renders the Browser workbench's
-desktop-only fallback because it has no native child-webview primitive.
+Browser tabs are also frontend-specific. Their shared Solid toolbar reserves a
+measured viewport for the selected native Tauri child webview; the Rust
+`BrowserHost` owns the bounded session collection, active-child visibility,
+navigation policy, page generations, and DOM evaluation. UI and AI requests
+go through that one host, so they cannot race independent browser
+implementations. No child webview exists until a browser tab is created, and
+closing the tab destroys its session. The web development view cannot create
+browser tabs because it has no native child-webview primitive.
 
 The AI browser tools are advertised only when this live host is attached and
 the active chat profile sets `scope_network = true`. See

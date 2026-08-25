@@ -3420,12 +3420,10 @@ function App() {
                                 view().lspManager,
                             )}
                             onState={acceptBrowserState}
-                            onClosed={(sessionId) => {
-                                if (activeBrowserId() === sessionId) {
-                                    setActiveBrowserId(undefined);
-                                    setWorkbenchView("source");
-                                    queueMicrotask(focusEditorInput);
-                                }
+                            onClosed={() => {
+                                setActiveBrowserId(undefined);
+                                setWorkbenchView("source");
+                                queueMicrotask(focusEditorInput);
                             }}
                         />
                         <textarea

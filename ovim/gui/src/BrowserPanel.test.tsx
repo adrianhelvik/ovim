@@ -179,6 +179,58 @@ describe("BrowserPanel", () => {
         }
     });
 
+    it("switches the toolbar and address between independent sessions", async () => {
+        invoke.mockResolvedValue(undefined);
+        const sessions = [
+            session(),
+            session({
+                sessionId: "browser-2",
+                url: "https://docs.rs/",
+                title: "Docs.rs",
+                documentId: 3,
+            }),
+        ];
+        const [activeSessionId, setActiveSessionId] = createSignal("browser-1");
+        const result = render(() => (
+            <BrowserPanel
+                native
+                active
+                obscured={false}
+                session={sessions.find(
+                    (candidate) => candidate.sessionId === activeSessionId(),
+                )}
+                onState={() => {}}
+                onClosed={() => {}}
+            />
+        ));
+        try {
+            expect(
+                (screen.getByLabelText("Browser address") as HTMLInputElement)
+                    .value,
+            ).toBe("https://example.com/");
+
+            setActiveSessionId("browser-2");
+            await waitFor(() =>
+                expect(
+                    (
+                        screen.getByLabelText(
+                            "Browser address",
+                        ) as HTMLInputElement
+                    ).value,
+                ).toBe("https://docs.rs/"),
+            );
+            fireEvent.click(
+                screen.getByRole("button", { name: "Reload page" }),
+            );
+            expect(invoke).toHaveBeenCalledWith("gui_browser_toolbar", {
+                sessionId: "browser-2",
+                action: "reload",
+            });
+        } finally {
+            result.unmount();
+        }
+    });
+
     it("derives stable tab titles before a document title is available", () => {
         expect(browserTabTitle(session())).toBe("Example Domain");
         expect(
