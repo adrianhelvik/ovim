@@ -6,10 +6,10 @@ use ovim_core::browser::{
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
+use tauri::ipc::Channel;
 use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Url, Webview, WebviewUrl, Window};
+use tauri::{LogicalPosition, LogicalSize, Url, Webview, WebviewUrl, Window};
 
-const BROWSER_STATE_EVENT: &str = "ovim://browser-state";
 const SNAPSHOT_SCRIPT: &str = include_str!("snapshot.js");
 const ACTION_FUNCTION: &str = include_str!("action.js");
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -69,8 +69,8 @@ struct HostedBrowser {
 }
 
 struct BrowserHostInner {
-    app: Option<AppHandle>,
     parent: Option<Window>,
+    state_updates: Option<Channel<GuiBrowserState>>,
     browsers: Vec<HostedBrowser>,
     active_session_id: Option<String>,
     bounds: GuiBrowserBounds,
@@ -83,8 +83,8 @@ struct BrowserHostInner {
 impl Default for BrowserHostInner {
     fn default() -> Self {
         Self {
-            app: None,
             parent: None,
+            state_updates: None,
             browsers: Vec::new(),
             active_session_id: None,
             bounds: GuiBrowserBounds::default(),
@@ -110,10 +110,9 @@ impl BrowserHost {
         }
     }
 
-    pub fn attach(&self, app: AppHandle, parent: Window) -> Result<(), String> {
+    pub fn attach(&self, parent: Window) -> Result<(), String> {
         {
             let mut inner = self.inner.lock().map_err(|_| "Browser host lock failed")?;
-            inner.app = Some(app);
             inner.parent = Some(parent);
         }
         let receiver = self
@@ -126,6 +125,15 @@ impl BrowserHost {
         tauri::async_runtime::spawn(async move {
             host.run_requests(receiver).await;
         });
+        Ok(())
+    }
+
+    pub fn subscribe(&self, on_event: Channel<GuiBrowserState>) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|_| "Browser host lock failed")?;
+        on_event
+            .send(state_from_inner(&inner))
+            .map_err(|error| format!("Could not publish initial browser state: {error}"))?;
+        inner.state_updates = Some(on_event);
         Ok(())
     }
 
@@ -258,7 +266,7 @@ impl BrowserHost {
         }
         self.sync_bounds()
             .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
-        self.emit_state();
+        self.publish_state();
         Ok(BrowserResponse::Session(
             self.session(&session_id).unwrap_or(session),
         ))
@@ -275,7 +283,7 @@ impl BrowserHost {
         }
         self.sync_bounds()
             .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
-        self.emit_state();
+        self.publish_state();
         Ok(BrowserResponse::Session(self.session_or_error(session_id)?))
     }
 
@@ -290,7 +298,7 @@ impl BrowserHost {
         }
         self.sync_bounds()
             .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
-        self.emit_state();
+        self.publish_state();
         Ok(BrowserResponse::Session(self.session_or_error(session_id)?))
     }
 
@@ -328,7 +336,7 @@ impl BrowserHost {
         let bounds_result = self
             .sync_bounds()
             .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message));
-        self.emit_state();
+        self.publish_state();
         close_result?;
         bounds_result?;
         Ok(BrowserResponse::Session(browser.session))
@@ -355,7 +363,7 @@ impl BrowserHost {
             browser.active_snapshot = None;
             browser.session.clone()
         };
-        self.emit_state();
+        self.publish_state();
         Ok(BrowserResponse::Session(session))
     }
 
@@ -454,7 +462,7 @@ impl BrowserHost {
             browser.session.title = payload.title;
             browser.session.clone()
         };
-        self.emit_state();
+        self.publish_state();
         Ok(BrowserResponse::Session(session))
     }
 
@@ -468,7 +476,7 @@ impl BrowserHost {
             inner.bounds = bounds;
         }
         self.sync_bounds()?;
-        self.emit_state();
+        self.publish_state();
         Ok(())
     }
 
@@ -512,7 +520,7 @@ impl BrowserHost {
             }
             Err(_) => return self.state(),
         };
-        self.emit_state();
+        self.publish_state();
         state
     }
 
@@ -614,13 +622,13 @@ impl BrowserHost {
         })
     }
 
-    fn emit_state(&self) {
-        let (app, state) = match self.inner.lock() {
-            Ok(inner) => (inner.app.clone(), state_from_inner(&inner)),
+    fn publish_state(&self) {
+        let (updates, state) = match self.inner.lock() {
+            Ok(inner) => (inner.state_updates.clone(), state_from_inner(&inner)),
             Err(_) => return,
         };
-        if let Some(app) = app {
-            let _ = app.emit(BROWSER_STATE_EVENT, state);
+        if let Some(updates) = updates {
+            let _ = updates.send(state);
         }
     }
 }
@@ -635,6 +643,14 @@ pub async fn gui_browser_open(
 #[tauri::command]
 pub fn gui_browser_state(host: tauri::State<'_, BrowserHost>) -> GuiBrowserState {
     host.state()
+}
+
+#[tauri::command]
+pub fn gui_browser_subscribe(
+    host: tauri::State<'_, BrowserHost>,
+    on_event: Channel<GuiBrowserState>,
+) -> Result<(), String> {
+    host.subscribe(on_event)
 }
 
 #[tauri::command]
@@ -816,11 +832,11 @@ fn update_page_load(
     let Some(inner) = inner.upgrade() else {
         return;
     };
-    let (app, state) = {
+    let (updates, state) = {
         let Ok(mut inner) = inner.lock() else {
             return;
         };
-        let app = inner.app.clone();
+        let updates = inner.state_updates.clone();
         let Some(browser) = inner
             .browsers
             .iter_mut()
@@ -842,10 +858,10 @@ fn update_page_load(
                 browser.session.loading = false;
             }
         }
-        (app, state_from_inner(&inner))
+        (updates, state_from_inner(&inner))
     };
-    if let Some(app) = app {
-        let _ = app.emit(BROWSER_STATE_EVENT, state);
+    if let Some(updates) = updates {
+        let _ = updates.send(state);
     }
 }
 
@@ -853,11 +869,11 @@ fn update_title(inner: &Weak<Mutex<BrowserHostInner>>, session_id: &str, title: 
     let Some(inner) = inner.upgrade() else {
         return;
     };
-    let (app, state) = {
+    let (updates, state) = {
         let Ok(mut inner) = inner.lock() else {
             return;
         };
-        let app = inner.app.clone();
+        let updates = inner.state_updates.clone();
         let Some(browser) = inner
             .browsers
             .iter_mut()
@@ -866,10 +882,10 @@ fn update_title(inner: &Weak<Mutex<BrowserHostInner>>, session_id: &str, title: 
             return;
         };
         browser.session.title = title;
-        (app, state_from_inner(&inner))
+        (updates, state_from_inner(&inner))
     };
-    if let Some(app) = app {
-        let _ = app.emit(BROWSER_STATE_EVENT, state);
+    if let Some(updates) = updates {
+        let _ = updates.send(state);
     }
 }
 
@@ -942,5 +958,30 @@ mod tests {
         assert!(inner.presentation_request.is_some());
         clear_presentation_request(&mut inner, "browser-2");
         assert!(inner.presentation_request.is_none());
+    }
+
+    #[test]
+    fn browser_state_channel_publishes_initial_and_changed_state() {
+        let (_, requests) = ovim_core::browser::browser_channel();
+        let host = BrowserHost::new(requests);
+        let payloads = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let received = payloads.clone();
+        let channel = Channel::new(move |body| {
+            received.lock().unwrap().push(body.deserialize().unwrap());
+            Ok(())
+        });
+
+        host.subscribe(channel).unwrap();
+        {
+            let mut inner = host.inner.lock().unwrap();
+            record_presentation_request(&mut inner, "browser-7");
+        }
+        host.publish_state();
+
+        let payloads = payloads.lock().unwrap();
+        assert_eq!(payloads.len(), 2);
+        assert!(payloads[0]["presentationRequest"].is_null());
+        assert_eq!(payloads[1]["presentationRequest"]["revision"], 1);
+        assert_eq!(payloads[1]["presentationRequest"]["sessionId"], "browser-7");
     }
 }

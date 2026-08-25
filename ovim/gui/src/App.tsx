@@ -2920,7 +2920,6 @@ function App() {
         observer.observe(editorBody);
         let unlistenMenu: (() => void) | undefined;
         let unlistenClose: (() => void) | undefined;
-        let unlistenBrowserState: (() => void) | undefined;
         if (native) {
             void listen<string>("ovim://menu-action", (event) =>
                 performMenuAction(event.payload),
@@ -2932,14 +2931,11 @@ function App() {
             ).then((unlisten) => {
                 unlistenClose = unlisten;
             });
-            void listen<BrowserState>("ovim://browser-state", (event) =>
-                acceptBrowserState(event.payload),
-            ).then((unlisten) => {
-                unlistenBrowserState = unlisten;
-            });
-            void invoke<BrowserState>("gui_browser_state")
-                .then(acceptBrowserState)
-                .catch((reason) => setError(String(reason)));
+            const browserStates = new Channel<BrowserState>();
+            browserStates.onmessage = acceptBrowserState;
+            void invoke("gui_browser_subscribe", {
+                onEvent: browserStates,
+            }).catch((reason) => setError(String(reason)));
             const snapshots = new Channel<GuiSnapshot>();
             snapshots.onmessage = accept;
             lastDimensions = dimensions();
@@ -2962,7 +2958,6 @@ function App() {
             observer.disconnect();
             unlistenMenu?.();
             unlistenClose?.();
-            unlistenBrowserState?.();
         });
     });
 

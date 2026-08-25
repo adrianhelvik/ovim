@@ -208,9 +208,7 @@ describe("Ovim Solid workbench", () => {
         ).toBeTruthy();
         expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
         expect(screen.getByLabelText("Ovim editor input")).toBeTruthy();
-        expect(
-            screen.getByRole("tablist", { name: "Open tabs" }),
-        ).toBeTruthy();
+        expect(screen.getByRole("tablist", { name: "Open tabs" })).toBeTruthy();
         expect(
             screen.getByRole("tree", { name: "Project files" }),
         ).toBeTruthy();

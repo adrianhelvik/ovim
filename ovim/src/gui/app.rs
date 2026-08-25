@@ -15,7 +15,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, InvokeBody, Request};
 use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
-use tauri::{DragDropEvent, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
+use tauri::{DragDropEvent, Emitter, EventTarget, Manager, RunEvent, State, Window, WindowEvent};
 
 #[derive(Clone, Default)]
 struct GuiExitGate(Arc<AtomicBool>);
@@ -417,7 +417,7 @@ async fn gui_select_debug_frame(bridge: State<'_, GuiBridge>, index: usize) -> R
 
 #[tauri::command]
 fn gui_window_action(
-    window: WebviewWindow,
+    window: Window,
     exit_gate: State<'_, GuiExitGate>,
     action: String,
 ) -> Result<(), String> {
@@ -579,6 +579,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_gdiff_comment,
             super::browser::gui_browser_open,
             super::browser::gui_browser_state,
+            super::browser::gui_browser_subscribe,
             super::browser::gui_browser_set_bounds,
             super::browser::gui_browser_activate,
             super::browser::gui_browser_ack_presentation,
@@ -590,7 +591,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             install_menu(app)?;
             if let Some(window) = app.get_webview_window("main") {
                 app.state::<BrowserHost>()
-                    .attach(app.handle().clone(), window.as_ref().window())
+                    .attach(window.as_ref().window())
                     .map_err(anyhow::Error::msg)?;
                 window
                     .set_title("Ovim")
@@ -618,7 +619,11 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             Ok(())
         })
         .on_menu_event(|app, event| {
-            let _ = app.emit("ovim://menu-action", event.id().as_ref());
+            let _ = app.emit_to(
+                EventTarget::webview("main"),
+                "ovim://menu-action",
+                event.id().as_ref(),
+            );
         })
         .build(tauri::generate_context!())
         .context("Failed to build the Ovim GUI")?;
