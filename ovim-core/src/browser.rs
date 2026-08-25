@@ -13,6 +13,7 @@ const BROWSER_CHANNEL_CAPACITY: usize = 32;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserCommand {
+    List,
     Start {
         incognito: bool,
     },
@@ -100,6 +101,7 @@ pub struct BrowserSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum BrowserResponse {
+    Sessions(Vec<BrowserSession>),
     Session(BrowserSession),
     Snapshot(BrowserSnapshot),
 }
@@ -233,5 +235,25 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.kind, BrowserErrorKind::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn client_can_list_independent_sessions() {
+        let (client, mut host) = browser_channel();
+        let request = tokio::spawn(async move { client.execute(BrowserCommand::List).await });
+
+        let incoming = host.recv().await.expect("browser request");
+        assert_eq!(incoming.command(), &BrowserCommand::List);
+        incoming.respond(Ok(BrowserResponse::Sessions(vec![BrowserSession {
+            session_id: "browser-2".into(),
+            url: "https://example.com/".into(),
+            title: "Example Domain".into(),
+            visible: false,
+            loading: false,
+            document_id: 1,
+        }])));
+
+        let response = request.await.unwrap().unwrap();
+        assert!(matches!(response, BrowserResponse::Sessions(sessions) if sessions.len() == 1));
     }
 }

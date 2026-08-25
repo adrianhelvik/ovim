@@ -15,6 +15,7 @@ const SNAPSHOT_SCRIPT: &str = include_str!("snapshot.js");
 const ACTION_FUNCTION: &str = include_str!("action.js");
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(10);
 const START_URL: &str = "https://example.com/";
+const MAX_BROWSER_SESSIONS: usize = 8;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,13 +49,14 @@ impl GuiBrowserBounds {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiBrowserState {
-    pub session: Option<BrowserSession>,
+    pub sessions: Vec<BrowserSession>,
+    pub active_session_id: Option<String>,
+    pub max_sessions: usize,
 }
 
 struct HostedBrowser {
     webview: Webview,
     session: BrowserSession,
-    desired_visible: bool,
     active_snapshot: Option<(u64, u64)>,
     next_snapshot_id: u64,
 }
@@ -62,9 +64,11 @@ struct HostedBrowser {
 struct BrowserHostInner {
     app: Option<AppHandle>,
     parent: Option<Window>,
-    browser: Option<HostedBrowser>,
+    browsers: Vec<HostedBrowser>,
+    active_session_id: Option<String>,
     bounds: GuiBrowserBounds,
     next_session_id: u64,
+    starting_sessions: usize,
 }
 
 impl Default for BrowserHostInner {
@@ -72,9 +76,11 @@ impl Default for BrowserHostInner {
         Self {
             app: None,
             parent: None,
-            browser: None,
+            browsers: Vec::new(),
+            active_session_id: None,
             bounds: GuiBrowserBounds::default(),
             next_session_id: 1,
+            starting_sessions: 0,
         }
     }
 }
@@ -126,6 +132,7 @@ impl BrowserHost {
 
     async fn execute(&self, command: BrowserCommand, agent_requested: bool) -> BrowserResult {
         match command {
+            BrowserCommand::List => Ok(BrowserResponse::Sessions(self.sessions())),
             BrowserCommand::Start { incognito } => self.start(incognito, agent_requested).await,
             BrowserCommand::Show { session_id } => self.show(&session_id, agent_requested),
             BrowserCommand::Hide { session_id } => self.hide(&session_id),
@@ -152,25 +159,25 @@ impl BrowserHost {
     }
 
     pub fn state(&self) -> GuiBrowserState {
-        let session = self.inner.lock().ok().and_then(|inner| {
-            inner
-                .browser
-                .as_ref()
-                .map(|browser| browser.session.clone())
-        });
-        GuiBrowserState { session }
+        self.inner
+            .lock()
+            .map(|inner| state_from_inner(&inner))
+            .unwrap_or_else(|_| GuiBrowserState {
+                sessions: Vec::new(),
+                active_session_id: None,
+                max_sessions: MAX_BROWSER_SESSIONS,
+            })
     }
 
     async fn start(&self, incognito: bool, emit_show: bool) -> BrowserResult {
-        if let Some(session) = self.current_session() {
-            if emit_show {
-                self.emit_show_requested();
-            }
-            return Ok(BrowserResponse::Session(session));
-        }
-
         let (parent, session_id) = {
             let mut inner = self.lock()?;
+            if inner.browsers.len() + inner.starting_sessions >= MAX_BROWSER_SESSIONS {
+                return Err(browser_error(
+                    BrowserErrorKind::InvalidRequest,
+                    format!("Ovim supports up to {MAX_BROWSER_SESSIONS} browser tabs"),
+                ));
+            }
             let parent = inner.parent.clone().ok_or_else(|| {
                 browser_error(
                     BrowserErrorKind::Unavailable,
@@ -179,37 +186,44 @@ impl BrowserHost {
             })?;
             let id = inner.next_session_id;
             inner.next_session_id = inner.next_session_id.saturating_add(1);
+            inner.starting_sessions = inner.starting_sessions.saturating_add(1);
             (parent, format!("browser-{id}"))
         };
         let url = Url::parse(START_URL).expect("static browser start URL");
         let weak = Arc::downgrade(&self.inner);
         let title_weak = weak.clone();
+        let load_session_id = session_id.clone();
+        let title_session_id = session_id.clone();
         let builder = WebviewBuilder::new(&session_id, WebviewUrl::External(url.clone()))
             .incognito(incognito)
             .on_navigation(allowed_browser_url)
             .on_new_window(|_, _| NewWindowResponse::Deny)
             .on_download(|_, _| false)
             .on_page_load(move |_, payload| {
-                update_page_load(&weak, payload.url(), payload.event());
+                update_page_load(&weak, &load_session_id, payload.url(), payload.event());
             })
             .on_document_title_changed(move |_, title| {
-                update_title(&title_weak, title);
+                update_title(&title_weak, &title_session_id, title);
             });
-        let webview = parent
-            .add_child(
-                builder,
-                LogicalPosition::new(0.0, 0.0),
-                LogicalSize::new(1.0, 1.0),
-            )
-            .map_err(|error| {
-                browser_error(
+        let webview = match parent.add_child(
+            builder,
+            LogicalPosition::new(0.0, 0.0),
+            LogicalSize::new(1.0, 1.0),
+        ) {
+            Ok(webview) => webview,
+            Err(error) => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.starting_sessions = inner.starting_sessions.saturating_sub(1);
+                }
+                return Err(browser_error(
                     BrowserErrorKind::Unavailable,
                     format!("Could not create embedded browser: {error}"),
-                )
-            })?;
+                ));
+            }
+        };
         let _ = webview.hide();
         let session = BrowserSession {
-            session_id,
+            session_id: session_id.clone(),
             url: url.to_string(),
             title: String::new(),
             visible: false,
@@ -218,88 +232,86 @@ impl BrowserHost {
         };
         {
             let mut inner = self.lock()?;
-            if inner.browser.is_some() {
-                let _ = webview.close();
-                return Err(browser_error(
-                    BrowserErrorKind::InvalidRequest,
-                    "A browser session was created concurrently",
-                ));
-            }
-            inner.browser = Some(HostedBrowser {
+            inner.starting_sessions = inner.starting_sessions.saturating_sub(1);
+            inner.browsers.push(HostedBrowser {
                 webview,
                 session: session.clone(),
-                desired_visible: true,
                 active_snapshot: None,
                 next_snapshot_id: 1,
             });
+            inner.active_session_id = Some(session_id.clone());
         }
         self.sync_bounds()
             .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
         self.emit_state();
         if emit_show {
-            self.emit_show_requested();
+            self.emit_show_requested(&session_id);
         }
-        Ok(BrowserResponse::Session(session))
+        Ok(BrowserResponse::Session(
+            self.session(&session_id).unwrap_or(session),
+        ))
     }
 
     fn show(&self, session_id: &str, emit_show: bool) -> BrowserResult {
-        let session = {
+        {
             let mut inner = self.lock()?;
-            let has_visible_bounds = inner.bounds.visible && inner.bounds.has_area();
-            let browser = session_mut(&mut inner, session_id)?;
-            browser.desired_visible = true;
-            browser.session.visible = has_visible_bounds;
-            browser.session.clone()
-        };
+            session_ref(&inner, session_id)?;
+            inner.active_session_id = Some(session_id.to_string());
+        }
         self.sync_bounds()
             .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
         self.emit_state();
         if emit_show {
-            self.emit_show_requested();
+            self.emit_show_requested(session_id);
         }
-        Ok(BrowserResponse::Session(session))
+        Ok(BrowserResponse::Session(self.session_or_error(session_id)?))
     }
 
     fn hide(&self, session_id: &str) -> BrowserResult {
-        let (webview, session) = {
+        {
             let mut inner = self.lock()?;
-            let browser = session_mut(&mut inner, session_id)?;
-            browser.desired_visible = false;
-            browser.session.visible = false;
-            (browser.webview.clone(), browser.session.clone())
-        };
-        webview.hide().map_err(|error| {
-            browser_error(
-                BrowserErrorKind::Unavailable,
-                format!("Could not hide embedded browser: {error}"),
-            )
-        })?;
+            session_ref(&inner, session_id)?;
+            if inner.active_session_id.as_deref() == Some(session_id) {
+                inner.active_session_id = None;
+            }
+        }
+        self.sync_bounds()
+            .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
         self.emit_state();
-        Ok(BrowserResponse::Session(session))
+        Ok(BrowserResponse::Session(self.session_or_error(session_id)?))
     }
 
     fn close(&self, session_id: &str) -> BrowserResult {
-        let browser = {
+        let mut browser = {
             let mut inner = self.lock()?;
-            if inner
-                .browser
-                .as_ref()
-                .is_none_or(|browser| browser.session.session_id != session_id)
-            {
-                return Err(browser_error(
-                    BrowserErrorKind::SessionNotFound,
-                    format!("Browser session not found: {session_id}"),
-                ));
+            let position = inner
+                .browsers
+                .iter()
+                .position(|browser| browser.session.session_id == session_id)
+                .ok_or_else(|| {
+                    browser_error(
+                        BrowserErrorKind::SessionNotFound,
+                        format!("Browser session not found: {session_id}"),
+                    )
+                })?;
+            if inner.active_session_id.as_deref() == Some(session_id) {
+                inner.active_session_id = None;
             }
-            inner.browser.take().expect("browser checked above")
+            inner.browsers.remove(position)
         };
-        browser.webview.close().map_err(|error| {
+        browser.session.visible = false;
+        let close_result = browser.webview.close().map_err(|error| {
             browser_error(
                 BrowserErrorKind::Unavailable,
                 format!("Could not close embedded browser: {error}"),
             )
-        })?;
+        });
+        let bounds_result = self
+            .sync_bounds()
+            .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message));
         self.emit_state();
+        close_result?;
+        bounds_result?;
         Ok(BrowserResponse::Session(browser.session))
     }
 
@@ -435,25 +447,22 @@ impl BrowserHost {
                 .lock()
                 .map_err(|_| "Browser host lock failed".to_string())?;
             inner.bounds = bounds;
-            if let Some(browser) = inner.browser.as_mut() {
-                browser.session.visible =
-                    browser.desired_visible && bounds.visible && bounds.has_area();
-            }
         }
         self.sync_bounds()?;
         self.emit_state();
         Ok(())
     }
 
-    pub fn toolbar_action(&self, action: &str) -> Result<(), String> {
+    pub fn toolbar_action(&self, session_id: &str, action: &str) -> Result<(), String> {
         let webview = self
             .inner
             .lock()
             .map_err(|_| "Browser host lock failed".to_string())?
-            .browser
-            .as_ref()
+            .browsers
+            .iter()
+            .find(|browser| browser.session.session_id == session_id)
             .map(|browser| browser.webview.clone())
-            .ok_or_else(|| "No browser session is open".to_string())?;
+            .ok_or_else(|| format!("Browser session not found: {session_id}"))?;
         match action {
             "back" => webview.eval("history.back()"),
             "forward" => webview.eval("history.forward()"),
@@ -464,58 +473,98 @@ impl BrowserHost {
         .map_err(|error| format!("Browser toolbar action failed: {error}"))
     }
 
-    pub fn navigate_for_user(&self, raw_url: &str) -> Result<GuiBrowserState, String> {
-        let session_id = self
-            .current_session()
-            .ok_or_else(|| "No browser session is open".to_string())?
-            .session_id;
-        self.navigate(&session_id, raw_url)
+    pub fn activate_for_user(&self, session_id: &str) -> Result<GuiBrowserState, String> {
+        self.show(session_id, false)
             .map_err(|error| error.message)?;
         Ok(self.state())
     }
 
-    pub fn close_for_user(&self) -> Result<(), String> {
-        let session_id = self
-            .current_session()
-            .ok_or_else(|| "No browser session is open".to_string())?
-            .session_id;
-        self.close(&session_id).map_err(|error| error.message)?;
-        Ok(())
+    pub fn navigate_for_user(
+        &self,
+        session_id: &str,
+        raw_url: &str,
+    ) -> Result<GuiBrowserState, String> {
+        self.navigate(session_id, raw_url)
+            .map_err(|error| error.message)?;
+        Ok(self.state())
+    }
+
+    pub fn close_for_user(&self, session_id: &str) -> Result<GuiBrowserState, String> {
+        self.close(session_id).map_err(|error| error.message)?;
+        Ok(self.state())
     }
 
     fn sync_bounds(&self) -> Result<(), String> {
-        let (webview, bounds, visible) = {
-            let inner = self
+        let operations = {
+            let mut inner = self
                 .inner
                 .lock()
                 .map_err(|_| "Browser host lock failed".to_string())?;
-            let Some(browser) = inner.browser.as_ref() else {
-                return Ok(());
-            };
-            (
-                browser.webview.clone(),
-                inner.bounds,
-                browser.desired_visible,
-            )
+            let bounds = inner.bounds;
+            let active_session_id = inner.active_session_id.clone();
+            inner
+                .browsers
+                .iter_mut()
+                .map(|browser| {
+                    let visible = active_session_id.as_deref()
+                        == Some(browser.session.session_id.as_str())
+                        && bounds.visible
+                        && bounds.has_area();
+                    browser.session.visible = visible;
+                    (browser.webview.clone(), visible, bounds)
+                })
+                .collect::<Vec<_>>()
         };
-        if !visible || !bounds.visible || !bounds.has_area() {
-            return webview
-                .hide()
-                .map_err(|error| format!("Could not hide embedded browser: {error}"));
+
+        let mut first_error = None;
+        for (webview, visible, bounds) in operations {
+            let result = if visible {
+                webview
+                    .set_position(LogicalPosition::new(bounds.x, bounds.y))
+                    .and_then(|_| webview.set_size(LogicalSize::new(bounds.width, bounds.height)))
+                    .and_then(|_| webview.show())
+                    .map_err(|error| format!("Could not position embedded browser: {error}"))
+            } else {
+                webview
+                    .hide()
+                    .map_err(|error| format!("Could not hide embedded browser: {error}"))
+            };
+            if first_error.is_none() {
+                first_error = result.err();
+            }
         }
-        webview
-            .set_position(LogicalPosition::new(bounds.x, bounds.y))
-            .and_then(|_| webview.set_size(LogicalSize::new(bounds.width, bounds.height)))
-            .and_then(|_| webview.show())
-            .map_err(|error| format!("Could not position embedded browser: {error}"))
+        first_error.map_or(Ok(()), Err)
     }
 
-    fn current_session(&self) -> Option<BrowserSession> {
+    fn sessions(&self) -> Vec<BrowserSession> {
+        self.inner
+            .lock()
+            .map(|inner| {
+                inner
+                    .browsers
+                    .iter()
+                    .map(|browser| browser.session.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn session(&self, session_id: &str) -> Option<BrowserSession> {
         self.inner.lock().ok().and_then(|inner| {
             inner
-                .browser
-                .as_ref()
+                .browsers
+                .iter()
+                .find(|browser| browser.session.session_id == session_id)
                 .map(|browser| browser.session.clone())
+        })
+    }
+
+    fn session_or_error(&self, session_id: &str) -> Result<BrowserSession, BrowserError> {
+        self.session(session_id).ok_or_else(|| {
+            browser_error(
+                BrowserErrorKind::SessionNotFound,
+                format!("Browser session not found: {session_id}"),
+            )
         })
     }
 
@@ -528,25 +577,17 @@ impl BrowserHost {
         })
     }
 
-    fn emit_show_requested(&self) {
+    fn emit_show_requested(&self, session_id: &str) {
         if let Ok(inner) = self.inner.lock()
             && let Some(app) = inner.app.as_ref()
         {
-            let _ = app.emit(BROWSER_SHOW_EVENT, ());
+            let _ = app.emit(BROWSER_SHOW_EVENT, session_id);
         }
     }
 
     fn emit_state(&self) {
         let (app, state) = match self.inner.lock() {
-            Ok(inner) => (
-                inner.app.clone(),
-                GuiBrowserState {
-                    session: inner
-                        .browser
-                        .as_ref()
-                        .map(|browser| browser.session.clone()),
-                },
-            ),
+            Ok(inner) => (inner.app.clone(), state_from_inner(&inner)),
             Err(_) => return,
         };
         if let Some(app) = app {
@@ -576,24 +617,37 @@ pub fn gui_browser_set_bounds(
 }
 
 #[tauri::command]
+pub fn gui_browser_activate(
+    host: tauri::State<'_, BrowserHost>,
+    session_id: String,
+) -> Result<GuiBrowserState, String> {
+    host.activate_for_user(&session_id)
+}
+
+#[tauri::command]
 pub fn gui_browser_navigate(
     host: tauri::State<'_, BrowserHost>,
+    session_id: String,
     url: String,
 ) -> Result<GuiBrowserState, String> {
-    host.navigate_for_user(&url)
+    host.navigate_for_user(&session_id, &url)
 }
 
 #[tauri::command]
 pub fn gui_browser_toolbar(
     host: tauri::State<'_, BrowserHost>,
+    session_id: String,
     action: String,
 ) -> Result<(), String> {
-    host.toolbar_action(&action)
+    host.toolbar_action(&session_id, &action)
 }
 
 #[tauri::command]
-pub fn gui_browser_close(host: tauri::State<'_, BrowserHost>) -> Result<(), String> {
-    host.close_for_user()
+pub fn gui_browser_close(
+    host: tauri::State<'_, BrowserHost>,
+    session_id: String,
+) -> Result<GuiBrowserState, String> {
+    host.close_for_user(&session_id)
 }
 
 fn session_ref<'a>(
@@ -601,9 +655,9 @@ fn session_ref<'a>(
     session_id: &str,
 ) -> Result<&'a HostedBrowser, BrowserError> {
     inner
-        .browser
-        .as_ref()
-        .filter(|browser| browser.session.session_id == session_id)
+        .browsers
+        .iter()
+        .find(|browser| browser.session.session_id == session_id)
         .ok_or_else(|| {
             browser_error(
                 BrowserErrorKind::SessionNotFound,
@@ -617,9 +671,9 @@ fn session_mut<'a>(
     session_id: &str,
 ) -> Result<&'a mut HostedBrowser, BrowserError> {
     inner
-        .browser
-        .as_mut()
-        .filter(|browser| browser.session.session_id == session_id)
+        .browsers
+        .iter_mut()
+        .find(|browser| browser.session.session_id == session_id)
         .ok_or_else(|| {
             browser_error(
                 BrowserErrorKind::SessionNotFound,
@@ -654,6 +708,18 @@ fn browser_error(kind: BrowserErrorKind, message: impl Into<String>) -> BrowserE
     BrowserError::new(kind, message)
 }
 
+fn state_from_inner(inner: &BrowserHostInner) -> GuiBrowserState {
+    GuiBrowserState {
+        sessions: inner
+            .browsers
+            .iter()
+            .map(|browser| browser.session.clone())
+            .collect(),
+        active_session_id: inner.active_session_id.clone(),
+        max_sessions: MAX_BROWSER_SESSIONS,
+    }
+}
+
 async fn eval_json(webview: &Webview, script: &str) -> Result<String, BrowserError> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let sender = Arc::new(Mutex::new(Some(sender)));
@@ -684,16 +750,25 @@ async fn eval_json(webview: &Webview, script: &str) -> Result<String, BrowserErr
     }
 }
 
-fn update_page_load(inner: &Weak<Mutex<BrowserHostInner>>, url: &Url, event: PageLoadEvent) {
+fn update_page_load(
+    inner: &Weak<Mutex<BrowserHostInner>>,
+    session_id: &str,
+    url: &Url,
+    event: PageLoadEvent,
+) {
     let Some(inner) = inner.upgrade() else {
         return;
     };
-    let app = {
+    let (app, state) = {
         let Ok(mut inner) = inner.lock() else {
             return;
         };
         let app = inner.app.clone();
-        let Some(browser) = inner.browser.as_mut() else {
+        let Some(browser) = inner
+            .browsers
+            .iter_mut()
+            .find(|browser| browser.session.session_id == session_id)
+        else {
             return;
         };
         match event {
@@ -710,20 +785,14 @@ fn update_page_load(inner: &Weak<Mutex<BrowserHostInner>>, url: &Url, event: Pag
                 browser.session.loading = false;
             }
         }
-        app
+        (app, state_from_inner(&inner))
     };
     if let Some(app) = app {
-        let state = inner.lock().ok().and_then(|inner| {
-            inner
-                .browser
-                .as_ref()
-                .map(|browser| browser.session.clone())
-        });
-        let _ = app.emit(BROWSER_STATE_EVENT, GuiBrowserState { session: state });
+        let _ = app.emit(BROWSER_STATE_EVENT, state);
     }
 }
 
-fn update_title(inner: &Weak<Mutex<BrowserHostInner>>, title: String) {
+fn update_title(inner: &Weak<Mutex<BrowserHostInner>>, session_id: &str, title: String) {
     let Some(inner) = inner.upgrade() else {
         return;
     };
@@ -732,19 +801,18 @@ fn update_title(inner: &Weak<Mutex<BrowserHostInner>>, title: String) {
             return;
         };
         let app = inner.app.clone();
-        let Some(browser) = inner.browser.as_mut() else {
+        let Some(browser) = inner
+            .browsers
+            .iter_mut()
+            .find(|browser| browser.session.session_id == session_id)
+        else {
             return;
         };
         browser.session.title = title;
-        (app, browser.session.clone())
+        (app, state_from_inner(&inner))
     };
     if let Some(app) = app {
-        let _ = app.emit(
-            BROWSER_STATE_EVENT,
-            GuiBrowserState {
-                session: Some(state),
-            },
-        );
+        let _ = app.emit(BROWSER_STATE_EVENT, state);
     }
 }
 

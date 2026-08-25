@@ -19,6 +19,7 @@ impl Editor {
         let arguments = &call.arguments;
         match call.name.as_str() {
             BROWSER_SESSION_TOOL => match required_string(arguments, "action")?.as_str() {
+                "list" => Ok(BrowserCommand::List),
                 "start" => Ok(BrowserCommand::Start {
                     incognito: arguments
                         .get("incognito")
@@ -261,5 +262,17 @@ mod tests {
             }),
         );
         assert!(editor.prepare_browser_command(&invalid_ref).is_err());
+    }
+
+    #[test]
+    fn session_tool_can_list_sessions_without_an_id() {
+        let editor = Editor::default();
+        let command = editor
+            .prepare_browser_command(&call(
+                crate::ai::tools::browser::BROWSER_SESSION_TOOL,
+                serde_json::json!({"action": "list"}),
+            ))
+            .unwrap();
+        assert_eq!(command, BrowserCommand::List);
     }
 }
