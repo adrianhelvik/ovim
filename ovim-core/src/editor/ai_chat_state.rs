@@ -573,8 +573,12 @@ pub struct CodeAttachment {
     pub buffer_id: BufferId,
     pub path: Option<String>,
     pub start_line: usize,
+    pub start_column: usize,
     pub end_line: usize,
+    pub end_column: usize,
+    pub linewise: bool,
     pub buffer_revision: usize,
+    pub source_context: Option<String>,
     pub text: String,
 }
 

@@ -604,24 +604,14 @@ Built-in AI keybindings:
 - Visual mode `Space Space`: attach selected code to chat
 - AI chat `Ctrl-T`: delegated-agent and conversation-tree sidebar
 
-## Collaborative diff reviews with Gdiff
+## Native diff review
 
-In the native GUI, select **Diff collaboration** in the activity bar to open
-the Diff tab. Ovim discovers the Gdiff instance for the current Git worktree;
-if none is running, **Open Gdiff** launches `gdiff start` in that worktree.
-`gdiff` must be installed or linked on the PATH inherited by Ovim.
-
-The tab shows the active comparison, changed files, and one-based new-side line
-numbers. Comments are Gdiff's persistent review notes and appear in both apps.
-
-Editable project chats also receive two collaboration tools:
-
-- `gdiff_review` reads the active comparison, changed files, and comments.
-- `gdiff_comment` adds, updates, or removes a comment after normal external-tool
-  policy checks. Its line argument is always the new/right-side line number.
-
-Both tools are scoped to the chat's Git worktree and validate the loopback
-instance before using it.
+Open **Diff review** from the activity bar to compare Git references or the working tree.
+Choose a changed file to open its patch as a read-only Ovim buffer. Use normal Ovim
+motions and Visual mode to select the relevant lines, then press `<Space><Space>`.
+Ovim keeps the selection highlighted and places the existing AI composer directly below
+it; the selected patch and your message are sent through the normal project chat.
+No external diff application or background review server is required.
 
 ## Legacy `ai.toml` (Still Supported)
 

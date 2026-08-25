@@ -1686,27 +1686,11 @@ fn project_tools_work_from_unnamed_buffer_when_project_root_is_known() {
         }
     }
 
-    for tool_call in [
-        ToolCallInfo {
-            id: "call_strok_intro".to_string(),
-            name: "strok_vector".to_string(),
-            arguments: serde_json::json!({"operation": "intro"}),
-        },
-        ToolCallInfo {
-            id: "call_gdiff_review".to_string(),
-            name: "gdiff_review".to_string(),
-            arguments: serde_json::json!({}),
-        },
-        ToolCallInfo {
-            id: "call_gdiff_comment".to_string(),
-            name: "gdiff_comment".to_string(),
-            arguments: serde_json::json!({
-                "action": "remove",
-                "path": "Cargo.toml",
-                "line": 1,
-            }),
-        },
-    ] {
+    for tool_call in [ToolCallInfo {
+        id: "call_strok_intro".to_string(),
+        name: "strok_vector".to_string(),
+        arguments: serde_json::json!({"operation": "intro"}),
+    }] {
         match editor.dispatch_tool_call_with_approval(&tool_call, None) {
             ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
                 assert!(

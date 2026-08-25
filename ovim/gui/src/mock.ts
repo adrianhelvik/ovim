@@ -235,6 +235,7 @@ export const mockSnapshot: GuiSnapshot = {
 mockSnapshot.panes = [
     {
         index: 0,
+        bufferId: 1,
         focused: true,
         fileName: mockSnapshot.fileName,
         modified: mockSnapshot.modified,

@@ -23,6 +23,7 @@ export interface GuiLine {
     segments: GuiSegment[];
     git?: "added" | "modified" | "removed";
     diagnostic?: "error" | "warning" | "information" | "hint";
+    diff?: "header" | "hunk" | "added" | "removed" | "context";
 }
 
 export type GuiLayoutNode =
@@ -37,6 +38,7 @@ export type GuiLayoutNode =
 
 export interface GuiPane {
     index: number;
+    bufferId: number;
     focused: boolean;
     fileName: string;
     modified: boolean;
@@ -56,6 +58,15 @@ export interface GuiAiProfileOption {
 
 export interface GuiAiChat {
     profile: string;
+    pendingCodeAttachment?: {
+        bufferId: number;
+        label: string;
+        startLine: number;
+        startColumn: number;
+        endLine: number;
+        endColumn: number;
+        linewise: boolean;
+    };
     profiles: GuiAiProfileOption[];
     reasoningEffort: string;
     reasoningEffortSelection: string;
@@ -91,6 +102,7 @@ export interface GuiAiChat {
         selected: boolean;
         role: string;
         content: string;
+        attachment?: string;
         model?: string;
         toolName?: string;
         tools: string[];
@@ -204,14 +216,18 @@ export interface GuiDebugPanel {
     output: string[];
 }
 
-export interface GuiGdiffReview {
-    installed: boolean;
-    running: boolean;
-    repo: string;
+export interface GuiDiffReview {
+    root: string;
     spec: string;
     displaySpec: string;
-    files: string[];
-    comments: Array<{ path: string; line: number; text: string }>;
+    files: Array<{
+        path: string;
+        oldPath?: string;
+        status: string;
+        additions: number;
+        deletions: number;
+        binary: boolean;
+    }>;
 }
 
 export interface GuiTheme {

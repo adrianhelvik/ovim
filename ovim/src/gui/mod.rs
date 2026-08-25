@@ -340,6 +340,7 @@ pub struct GuiLine {
     pub segments: Vec<GuiSegment>,
     pub git: Option<String>,
     pub diagnostic: Option<String>,
+    pub diff: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -360,6 +361,7 @@ pub enum GuiLayoutNode {
 #[serde(rename_all = "camelCase")]
 pub struct GuiPane {
     pub index: usize,
+    pub buffer_id: u64,
     pub focused: bool,
     pub file_name: String,
     pub modified: bool,
@@ -484,6 +486,7 @@ pub struct GuiFileTreeItem {
 #[serde(rename_all = "camelCase")]
 pub struct GuiAiChat {
     pub profile: String,
+    pub pending_code_attachment: Option<GuiCodeAttachment>,
     pub profiles: Vec<GuiAiProfileOption>,
     pub reasoning_effort: String,
     pub reasoning_effort_selection: String,
@@ -509,6 +512,18 @@ pub struct GuiAiChat {
     pub agent_cursor: usize,
     pub approval: Option<String>,
     pub code_explanation: Option<GuiCodeExplanation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiCodeAttachment {
+    pub buffer_id: u64,
+    pub label: String,
+    pub start_line: usize,
+    pub start_column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+    pub linewise: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -575,6 +590,7 @@ pub struct GuiChatMessage {
     pub selected: bool,
     pub role: String,
     pub content: String,
+    pub attachment: Option<String>,
     pub model: Option<String>,
     pub tool_name: Option<String>,
     pub tools: Vec<String>,
@@ -692,8 +708,13 @@ enum GuiRequest {
         feedback: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
-    GdiffWorkspace {
+    DiffWorkspace {
         reply: oneshot::Sender<Result<std::path::PathBuf, String>>,
+    },
+    OpenDiffBuffer {
+        title: String,
+        content: String,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     Key {
         input: GuiKeyInput,
@@ -895,14 +916,23 @@ impl GuiBridge {
             .await
     }
 
-    pub async fn gdiff_workspace(&self) -> Result<std::path::PathBuf, String> {
+    pub async fn diff_workspace(&self) -> Result<std::path::PathBuf, String> {
         let (reply, response) = oneshot::channel();
         self.requests
-            .send(GuiRequest::GdiffWorkspace { reply })
+            .send(GuiRequest::DiffWorkspace { reply })
             .map_err(|_| "The Ovim editor thread has stopped".to_string())?;
         response
             .await
             .map_err(|_| "The Ovim editor thread closed the response".to_string())?
+    }
+
+    pub async fn open_diff_buffer(&self, title: String, content: String) -> Result<(), String> {
+        self.request(|reply| GuiRequest::OpenDiffBuffer {
+            title,
+            content,
+            reply,
+        })
+        .await
     }
 
     pub async fn key(&self, input: GuiKeyInput) -> Result<(), String> {
@@ -1333,16 +1363,24 @@ async fn handle_request(
             let result = draft_vector_feedback(editor, &feedback);
             (reply, result)
         }
-        GuiRequest::GdiffWorkspace { reply } => {
+        GuiRequest::DiffWorkspace { reply } => {
             let result = projected_workspace_path(editor)
                 .ok_or_else(|| anyhow::anyhow!("Open a file in a Git worktree first"))
                 .and_then(|path| {
-                    ovim_core::gdiff::worktree_root(&path)
+                    ovim_core::native_diff::worktree_root(&path)
                         .map_err(|error| anyhow::anyhow!("{error:#}"))
                 });
             let response = result.map_err(|error| error.to_string());
             let _ = reply.send(response);
             return;
+        }
+        GuiRequest::OpenDiffBuffer {
+            title,
+            content,
+            reply,
+        } => {
+            editor.open_diff_buffer_in_new_tab(&title, &content);
+            (reply, Ok(()))
         }
         GuiRequest::Key { input, reply } => {
             let result = input
@@ -1881,6 +1919,26 @@ fn display_column(
     crate::display::char_col_to_display_col(&text, char_column.0, tab_width)
 }
 
+fn diff_line_kind(text: &str) -> &'static str {
+    if text.starts_with("@@") {
+        "hunk"
+    } else if text.starts_with('+') && !text.starts_with("+++") {
+        "added"
+    } else if text.starts_with('-') && !text.starts_with("---") {
+        "removed"
+    } else if text.starts_with("diff --git")
+        || text.starts_with("index ")
+        || text.starts_with("---")
+        || text.starts_with("+++")
+        || text.starts_with("comparison:")
+        || text.starts_with("file:")
+    {
+        "header"
+    } else {
+        "context"
+    }
+}
+
 fn project_lines(
     editor: &Editor,
     buffer: &crate::buffer::Buffer,
@@ -1895,7 +1953,28 @@ fn project_lines(
     horizontal_offset: usize,
     text_view_width: usize,
 ) -> Vec<GuiLine> {
-    let selection = focused.then(|| editor.visual_selection()).flatten();
+    let attached_selection = editor
+        .ai_chat_pending_code_attachment()
+        .filter(|attachment| attachment.buffer_id == buffer.id())
+        .map(|attachment| {
+            (
+                (attachment.start_line, 0),
+                (attachment.end_line, usize::MAX),
+            )
+        });
+    let selection = focused
+        .then(|| editor.visual_selection().or(attached_selection))
+        .flatten();
+    let selection_mode = if editor.visual_selection().is_some() {
+        editor.mode()
+    } else if editor
+        .ai_chat_pending_code_attachment()
+        .is_some_and(|attachment| attachment.linewise)
+    {
+        Mode::VisualLine
+    } else {
+        Mode::Visual
+    };
     let highlights = focused.then(|| editor.current_search()).flatten();
     let mut projected = Vec::with_capacity(visible);
 
@@ -1937,7 +2016,7 @@ fn project_lines(
             line_index,
             cursor_line,
             cursor_column,
-            editor.mode(),
+            selection_mode,
             selection,
             &syntax,
             &search_matches,
@@ -1964,6 +2043,10 @@ fn project_lines(
             })
             .map(str::to_string);
 
+        let diff = buffer
+            .display_name()
+            .filter(|name| name.starts_with("Diff · "))
+            .map(|_| diff_line_kind(&text).to_string());
         for (visual_index, (display_start, segments)) in
             visual_rows.into_iter().enumerate().skip(skip)
         {
@@ -1976,6 +2059,7 @@ fn project_lines(
                 segments,
                 git: (!continuation).then(|| git.clone()).flatten(),
                 diagnostic: (!continuation).then(|| diagnostic.clone()).flatten(),
+                diff: (!continuation).then(|| diff.clone()).flatten(),
             });
             if projected.len() >= visible {
                 break 'lines;
@@ -1999,6 +2083,7 @@ fn project_panes(
             GuiLayoutNode::Pane { pane: 0 },
             vec![GuiPane {
                 index: 0,
+                buffer_id: editor.buffer().id(),
                 focused: true,
                 file_name: active_file_name.to_string(),
                 modified: editor.buffer().is_modified(),
@@ -2078,6 +2163,7 @@ fn project_panes(
 
             Some(GuiPane {
                 index,
+                buffer_id: buffer.id(),
                 focused,
                 file_name,
                 modified: buffer.is_modified(),
@@ -2458,6 +2544,17 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
         let selected_queued_id = editor.ai_chat_history_selected_queued_id();
         GuiAiChat {
             profile: editor.ai_chat_effective_profile(),
+            pending_code_attachment: editor.ai_chat_pending_code_attachment().map(|attachment| {
+                GuiCodeAttachment {
+                    buffer_id: attachment.buffer_id,
+                    label: attachment.label(),
+                    start_line: attachment.start_line,
+                    start_column: attachment.start_column,
+                    end_line: attachment.end_line,
+                    end_column: attachment.end_column,
+                    linewise: attachment.linewise,
+                }
+            }),
             profiles: editor
                 .ai_profile_names_sorted()
                 .into_iter()
@@ -2525,34 +2622,43 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             messages: messages[start..]
                 .iter()
                 .enumerate()
-                .map(|(offset, message)| GuiChatMessage {
-                    index: start + offset,
-                    selected: selected_index == Some(start + offset),
-                    id: message_node_ids
-                        .get(start + offset)
-                        .map(|node_id| format!("{conversation_instance}:{node_id}"))
-                        .unwrap_or_else(|| format!("{conversation_instance}:{}", start + offset)),
-                    role: match message.role {
-                        ovim_core::ai::chat_types::ChatRole::User => "user",
-                        ovim_core::ai::chat_types::ChatRole::Assistant => "assistant",
-                        ovim_core::ai::chat_types::ChatRole::Thinking => "thinking",
-                        ovim_core::ai::chat_types::ChatRole::Error => "error",
-                        ovim_core::ai::chat_types::ChatRole::Tool => "tool",
+                .map(|(offset, message)| {
+                    let (attachment, visible_content) =
+                        ovim_core::editor::split_code_attachment_message(&message.content)
+                            .map(|(label, content)| (Some(label), content))
+                            .unwrap_or((None, message.content.as_str()));
+                    GuiChatMessage {
+                        index: start + offset,
+                        selected: selected_index == Some(start + offset),
+                        id: message_node_ids
+                            .get(start + offset)
+                            .map(|node_id| format!("{conversation_instance}:{node_id}"))
+                            .unwrap_or_else(|| {
+                                format!("{conversation_instance}:{}", start + offset)
+                            }),
+                        role: match message.role {
+                            ovim_core::ai::chat_types::ChatRole::User => "user",
+                            ovim_core::ai::chat_types::ChatRole::Assistant => "assistant",
+                            ovim_core::ai::chat_types::ChatRole::Thinking => "thinking",
+                            ovim_core::ai::chat_types::ChatRole::Error => "error",
+                            ovim_core::ai::chat_types::ChatRole::Tool => "tool",
+                        }
+                        .to_string(),
+                        content: truncate_panel_text(visible_content, 8_000),
+                        attachment,
+                        model: message.model.clone(),
+                        tool_name: message
+                            .tool_call_id
+                            .as_deref()
+                            .and_then(|id| tool_names.get(id).copied())
+                            .map(str::to_string),
+                        tools: message
+                            .tool_calls
+                            .iter()
+                            .take(24)
+                            .map(|tool| tool.name.clone())
+                            .collect(),
                     }
-                    .to_string(),
-                    content: truncate_panel_text(&message.content, 8_000),
-                    model: message.model.clone(),
-                    tool_name: message
-                        .tool_call_id
-                        .as_deref()
-                        .and_then(|id| tool_names.get(id).copied())
-                        .map(str::to_string),
-                    tools: message
-                        .tool_calls
-                        .iter()
-                        .take(24)
-                        .map(|tool| tool.name.clone())
-                        .collect(),
                 })
                 .collect(),
             streaming: editor
@@ -3008,6 +3114,36 @@ mod tests {
             .iter()
             .flat_map(|line| &line.segments)
             .any(|span| span.cursor));
+    }
+
+    #[test]
+    fn diff_visual_selection_becomes_an_inline_chat_attachment() {
+        let mut editor = Editor::with_content("");
+        editor.open_diff_buffer_in_new_tab(
+            "Diff · src/main.rs",
+            "comparison: HEAD...WORKTREE\nfile: src/main.rs\n\n@@ -1 +1 @@\n-old\n+new\n",
+        );
+        editor.set_mode(Mode::VisualLine);
+        editor.set_visual_start(4, 0);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(5, GraphemeCol(0));
+        editor.start_ai_chat_from_visual().unwrap();
+
+        let attachment = editor.ai_chat_pending_code_attachment().unwrap();
+        assert_eq!(attachment.path.as_deref(), Some("src/main.rs"));
+        assert_eq!(
+            attachment.source_context.as_deref(),
+            Some("comparison: HEAD...WORKTREE\nfile: src/main.rs")
+        );
+        let view = snapshot(&editor, 1);
+        let projected = view.ai_chat.unwrap().pending_code_attachment.unwrap();
+        assert_eq!(projected.label, "src/main.rs:5–6");
+        assert!(view.lines[4..=5]
+            .iter()
+            .flat_map(|line| &line.segments)
+            .all(|segment| segment.selected));
     }
 
     #[tokio::test(flavor = "multi_thread")]

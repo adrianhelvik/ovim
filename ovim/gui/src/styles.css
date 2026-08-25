@@ -820,16 +820,14 @@ button:focus-visible {
 .side-panel-header > span.working {
     color: var(--accent);
 }
-.gdiff-panel {
-    grid-template-rows: auto minmax(0, 1fr) auto;
+.diff-panel {
+    grid-template-rows: auto minmax(0, 1fr);
 }
-.gdiff-panel button,
-.gdiff-panel input,
-.gdiff-panel select,
-.gdiff-panel textarea {
+.diff-panel button,
+.diff-panel input {
     font: inherit;
 }
-.gdiff-refresh {
+.diff-refresh {
     flex: 0 0 auto;
     padding: 5px 8px;
     color: var(--text-secondary);
@@ -837,75 +835,44 @@ button:focus-visible {
     border-radius: var(--radius-2);
     background: var(--canvas);
 }
-.gdiff-setup {
-    align-self: start;
-    margin: 14px;
-    padding: 14px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-2);
-    background: var(--surface-1);
-}
-.gdiff-setup b {
-    font-size: 12px;
-}
-.gdiff-setup p {
-    margin: 7px 0 12px;
-    color: var(--text-secondary);
-    line-height: 1.45;
-}
-.gdiff-setup button,
-.gdiff-comment-form > button {
-    min-height: 29px;
-    padding: 0 10px;
-    color: var(--accent-foreground);
-    border: 0;
-    border-radius: var(--radius-2);
-    background: var(--accent);
-}
-.gdiff-content {
+.diff-content {
     min-height: 0;
     overflow: auto;
     display: flex;
     flex-direction: column;
 }
-.gdiff-context {
+.diff-comparison {
     padding: 10px 11px;
     display: grid;
-    gap: 3px;
+    gap: 5px;
+    color: var(--text-secondary);
     border-bottom: 1px solid var(--border);
-}
-.gdiff-context span,
-.gdiff-context em {
-    color: var(--text-secondary);
-    font: normal var(--text-micro)/1.35 var(--editor-font);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-}
-.gdiff-context b,
-.gdiff-context small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.gdiff-context b {
-    font: 11px/1.3 var(--editor-font);
-}
-.gdiff-context small {
-    color: var(--text-secondary);
     font-size: var(--text-micro);
 }
-.gdiff-files {
-    max-height: 180px;
+.diff-comparison input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7px 8px;
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-2);
+    outline: 0;
+    background: var(--canvas);
+    font: 10.5px/1.35 var(--editor-font);
+}
+.diff-comparison input:focus {
+    border-color: var(--accent);
+}
+.diff-files {
     overflow: auto;
     padding: 5px;
-    border-bottom: 1px solid var(--border);
 }
-.gdiff-files > button {
+.diff-files > button {
     width: 100%;
-    min-height: 28px;
+    min-height: 30px;
     padding: 0 6px;
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
     align-items: center;
     gap: 6px;
     color: var(--text-secondary);
@@ -914,129 +881,70 @@ button:focus-visible {
     background: transparent;
     text-align: left;
 }
-.gdiff-files > button:hover,
-.gdiff-files > button.selected {
+.diff-files > button:hover {
     color: var(--text-primary);
     background: var(--surface-selected);
 }
-.gdiff-files span {
+.diff-files > button > span:nth-child(2) {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font: 10.5px/1 var(--editor-font);
 }
-.gdiff-files small {
-    color: var(--info);
-    font: var(--text-micro)/1 var(--editor-font);
+.diff-status {
+    color: var(--warning);
+    font: 700 var(--text-micro)/1 var(--editor-font);
 }
-.gdiff-comment-form {
-    padding: 10px 11px;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 92px;
-    gap: 8px;
-    border-bottom: 1px solid var(--border);
+.diff-status.added {
+    color: var(--success);
 }
-.gdiff-comment-form > b,
-.gdiff-comment-form > label:first-of-type,
-.gdiff-comment-form > label:nth-of-type(3),
-.gdiff-comment-form > button,
-.gdiff-comment-form > small {
-    grid-column: 1 / -1;
+.diff-status.deleted {
+    color: var(--error);
 }
-.gdiff-comment-form > b,
-.gdiff-comments > header b {
-    font-size: var(--text-micro);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-}
-.gdiff-comment-form label {
-    min-width: 0;
-    display: grid;
-    gap: 4px;
-    color: var(--text-secondary);
-    font-size: var(--text-micro);
-}
-.gdiff-comment-form input,
-.gdiff-comment-form select,
-.gdiff-comment-form textarea {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 6px 7px;
-    color: var(--text-primary);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-2);
-    outline: 0;
-    background: var(--canvas);
-    font: 10.5px/1.35 var(--editor-font);
-}
-.gdiff-comment-form input:focus,
-.gdiff-comment-form select:focus,
-.gdiff-comment-form textarea:focus {
-    border-color: var(--accent);
-}
-.gdiff-comment-form textarea {
-    resize: vertical;
-}
-.gdiff-comment-form > small {
-    color: var(--text-secondary);
-    line-height: 1.4;
-}
-.gdiff-comment-form code,
-.gdiff-setup code {
-    color: var(--info);
-    font-family: var(--editor-font);
-}
-.gdiff-comments {
-    padding: 10px 11px;
-    display: grid;
-    gap: 7px;
-}
-.gdiff-comments > header,
-.gdiff-comments article > header {
+.diff-files small {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-}
-.gdiff-comments > header span {
-    color: var(--text-secondary);
+    gap: 5px;
     font: var(--text-micro)/1 var(--editor-font);
 }
-.gdiff-comments article {
-    padding: 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-2);
-    background: var(--surface-1);
+.diff-files small em {
+    color: var(--success);
+    font-style: normal;
 }
-.gdiff-comments article button {
-    min-width: 0;
-    padding: 0;
-    overflow: hidden;
-    color: var(--info);
-    border: 0;
-    background: transparent;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font: var(--text-micro)/1.3 var(--editor-font);
+.diff-files small i {
+    color: var(--error);
+    font-style: normal;
 }
-.gdiff-comments article button:last-child {
-    flex: 0 0 auto;
-    color: var(--text-secondary);
-}
-.gdiff-comments article p {
-    margin: 6px 0 0;
-    color: var(--text-primary);
-    line-height: 1.45;
-    white-space: pre-wrap;
-}
-.gdiff-error {
+.diff-error {
     margin: 0;
     padding: 8px 11px;
     color: var(--error);
-    border-top: 1px solid color-mix(in srgb, var(--error) 50%, var(--border));
+    border-bottom: 1px solid color-mix(in srgb, var(--error) 50%, var(--border));
     background: color-mix(in srgb, var(--error) 8%, var(--canvas));
     font-size: var(--text-micro);
 }
+
+.code-line.diff-header .line-content {
+    color: var(--muted);
+}
+.code-line.diff-hunk {
+    background: color-mix(in srgb, var(--info) 9%, transparent);
+}
+.code-line.diff-hunk .line-content {
+    color: var(--info);
+}
+.code-line.diff-added {
+    background: color-mix(in srgb, var(--success) 9%, transparent);
+}
+.code-line.diff-added .line-content {
+    color: var(--success);
+}
+.code-line.diff-removed {
+    background: color-mix(in srgb, var(--error) 9%, transparent);
+}
+.code-line.diff-removed .line-content {
+    color: var(--error);
+}
+
 .chat-run-settings {
     position: relative;
     min-width: 0;
@@ -1284,6 +1192,24 @@ button:focus-visible {
 .chat-agents button em {
     flex: 0 0 auto;
 }
+.chat-code-attachment {
+    width: fit-content;
+    max-width: 100%;
+    margin: var(--space-1) 0;
+    padding: 4px 7px;
+    display: inline-flex;
+    gap: 5px;
+    align-items: center;
+    overflow: hidden;
+    color: var(--info);
+    border: 1px solid color-mix(in srgb, var(--info) 30%, var(--border));
+    border-radius: var(--radius-2);
+    background: color-mix(in srgb, var(--info) 7%, transparent);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: var(--text-micro)/1.2 var(--editor-font);
+}
+
 .chat-message.selected,
 .chat-activity.selected {
     border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
@@ -1750,6 +1676,32 @@ button:focus-visible {
     color: var(--accent);
     border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
 }
+
+.inline-selection-composer {
+    position: absolute;
+    z-index: 18;
+    right: 24px;
+    left: 70px;
+    max-width: 760px;
+    padding: var(--space-2);
+    border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+    border-radius: var(--radius-3);
+    background: color-mix(in srgb, var(--surface) 96%, transparent);
+    box-shadow: var(--shadow-3);
+    backdrop-filter: blur(14px);
+}
+.inline-selection-composer > header {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+    padding: 0 var(--space-1) var(--space-2);
+    color: var(--muted);
+    font-size: var(--font-size-1);
+}
+.inline-selection-composer .chat-composer {
+    border-radius: var(--radius-2);
+}
+
 .chat-composer {
     margin: 0 10px 10px;
     min-height: 74px;

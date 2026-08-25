@@ -187,17 +187,49 @@ describe("Ovim Solid workbench", () => {
         }
     });
 
-    it("opens an actionable workspace-scoped Gdiff collaboration tab", async () => {
+    it("anchors the existing chat composer below an attached visual selection", () => {
+        const previousChat = mockSnapshot.aiChat;
+        mockSnapshot.aiChat = {
+            ...previousChat!,
+            pendingCodeAttachment: {
+                bufferId: mockSnapshot.panes[0].bufferId,
+                label: "src/main.rs:4–6",
+                startLine: 3,
+                startColumn: 0,
+                endLine: 5,
+                endColumn: 4,
+                linewise: true,
+            },
+        };
+
+        const result = render(() => <App />);
+        try {
+            expect(
+                screen.getByRole("complementary", {
+                    name: "Ask Ovim about src/main.rs:4–6",
+                }),
+            ).toBeTruthy();
+            expect(screen.getAllByLabelText("AI chat input")).toHaveLength(1);
+            expect(
+                result.container.querySelector(".ai-panel > .chat-composer"),
+            ).toBeNull();
+        } finally {
+            result.unmount();
+            mockSnapshot.aiChat = previousChat;
+        }
+    });
+
+    it("opens the native workspace diff panel", async () => {
         render(() => <App />);
 
         const diff = screen.getByRole("button", {
-            name: "Diff collaboration",
+            name: "Diff review",
         });
         expect(diff.hasAttribute("disabled")).toBe(false);
         fireEvent.click(diff);
 
         expect(await screen.findByRole("tabpanel")).toBeTruthy();
-        expect(screen.getByText("Gdiff review")).toBeTruthy();
+        expect(screen.getByText("Changes")).toBeTruthy();
     });
 
     it("treats the Vector preview as one keyboard-navigable editor tab", async () => {
@@ -265,7 +297,7 @@ describe("Ovim Solid workbench", () => {
 
         render(() => <App />);
 
-        expect(await screen.findByText("Gdiff review")).toBeTruthy();
+        expect(await screen.findByText("Changes")).toBeTruthy();
     });
 
     it("switches existing compact docks without toggling their core state", () => {
@@ -313,11 +345,11 @@ describe("Ovim Solid workbench", () => {
             expect(mockSnapshot.aiChat).toBeTruthy();
 
             const diff = screen.getByRole("button", {
-                name: "Diff collaboration",
+                name: "Diff review",
             });
             fireEvent.click(diff);
             expect(workbench.classList).toContain("active-context-dock");
-            expect(screen.getByText("Gdiff review")).toBeTruthy();
+            expect(screen.getByText("Changes")).toBeTruthy();
 
             fireEvent.click(diff);
             expect(workbench.classList).toContain("active-explorer-dock");
@@ -325,6 +357,24 @@ describe("Ovim Solid workbench", () => {
             result.unmount();
             mockSnapshot.aiChat = previousChat;
         }
+    });
+
+    it("renders attached selections as compact chat context", () => {
+        render(() => (
+            <ChatMessageView
+                message={{
+                    id: "selection",
+                    index: 0,
+                    selected: false,
+                    role: "user",
+                    content: "Check this change",
+                    attachment: "src/main.rs:5–6",
+                    tools: [],
+                }}
+            />
+        ));
+        expect(screen.getByText("src/main.rs:5–6")).toBeTruthy();
+        expect(screen.getByText("Check this change")).toBeTruthy();
     });
 
     it("sanitizes rendered AI markdown", () => {

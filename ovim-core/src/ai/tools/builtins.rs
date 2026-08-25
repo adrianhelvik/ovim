@@ -283,7 +283,6 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(read_project_diagnostics_def());
     registry.register(search_project_def());
     registry.register(list_files_def());
-    registry.register(gdiff_review_def());
     registry.register(web_search_def());
     registry.register(web_fetch_def());
     registry.register(strok_vector_def());
@@ -298,7 +297,6 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(record_comprehension_checkpoint_def());
     // External tools (dispatched via execute_external_tool)
     registry.register(bash_def());
-    registry.register(gdiff_comment_def());
     // Mutation tools (dispatched via execute_mutation_tool, not execute_builtin)
     registry.register(with_expected_revision(edit_range_def()));
     registry.register(with_expected_revision(insert_lines_def()));
@@ -359,7 +357,6 @@ pub fn execute_builtin(
         "read_project_diagnostics" => handle_read_project_diagnostics(args, ctx),
         "search_project" => handle_search_project(args, ctx),
         "list_files" => handle_list_files(args, ctx),
-        "gdiff_review" => handle_gdiff_review(ctx),
         "web_search" | "web_fetch" => ToolResult::Error(format!(
             "'{name}' is an Ovim web tool — must be dispatched through the Exa client"
         )),
@@ -371,7 +368,7 @@ pub fn execute_builtin(
             "'explain_with_codebase' is an interactive navigation tool — must be dispatched by the editor"
                 .to_string(),
         ),
-        "bash" | "gdiff_comment" => ToolResult::Error(format!(
+        "bash" => ToolResult::Error(format!(
             "'{name}' is an external tool — must be dispatched via execute_external_tool"
         )),
         "edit_range"
@@ -537,65 +534,6 @@ fn strok_vector_def() -> ToolDefinition {
                 param_type: ParamType::String,
                 required: false,
                 description: "Optional shape or place name for inspect.".to_string(),
-            },
-        ],
-    }
-}
-
-fn gdiff_review_def() -> ToolDefinition {
-    ToolDefinition {
-        name: "gdiff_review".to_string(),
-        description: "Read the active gdiff comparison, changed-file list, and shared per-line review comments for this repository. Use this to collaborate with the user in Ovim's Diff tab."
-            .to_string(),
-        required_scope: RequiredScope {
-            file_scope: FileScope::Project,
-            shell: false,
-            network: false,
-        },
-        side_effect: SideEffect::Read,
-        custom_input_schema: None,
-        parameters: Vec::new(),
-    }
-}
-
-fn gdiff_comment_def() -> ToolDefinition {
-    ToolDefinition {
-        name: "gdiff_comment".to_string(),
-        description: "Add or remove a persistent per-line comment in the active gdiff review. Comments appear live in both gdiff and Ovim's Diff tab. Line numbers refer to the new/right side."
-            .to_string(),
-        required_scope: RequiredScope {
-            file_scope: FileScope::Project,
-            shell: true,
-            network: false,
-        },
-        side_effect: SideEffect::External,
-        custom_input_schema: None,
-        parameters: vec![
-            ToolParam {
-                name: "action".to_string(),
-                param_type: ParamType::StringEnum(
-                    super::StringEnum::new(["add", "remove"]).expect("valid gdiff actions"),
-                ),
-                required: true,
-                description: "Whether to add/update or remove the comment.".to_string(),
-            },
-            ToolParam {
-                name: "path".to_string(),
-                param_type: ParamType::FilePath,
-                required: true,
-                description: "Repository-relative path in the active diff.".to_string(),
-            },
-            ToolParam {
-                name: "line".to_string(),
-                param_type: ParamType::LineNumber,
-                required: true,
-                description: "One-based new/right-side line number.".to_string(),
-            },
-            ToolParam {
-                name: "text".to_string(),
-                param_type: ParamType::String,
-                required: false,
-                description: "Non-empty comment text, required when action is add.".to_string(),
             },
         ],
     }
@@ -817,28 +755,6 @@ fn read_bounded_stream(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
         truncated |= read > remaining;
     }
     (retained, truncated)
-}
-
-fn handle_gdiff_review(ctx: &ToolExecutionContext) -> ToolResult {
-    let root = match resolve_project_root(ctx) {
-        Ok(root) => root,
-        Err(error) => return error,
-    };
-    match crate::gdiff::review(&root) {
-        Ok(review) if review.running => match serde_json::to_string_pretty(&review) {
-            Ok(json) => ToolResult::Success(json),
-            Err(error) => ToolResult::Error(format!("failed to encode gdiff review: {error}")),
-        },
-        Ok(review) if !review.installed => ToolResult::Error(
-            "gdiff is not installed or is not on PATH; install gdiff before opening a shared review"
-                .to_string(),
-        ),
-        Ok(_) => ToolResult::Error(
-            "no gdiff review is running for this repository; ask the user to open the Diff tab and start one"
-                .to_string(),
-        ),
-        Err(error) => ToolResult::Error(format!("failed to read gdiff review: {error:#}")),
-    }
 }
 
 fn resolve_project_root(ctx: &ToolExecutionContext) -> Result<std::path::PathBuf, ToolResult> {

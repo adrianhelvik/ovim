@@ -59,6 +59,24 @@ impl Editor {
         self.mark_dirty();
     }
 
+    /// Opens a pathless, read-only presentation buffer for a native diff.
+    pub fn open_diff_buffer_in_new_tab(&mut self, title: &str, content: &str) {
+        self.sync_current_tab_buffer();
+
+        let mut buffer = Buffer::new_from_str(content);
+        buffer.set_read_only(true);
+        buffer.set_display_name(title);
+        let new_buffer_index = self.push_buffer(buffer);
+
+        self.tab_page_manager.new_tab();
+        let id = self.buffers[new_buffer_index].id();
+        self.tab_page_manager.current_tab_mut().set_buffer_id(id);
+        self.current_buffer_index = new_buffer_index;
+        self.clear_lsp_state();
+        self.lsp.state.needs_lsp_init = false;
+        self.mark_dirty();
+    }
+
     /// Gets the display title for a tab at the given index, derived from the
     /// buffer the tab is showing: filename if it has a file path, otherwise
     /// "[No Name]". The active tab always reflects the editor's current

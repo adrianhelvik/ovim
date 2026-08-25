@@ -705,44 +705,7 @@ impl Editor {
 
         match name {
             "bash" => self.handle_bash_tool(args),
-            "gdiff_comment" => self.handle_gdiff_comment_tool(args),
             _ => ToolResult::Error(format!("unknown external tool: {name}")),
-        }
-    }
-
-    fn handle_gdiff_comment_tool(&self, args: &serde_json::Value) -> ToolResult {
-        let Some(root) = self.ai_effective_project_root() else {
-            return ToolResult::Error(self.no_project_root_error());
-        };
-        let action = args
-            .get("action")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let path = args
-            .get("path")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let line = args
-            .get("line")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0);
-        let result = match action {
-            "add" => {
-                let text = args
-                    .get("text")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("");
-                crate::gdiff::add_comment(&root, path, line, text)
-            }
-            "remove" => crate::gdiff::remove_comment(&root, path, line),
-            _ => return ToolResult::Error("'action' must be either 'add' or 'remove'".to_string()),
-        };
-        match result {
-            Ok(comments) => ToolResult::Success(format!(
-                "Gdiff comment {action} succeeded for {path}:{line}. The shared review now has {} comment(s).",
-                comments.len()
-            )),
-            Err(error) => ToolResult::Error(format!("failed to update gdiff review: {error:#}")),
         }
     }
 

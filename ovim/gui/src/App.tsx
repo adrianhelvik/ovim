@@ -16,7 +16,7 @@ import { mockSnapshot } from "./mock";
 import ChatModelPicker from "./ChatModelPicker";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
-import GdiffPanel from "./GdiffPanel";
+import NativeDiffPanel from "./DiffPanel";
 import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
@@ -32,7 +32,7 @@ import {
 import type {
     GuiAiChat,
     GuiCodeExplanation,
-    GuiGdiffReview,
+    GuiDiffReview,
     GuiKeyInput,
     GuiLayoutNode,
     GuiPane,
@@ -727,6 +727,14 @@ export const ChatMessageView = (props: {
                             <b>{props.message.role}</b>
                             <small>{props.message.model}</small>
                         </header>
+                        <Show when={props.message.attachment}>
+                            {(attachment) => (
+                                <span class="chat-code-attachment">
+                                    <Icon name="attach" size={16} />
+                                    {attachment()}
+                                </span>
+                            )}
+                        </Show>
                         <Markdown text={props.message.content} />
                         <ToolCallList tools={props.message.tools} />
                     </>
@@ -771,6 +779,7 @@ export const ChatPanel = (props: {
     onComprehension?: () => void;
     onMessage?: (index: number) => void;
     onAgent?: (agentId?: string) => void;
+    hideComposer?: boolean;
     onQueuedAction?: (
         id: number,
         action: "select" | "recall" | "remove",
@@ -1077,14 +1086,16 @@ export const ChatPanel = (props: {
                     <ChatSetupCard setup={setup()} onKey={props.onSetupKey} />
                 )}
             </Show>
-            <ChatComposer
-                chat={props.chat}
-                revision={props.revision}
-                bindInput={props.bindInput}
-                onUpdate={props.onInputUpdate}
-                onWidth={props.onInputWidth}
-                onRemoveImage={props.onRemoveImage}
-            />
+            <Show when={!props.hideComposer}>
+                <ChatComposer
+                    chat={props.chat}
+                    revision={props.revision}
+                    bindInput={props.bindInput}
+                    onUpdate={props.onInputUpdate}
+                    onWidth={props.onInputWidth}
+                    onRemoveImage={props.onRemoveImage}
+                />
+            </Show>
         </section>
     );
 };
@@ -1120,7 +1131,7 @@ function App() {
         "ai" | "tests" | "debug" | "diff"
     >("ai");
     const [diffDockOpen, setDiffDockOpen] = createSignal(false);
-    const [gdiff, setGdiff] = createSignal<GuiGdiffReview>();
+    const [diffReview, setDiffReview] = createSignal<GuiDiffReview>();
     let editorBody!: HTMLDivElement;
     let inputSink!: HTMLTextAreaElement;
     let chatInput: HTMLTextAreaElement | undefined;
@@ -1864,6 +1875,60 @@ function App() {
         };
     };
 
+    const InlineSelectionComposer = (props: { pane: GuiPane }) => (
+        <Show
+            when={
+                view().aiChat?.pendingCodeAttachment?.bufferId ===
+                props.pane.bufferId
+                    ? view().aiChat
+                    : undefined
+            }
+        >
+            {(chat) => {
+                const attachment = () => chat().pendingCodeAttachment!;
+                const visibleEnd = () =>
+                    Math.max(
+                        0,
+                        attachment().endLine - props.pane.firstLine + 1,
+                    );
+                return (
+                    <aside
+                        class="inline-selection-composer"
+                        aria-label={`Ask Ovim about ${attachment().label}`}
+                        style={{
+                            top: `min(calc(100% - 190px), ${visibleEnd() * LINE_HEIGHT + 12}px)`,
+                        }}
+                    >
+                        <header>
+                            <Icon name="attach" size={16} />
+                            <span>{attachment().label}</span>
+                        </header>
+                        <ChatComposer
+                            chat={chat()}
+                            revision={view().revision}
+                            bindInput={(input) => {
+                                chatInput = input;
+                            }}
+                            onUpdate={(update) =>
+                                mutateStrict("gui_update_chat_input", {
+                                    ...update,
+                                })
+                            }
+                            onWidth={(columns) =>
+                                void mutate("gui_set_chat_input_width", {
+                                    columns,
+                                })
+                            }
+                            onRemoveImage={(index) =>
+                                void mutate("gui_remove_chat_image", { index })
+                            }
+                        />
+                    </aside>
+                );
+            }}
+        </Show>
+    );
+
     const PaneView = (props: { pane: GuiPane }) => (
         <section
             class="editor-pane"
@@ -1897,6 +1962,7 @@ function App() {
                         <div
                             class="code-line"
                             classList={{
+                                [`diff-${line.diff}`]: Boolean(line.diff),
                                 current: line.current && props.pane.focused,
                                 walkthrough: lineIsInWalkthrough(
                                     line.number,
@@ -1969,6 +2035,7 @@ function App() {
                     )}
                 </For>
             </div>
+            <InlineSelectionComposer pane={props.pane} />
             <div class="overview-ruler" aria-hidden="true">
                 <For each={props.pane.lines}>
                     {(line) => (
@@ -2040,6 +2107,7 @@ function App() {
                 <ChatPanel
                     chat={chat()}
                     revision={view().revision}
+                    hideComposer={Boolean(chat().pendingCodeAttachment)}
                     focusInput={focusChatInput}
                     bindInput={(input) => {
                         chatInput = input;
@@ -2308,10 +2376,10 @@ function App() {
     );
 
     const DiffPanel = () => (
-        <GdiffPanel
+        <NativeDiffPanel
             native={native}
             workspace={diffWorkspace()}
-            onReview={setGdiff}
+            onReview={setDiffReview}
         />
     );
 
@@ -2326,9 +2394,7 @@ function App() {
                 panels.push({
                     id: "diff",
                     label: "Diff",
-                    state: gdiff()?.running
-                        ? `${gdiff()?.comments.length ?? 0} notes`
-                        : "disconnected",
+                    state: `${diffReview()?.files.length ?? 0} files`,
                     icon: "source-control",
                     component: DiffPanel,
                 });
@@ -2825,8 +2891,8 @@ function App() {
                         />
                         <IconButton
                             icon="source-control"
-                            label="Diff collaboration"
-                            shortcut="Gdiff"
+                            label="Diff review"
+                            shortcut="v · Space Space"
                             selected={
                                 diffDockOpen() &&
                                 activeDock() === "context" &&

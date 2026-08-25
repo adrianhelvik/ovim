@@ -20,42 +20,36 @@ use tauri::{DragDropEvent, Emitter, Manager, RunEvent, State, WebviewWindow, Win
 struct GuiExitGate(Arc<AtomicBool>);
 
 #[tauri::command]
-async fn gui_gdiff_state(
+async fn gui_diff_state(
     bridge: State<'_, GuiBridge>,
-) -> Result<ovim_core::gdiff::GdiffReview, String> {
-    let workspace = bridge.gdiff_workspace().await?;
-    tauri::async_runtime::spawn_blocking(move || ovim_core::gdiff::review(&workspace))
-        .await
-        .map_err(|error| format!("Gdiff state task failed: {error}"))?
-        .map_err(|error| format!("Could not read Gdiff: {error:#}"))
-}
-
-#[tauri::command]
-async fn gui_gdiff_start(bridge: State<'_, GuiBridge>) -> Result<(), String> {
-    let workspace = bridge.gdiff_workspace().await?;
-    tauri::async_runtime::spawn_blocking(move || ovim_core::gdiff::start(&workspace))
-        .await
-        .map_err(|error| format!("Gdiff launch task failed: {error}"))?
-        .map_err(|error| format!("Could not launch Gdiff: {error:#}"))
-}
-
-#[tauri::command]
-async fn gui_gdiff_comment(
-    bridge: State<'_, GuiBridge>,
-    action: String,
-    path: String,
-    line: u64,
-    text: String,
-) -> Result<Vec<ovim_core::gdiff::GdiffComment>, String> {
-    let workspace = bridge.gdiff_workspace().await?;
-    tauri::async_runtime::spawn_blocking(move || match action.as_str() {
-        "add" => ovim_core::gdiff::add_comment(&workspace, &path, line, &text),
-        "remove" => ovim_core::gdiff::remove_comment(&workspace, &path, line),
-        _ => anyhow::bail!("Unknown Gdiff comment action: {action}"),
+    spec: Option<String>,
+) -> Result<ovim_core::native_diff::DiffReview, String> {
+    let workspace = bridge.diff_workspace().await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        ovim_core::native_diff::review(&workspace, spec.as_deref())
     })
     .await
-    .map_err(|error| format!("Gdiff comment task failed: {error}"))?
-    .map_err(|error| format!("Could not update Gdiff: {error:#}"))
+    .map_err(|error| format!("Diff state task failed: {error}"))?
+    .map_err(|error| format!("Could not read diff: {error:#}"))
+}
+
+#[tauri::command]
+async fn gui_diff_open_file(
+    bridge: State<'_, GuiBridge>,
+    spec: Option<String>,
+    path: String,
+) -> Result<(), String> {
+    let workspace = bridge.diff_workspace().await?;
+    let selected_path = path.clone();
+    let content = tauri::async_runtime::spawn_blocking(move || {
+        ovim_core::native_diff::file_patch(&workspace, spec.as_deref(), &selected_path)
+    })
+    .await
+    .map_err(|error| format!("Diff file task failed: {error}"))?
+    .map_err(|error| format!("Could not open diff: {error:#}"))?;
+    bridge
+        .open_diff_buffer(format!("Diff · {path}"), content)
+        .await
 }
 
 #[tauri::command]
@@ -563,9 +557,8 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_select_debug_frame,
             gui_window_action,
             gui_open_external,
-            gui_gdiff_state,
-            gui_gdiff_start,
-            gui_gdiff_comment,
+            gui_diff_state,
+            gui_diff_open_file,
         ])
         .setup(move |app| {
             install_menu(app)?;

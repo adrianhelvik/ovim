@@ -973,7 +973,6 @@ fn codex_tools_allow_writes(tools: &[Value]) -> bool {
                     | "create_file"
                     | "apply_patch_at_path"
                     | "snapshot_file"
-                    | "gdiff_comment"
                     | "restore_file"
             )
         )

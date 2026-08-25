@@ -91,12 +91,35 @@ impl Editor {
         let buffer = self
             .get_buffer_by_id(selection.buffer_id)
             .expect("selected buffer remains open");
+        let source_context = buffer
+            .display_name()
+            .filter(|name| name.starts_with("Diff · "))
+            .map(|_| {
+                buffer
+                    .rope()
+                    .lines()
+                    .take(2)
+                    .map(|line| line.to_string())
+                    .collect::<String>()
+                    .trim()
+                    .to_string()
+            })
+            .filter(|context| !context.is_empty());
+        let attachment_path = source_context
+            .as_deref()
+            .and_then(|context| context.lines().find_map(|line| line.strip_prefix("file: ")))
+            .map(str::to_string)
+            .or_else(|| buffer.file_path().map(ToString::to_string));
         let attachment = super::ai_chat_state::CodeAttachment {
             buffer_id: selection.buffer_id,
-            path: buffer.file_path().map(ToString::to_string),
+            path: attachment_path,
             start_line: selection.start_line,
+            start_column: selection.start_col,
             end_line: selection.end_line,
+            end_column: selection.end_col.saturating_sub(1),
+            linewise: selection.selection_mode == Mode::VisualLine,
             buffer_revision: buffer.version(),
+            source_context,
             text: selection.selected_text,
         };
         let label = attachment.label();

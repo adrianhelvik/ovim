@@ -746,12 +746,7 @@ impl Editor {
             );
         let project_scoped_without_open_file = matches!(
             tc.name.as_str(),
-            "list_files"
-                | "search_project"
-                | "workspace_context"
-                | "gdiff_review"
-                | "gdiff_comment"
-                | "strok_vector"
+            "list_files" | "search_project" | "workspace_context" | "strok_vector"
         );
         let visible_buffer_read = matches!(
             tc.name.as_str(),
