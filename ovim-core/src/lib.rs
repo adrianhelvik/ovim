@@ -1,6 +1,7 @@
 pub mod agent_runtime;
 pub mod ai;
 mod auto_indent;
+pub mod browser;
 pub mod buffer;
 pub mod change;
 pub mod cmd_buffer;
