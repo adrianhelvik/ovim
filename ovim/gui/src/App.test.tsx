@@ -200,7 +200,7 @@ describe("Ovim Solid workbench", () => {
         expect(screen.getByText("Gdiff review")).toBeTruthy();
     });
 
-    it("treats the Vector preview as one keyboard-navigable editor tab", async () => {
+    it("keeps Vector and Browser in the keyboard-navigable workbench tabs", async () => {
         const previousPath = mockSnapshot.filePath;
         const previousName = mockSnapshot.fileName;
         mockSnapshot.filePath = "/workspace/ovim/icons/sample.strok";
@@ -210,13 +210,15 @@ describe("Ovim Solid workbench", () => {
         try {
             const source = screen.getByRole("tab", { name: /mod.rs/ });
             const vector = screen.getByRole("tab", { name: "Vector" });
+            const browser = screen.getByRole("tab", { name: "Browser" });
             expect(source.getAttribute("aria-selected")).toBe("true");
             expect(vector.getAttribute("aria-selected")).toBe("false");
+            expect(browser.getAttribute("aria-selected")).toBe("false");
             expect(
                 screen.getAllByRole("tab").filter((tab) => tab.tabIndex === 0),
             ).toHaveLength(1);
 
-            fireEvent.keyDown(source, { key: "End" });
+            fireEvent.click(vector);
             await Promise.resolve();
             expect(source.getAttribute("aria-selected")).toBe("false");
             expect(vector.getAttribute("aria-selected")).toBe("true");
@@ -227,10 +229,22 @@ describe("Ovim Solid workbench", () => {
                 screen.getByRole("region", { name: "Strøk vector preview" }),
             ).toBeTruthy();
 
-            fireEvent.keyDown(vector, { key: "Home" });
+            fireEvent.keyDown(vector, { key: "ArrowRight" });
+            await Promise.resolve();
+            expect(vector.getAttribute("aria-selected")).toBe("false");
+            expect(browser.getAttribute("aria-selected")).toBe("true");
+            expect(
+                screen.getAllByRole("tab").filter((tab) => tab.tabIndex === 0),
+            ).toEqual([browser]);
+            expect(
+                screen.getByRole("region", { name: "Embedded browser" }),
+            ).toBeTruthy();
+
+            fireEvent.keyDown(browser, { key: "Home" });
             await Promise.resolve();
             expect(source.getAttribute("aria-selected")).toBe("true");
             expect(vector.getAttribute("aria-selected")).toBe("false");
+            expect(browser.getAttribute("aria-selected")).toBe("false");
 
             fireEvent.click(vector);
             const feedback = screen.getByLabelText("Review with the agent");

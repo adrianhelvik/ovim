@@ -15,6 +15,7 @@ import { marked } from "marked";
 import { mockSnapshot } from "./mock";
 import ChatModelPicker from "./ChatModelPicker";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
+import BrowserPanel from "./BrowserPanel";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 import GdiffPanel from "./GdiffPanel";
 import { guiKeyInput } from "./guiInput";
@@ -1099,9 +1100,9 @@ function App() {
     const [pendingExit, setPendingExit] = createSignal<
         "close" | "quit" | undefined
     >();
-    const [vectorView, setVectorView] = createSignal<"source" | "vector">(
-        "source",
-    );
+    const [workbenchView, setWorkbenchView] = createSignal<
+        "source" | "vector" | "browser"
+    >("source");
     const [vectorPreview, setVectorPreview] = createSignal<VectorPreview>();
     const [vectorPreviewError, setVectorPreviewError] = createSignal("");
     const [vectorPreviewLoading, setVectorPreviewLoading] = createSignal(false);
@@ -1170,12 +1171,12 @@ function App() {
             setVectorFeedbackStatus("");
         }
         if (!filePath?.toLowerCase().endsWith(".strok")) {
-            setVectorView("source");
+            if (workbenchView() === "vector") setWorkbenchView("source");
         }
     });
 
     createEffect(() => {
-        if (!native || !activeStrok() || vectorView() !== "vector") return;
+        if (!native || !activeStrok() || workbenchView() !== "vector") return;
         void activeStrokPath();
         void activeBufferRevision();
         void vectorRefresh();
@@ -1341,7 +1342,17 @@ function App() {
         if (chatInput?.isConnected) chatInput.focus({ preventScroll: true });
         else focusEditorInput();
     };
+    const focusBrowser = () => {
+        if (native)
+            void invoke("gui_browser_toolbar", { action: "focus" }).catch(
+                () => {},
+            );
+    };
     const focusPrimaryInput = () => {
+        if (workbenchView() === "browser") {
+            focusBrowser();
+            return;
+        }
         if (
             activeDock() === "context" &&
             activeContextPanel() === "ai" &&
@@ -1524,18 +1535,23 @@ function App() {
     const selectWorkbenchTab = (position: number) => {
         const tabs = view().tabs;
         if (position === tabs.length && activeStrok()) {
-            setVectorView("vector");
+            setWorkbenchView("vector");
+            return;
+        }
+        const browserPosition = tabs.length + (activeStrok() ? 1 : 0);
+        if (position === browserPosition) {
+            setWorkbenchView("browser");
             return;
         }
         const tab = tabs[position];
         if (!tab) return;
-        setVectorView("source");
+        setWorkbenchView("source");
         void mutate("gui_select_tab", { index: tab.index });
     };
 
     const handleTabNavigation = (event: KeyboardEvent, position: number) => {
         const tabs = view().tabs;
-        const tabCount = tabs.length + (activeStrok() ? 1 : 0);
+        const tabCount = tabs.length + (activeStrok() ? 1 : 0) + 1;
         if (tabCount < 2) return;
         let next = position;
         if (event.key === "ArrowRight") next = (position + 1) % tabCount;
@@ -2716,6 +2732,7 @@ function App() {
         observer.observe(editorBody);
         let unlistenMenu: (() => void) | undefined;
         let unlistenClose: (() => void) | undefined;
+        let unlistenBrowserShow: (() => void) | undefined;
         if (native) {
             void listen<string>("ovim://menu-action", (event) =>
                 performMenuAction(event.payload),
@@ -2726,6 +2743,11 @@ function App() {
                 requestExit(event.payload === "quit" ? "quit" : "close"),
             ).then((unlisten) => {
                 unlistenClose = unlisten;
+            });
+            void listen("ovim://browser-show-requested", () =>
+                setWorkbenchView("browser"),
+            ).then((unlisten) => {
+                unlistenBrowserShow = unlisten;
             });
             const snapshots = new Channel<GuiSnapshot>();
             snapshots.onmessage = accept;
@@ -2749,6 +2771,7 @@ function App() {
             observer.disconnect();
             unlistenMenu?.();
             unlistenClose?.();
+            unlistenBrowserShow?.();
         });
     });
 
@@ -2981,14 +3004,12 @@ function App() {
                                     role="tab"
                                     aria-selected={
                                         tab().active &&
-                                        (!activeStrok() ||
-                                            vectorView() === "source")
+                                        workbenchView() === "source"
                                     }
                                     aria-controls="editor-surface"
                                     tabIndex={
                                         tab().active &&
-                                        (!activeStrok() ||
-                                            vectorView() === "source")
+                                        workbenchView() === "source"
                                             ? 0
                                             : -1
                                     }
@@ -2998,8 +3019,7 @@ function App() {
                                     classList={{
                                         active:
                                             tab().active &&
-                                            (!activeStrok() ||
-                                                vectorView() === "source"),
+                                            workbenchView() === "source",
                                     }}
                                     aria-label={
                                         tab().title +
@@ -3033,16 +3053,16 @@ function App() {
                             <button
                                 type="button"
                                 role="tab"
-                                aria-selected={vectorView() === "vector"}
+                                aria-selected={workbenchView() === "vector"}
                                 aria-controls="editor-surface"
-                                tabIndex={vectorView() === "vector" ? 0 : -1}
+                                tabIndex={workbenchView() === "vector" ? 0 : -1}
                                 data-workbench-tab-index={view().tabs.length}
                                 class="tab vector-tab"
                                 classList={{
-                                    active: vectorView() === "vector",
+                                    active: workbenchView() === "vector",
                                 }}
                                 title="Live Strøk render and review"
-                                onClick={() => setVectorView("vector")}
+                                onClick={() => setWorkbenchView("vector")}
                                 onKeyDown={(event) =>
                                     handleTabNavigation(
                                         event,
@@ -3054,7 +3074,7 @@ function App() {
                                     name="ai-spark"
                                     size={16}
                                     tone={
-                                        vectorView() === "vector"
+                                        workbenchView() === "vector"
                                             ? "accent"
                                             : "muted"
                                     }
@@ -3062,30 +3082,82 @@ function App() {
                                 <span>Vector</span>
                             </button>
                         </Show>
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={workbenchView() === "browser"}
+                            aria-controls="editor-surface"
+                            tabIndex={workbenchView() === "browser" ? 0 : -1}
+                            data-workbench-tab-index={
+                                view().tabs.length + (activeStrok() ? 1 : 0)
+                            }
+                            class="tab browser-tab"
+                            classList={{
+                                active: workbenchView() === "browser",
+                            }}
+                            title="Shared embedded browser"
+                            onClick={() => {
+                                setWorkbenchView("browser");
+                                queueMicrotask(focusBrowser);
+                            }}
+                            onKeyDown={(event) =>
+                                handleTabNavigation(
+                                    event,
+                                    view().tabs.length +
+                                        (activeStrok() ? 1 : 0),
+                                )
+                            }
+                        >
+                            <Icon
+                                name="search"
+                                size={16}
+                                tone={
+                                    workbenchView() === "browser"
+                                        ? "accent"
+                                        : "muted"
+                                }
+                            />
+                            <span>Browser</span>
+                        </button>
                         <span class="tabs-fill" role="presentation" />
                     </div>
 
                     <div class="breadcrumbs">
-                        <For each={breadcrumbs()}>
-                            {(part, index) => (
+                        <Show
+                            when={workbenchView() === "browser"}
+                            fallback={
                                 <>
-                                    <span>{part}</span>
-                                    <Show
-                                        when={
-                                            index() < breadcrumbs().length - 1
-                                        }
-                                    >
-                                        <Icon
-                                            name="chevron-right"
-                                            size={16}
-                                            tone="muted"
-                                        />
+                                    <For each={breadcrumbs()}>
+                                        {(part, index) => (
+                                            <>
+                                                <span>{part}</span>
+                                                <Show
+                                                    when={
+                                                        index() <
+                                                        breadcrumbs().length - 1
+                                                    }
+                                                >
+                                                    <Icon
+                                                        name="chevron-right"
+                                                        size={16}
+                                                        tone="muted"
+                                                    />
+                                                </Show>
+                                            </>
+                                        )}
+                                    </For>
+                                    <Show when={view().readOnly}>
+                                        <span class="readonly">read only</span>
                                     </Show>
                                 </>
-                            )}
-                        </For>
-                        <Show when={view().readOnly}>
-                            <span class="readonly">read only</span>
+                            }
+                        >
+                            <span>Ovim</span>
+                            <Icon name="chevron-right" size={16} tone="muted" />
+                            <span>Browser</span>
+                            <span class="browser-breadcrumb-note">
+                                isolated · shared with agent
+                            </span>
                         </Show>
                     </div>
 
@@ -3094,11 +3166,15 @@ function App() {
                         class="editor-body"
                         classList={{
                             "vector-view-active":
-                                activeStrok() && vectorView() === "vector",
+                                activeStrok() && workbenchView() === "vector",
+                            "browser-view-active":
+                                workbenchView() === "browser",
                         }}
                         ref={editorBody!}
                     >
-                        <Show when={activeStrok() && vectorView() === "vector"}>
+                        <Show
+                            when={activeStrok() && workbenchView() === "vector"}
+                        >
                             <section
                                 class="vector-workbench"
                                 aria-label="Strøk vector preview"
@@ -3193,6 +3269,19 @@ function App() {
                                 </form>
                             </section>
                         </Show>
+                        <BrowserPanel
+                            native={native}
+                            active={workbenchView() === "browser"}
+                            obscured={Boolean(
+                                pendingExit() ||
+                                view().picker ||
+                                view().lspManager,
+                            )}
+                            onClose={() => {
+                                setWorkbenchView("source");
+                                queueMicrotask(focusEditorInput);
+                            }}
+                        />
                         <textarea
                             ref={inputSink!}
                             class="input-sink"
