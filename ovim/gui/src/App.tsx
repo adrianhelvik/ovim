@@ -34,6 +34,12 @@ import {
     workspaceLayoutIdentity,
     writeWorkbenchLayout,
 } from "./layoutPersistence";
+import {
+    activeSourceSelection,
+    composeWorkbenchTabs,
+    projectBrowserState,
+    type WorkbenchSelection,
+} from "./workbench";
 import type {
     GuiAiChat,
     GuiCodeExplanation,
@@ -46,6 +52,10 @@ import type {
 
 export { default as ChatComposer } from "./ChatComposer";
 export { guiKeyInput } from "./guiInput";
+export {
+    composeWorkbenchTabs,
+    requestedBrowserPresentation,
+} from "./workbench";
 
 const LINE_HEIGHT = 22;
 const FALLBACK_CELL_WIDTH = 8.15;
@@ -57,48 +67,6 @@ interface VectorPreview {
     height: number;
     fileName: string;
 }
-
-export type WorkbenchTabReference =
-    | { id: string; kind: "source"; index: number; tabId: number }
-    | { id: "vector"; kind: "vector" }
-    | { id: string; kind: "browser"; sessionId: string };
-
-export const composeWorkbenchTabs = (
-    sourceTabs: GuiSnapshot["tabs"],
-    includeVector: boolean,
-    browserSessions: BrowserSession[],
-): WorkbenchTabReference[] => [
-    ...sourceTabs.map((tab) => ({
-        id: `source:${tab.id}`,
-        kind: "source" as const,
-        index: tab.index,
-        tabId: tab.id,
-    })),
-    ...(includeVector
-        ? [{ id: "vector" as const, kind: "vector" as const }]
-        : []),
-    ...browserSessions.map((session) => ({
-        id: `browser:${session.sessionId}`,
-        kind: "browser" as const,
-        sessionId: session.sessionId,
-    })),
-];
-
-export const requestedBrowserPresentation = (
-    latestRevision: number,
-    state: BrowserState,
-) => {
-    const request = state.presentationRequest;
-    if (!request || request.revision <= latestRevision) return undefined;
-    return {
-        revision: request.revision,
-        sessionId: state.sessions.some(
-            (session) => session.sessionId === request.sessionId,
-        )
-            ? request.sessionId
-            : undefined,
-    };
-};
 
 const openExternalLink = (url: string) => {
     if (!/^(https?:\/\/|mailto:)/i.test(url)) return;
@@ -1179,14 +1147,19 @@ function App() {
     const [pendingExit, setPendingExit] = createSignal<
         "close" | "quit" | undefined
     >();
-    const [workbenchView, setWorkbenchView] = createSignal<
-        "source" | "vector" | "browser"
-    >("source");
+    const [workbenchSelection, setWorkbenchSelection] =
+        createSignal<WorkbenchSelection>(
+            activeSourceSelection(mockSnapshot.tabs),
+        );
+    const workbenchView = () => workbenchSelection().kind;
     const [browserState, setBrowserState] = createSignal<BrowserState>({
         sessions: [],
         maxSessions: 8,
     });
-    const [activeBrowserId, setActiveBrowserId] = createSignal<string>();
+    const activeBrowserId = () => {
+        const selection = workbenchSelection();
+        return selection.kind === "browser" ? selection.sessionId : undefined;
+    };
     const [browserOpening, setBrowserOpening] = createSignal(false);
     const [vectorPreview, setVectorPreview] = createSignal<VectorPreview>();
     const [vectorPreviewError, setVectorPreviewError] = createSignal("");
@@ -1260,6 +1233,22 @@ function App() {
     const activeBufferRevision = createMemo(() => view().bufferRevision);
 
     createEffect(() => {
+        const activeSource = activeSourceSelection(view().tabs);
+        const selection = workbenchSelection();
+        if (
+            selection.kind === "source" &&
+            selection.tabId !== activeSource.tabId
+        ) {
+            setWorkbenchSelection(activeSource);
+        } else if (
+            selection.kind === "vector" &&
+            selection.sourceTabId !== activeSource.tabId
+        ) {
+            setWorkbenchSelection(activeSource);
+        }
+    });
+
+    createEffect(() => {
         const filePath = view().filePath;
         if (filePath !== vectorFilePath) {
             vectorFilePath = filePath;
@@ -1270,7 +1259,8 @@ function App() {
             setVectorFeedbackStatus("");
         }
         if (!filePath?.toLowerCase().endsWith(".strok")) {
-            if (workbenchView() === "vector") setWorkbenchView("source");
+            if (workbenchView() === "vector")
+                setWorkbenchSelection(activeSourceSelection(view().tabs));
         }
     });
 
@@ -1449,8 +1439,7 @@ function App() {
             }).catch(() => {});
     };
     const presentBrowserSession = (sessionId: string) => {
-        setActiveBrowserId(sessionId);
-        setWorkbenchView("browser");
+        setWorkbenchSelection({ kind: "browser", sessionId });
         requestAnimationFrame(() =>
             requestAnimationFrame(() => {
                 if (
@@ -1463,33 +1452,28 @@ function App() {
     };
     const acceptBrowserState = (next: BrowserState) => {
         setBrowserState(next);
-        const presentation = requestedBrowserPresentation(
+        const projection = projectBrowserState(
+            workbenchSelection(),
             latestBrowserPresentationRevision,
+            view().tabs,
+            activeStrok(),
             next,
         );
-        if (presentation) {
-            latestBrowserPresentationRevision = presentation.revision;
+        latestBrowserPresentationRevision = projection.presentationRevision;
+        if (projection.acknowledgeRevision !== undefined) {
             if (native)
                 void invoke("gui_browser_ack_presentation", {
-                    revision: presentation.revision,
+                    revision: projection.acknowledgeRevision,
                 }).catch((reason) => setError(String(reason)));
-            if (presentation.sessionId)
-                presentBrowserSession(presentation.sessionId);
-            return;
         }
-        if (workbenchView() !== "browser") return;
-        const synchronized = next.sessions.some(
-            (session) => session.sessionId === next.activeSessionId,
+        const selection = projection.selection;
+        if (
+            selection.kind === "browser" &&
+            (workbenchView() !== "browser" ||
+                selection.sessionId !== activeBrowserId())
         )
-            ? next.activeSessionId
-            : undefined;
-        if (!synchronized) {
-            setActiveBrowserId(undefined);
-            setWorkbenchView("source");
-            return;
-        }
-        if (synchronized !== activeBrowserId())
-            presentBrowserSession(synchronized);
+            presentBrowserSession(selection.sessionId);
+        else setWorkbenchSelection(selection);
     };
     const openBrowserSession = async () => {
         const current = browserState();
@@ -1522,8 +1506,7 @@ function App() {
         )
             return;
         if (!native) {
-            setActiveBrowserId(sessionId);
-            setWorkbenchView("browser");
+            presentBrowserSession(sessionId);
             return;
         }
         void invoke<BrowserState>("gui_browser_activate", { sessionId })
@@ -1724,11 +1707,14 @@ function App() {
         if (!tab) return;
         switch (tab.kind) {
             case "source":
-                setWorkbenchView("source");
+                setWorkbenchSelection({ kind: "source", tabId: tab.tabId });
                 void mutate("gui_select_tab", { index: tab.index });
                 break;
             case "vector":
-                setWorkbenchView("vector");
+                setWorkbenchSelection({
+                    kind: "vector",
+                    sourceTabId: tab.sourceTabId,
+                });
                 break;
             case "browser":
                 activateBrowserSession(tab.sessionId);
@@ -3251,7 +3237,16 @@ function App() {
                                     active: workbenchView() === "vector",
                                 }}
                                 title="Live Strøk render and review"
-                                onClick={() => setWorkbenchView("vector")}
+                                onClick={() => {
+                                    const vector = workbenchTabs().find(
+                                        (tab) => tab.kind === "vector",
+                                    );
+                                    if (vector?.kind === "vector")
+                                        setWorkbenchSelection({
+                                            kind: "vector",
+                                            sourceTabId: vector.sourceTabId,
+                                        });
+                                }}
                                 onKeyDown={(event) =>
                                     handleTabNavigation(
                                         event,

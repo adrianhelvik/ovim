@@ -87,7 +87,7 @@ describe("Ovim Solid workbench", () => {
         ).toEqual([
             { id: "source:1", kind: "source", index: 0, tabId: 1 },
             { id: "source:2", kind: "source", index: 1, tabId: 2 },
-            { id: "vector", kind: "vector" },
+            { id: "vector:1", kind: "vector", sourceTabId: 1 },
             {
                 id: "browser:browser-1",
                 kind: "browser",
