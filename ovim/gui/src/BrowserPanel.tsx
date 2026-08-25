@@ -15,6 +15,10 @@ export interface BrowserState {
     sessions: BrowserSession[];
     activeSessionId?: string;
     maxSessions: number;
+    presentationRequest?: {
+        revision: number;
+        sessionId: string;
+    };
 }
 
 interface BrowserPanelProps {
@@ -23,7 +27,6 @@ interface BrowserPanelProps {
     obscured: boolean;
     session?: BrowserSession;
     onState: (state: BrowserState) => void;
-    onClosed: (sessionId: string) => void;
 }
 
 interface BrowserBounds {
@@ -127,7 +130,6 @@ export default function BrowserPanel(props: BrowserPanelProps) {
             props.onState(
                 await invoke<BrowserState>("gui_browser_close", { sessionId }),
             );
-            props.onClosed(sessionId);
         } catch (reason) {
             setError(String(reason));
         }

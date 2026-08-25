@@ -82,7 +82,6 @@ describe("BrowserPanel", () => {
         const [active, setActive] = createSignal(true);
         const [obscured, setObscured] = createSignal(false);
         const [browserState, setBrowserState] = createSignal(state());
-        const onClosed = vi.fn();
         const result = render(() => (
             <BrowserPanel
                 native
@@ -90,7 +89,6 @@ describe("BrowserPanel", () => {
                 obscured={obscured()}
                 session={browserState().sessions[0]}
                 onState={setBrowserState}
-                onClosed={onClosed}
             />
         ));
         try {
@@ -148,7 +146,7 @@ describe("BrowserPanel", () => {
                 screen.getByRole("button", { name: "Close browser session" }),
             );
             await waitFor(() =>
-                expect(onClosed).toHaveBeenCalledWith("browser-1"),
+                expect(browserState().sessions).toHaveLength(0),
             );
             setActive(false);
         } finally {
@@ -164,7 +162,6 @@ describe("BrowserPanel", () => {
                 obscured={false}
                 session={session()}
                 onState={() => {}}
-                onClosed={() => {}}
             />
         ));
         try {
@@ -200,7 +197,6 @@ describe("BrowserPanel", () => {
                     (candidate) => candidate.sessionId === activeSessionId(),
                 )}
                 onState={() => {}}
-                onClosed={() => {}}
             />
         ));
         try {

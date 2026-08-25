@@ -10,7 +10,6 @@ use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Url, Webview, WebviewUrl, Window};
 
 const BROWSER_STATE_EVENT: &str = "ovim://browser-state";
-const BROWSER_SHOW_EVENT: &str = "ovim://browser-show-requested";
 const SNAPSHOT_SCRIPT: &str = include_str!("snapshot.js");
 const ACTION_FUNCTION: &str = include_str!("action.js");
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -52,6 +51,14 @@ pub struct GuiBrowserState {
     pub sessions: Vec<BrowserSession>,
     pub active_session_id: Option<String>,
     pub max_sessions: usize,
+    pub presentation_request: Option<GuiBrowserPresentationRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiBrowserPresentationRequest {
+    pub revision: u64,
+    pub session_id: String,
 }
 
 struct HostedBrowser {
@@ -69,6 +76,8 @@ struct BrowserHostInner {
     bounds: GuiBrowserBounds,
     next_session_id: u64,
     starting_sessions: usize,
+    next_presentation_revision: u64,
+    presentation_request: Option<GuiBrowserPresentationRequest>,
 }
 
 impl Default for BrowserHostInner {
@@ -81,6 +90,8 @@ impl Default for BrowserHostInner {
             bounds: GuiBrowserBounds::default(),
             next_session_id: 1,
             starting_sessions: 0,
+            next_presentation_revision: 1,
+            presentation_request: None,
         }
     }
 }
@@ -166,6 +177,7 @@ impl BrowserHost {
                 sessions: Vec::new(),
                 active_session_id: None,
                 max_sessions: MAX_BROWSER_SESSIONS,
+                presentation_request: None,
             })
     }
 
@@ -240,13 +252,13 @@ impl BrowserHost {
                 next_snapshot_id: 1,
             });
             inner.active_session_id = Some(session_id.clone());
+            if emit_show {
+                record_presentation_request(&mut inner, &session_id);
+            }
         }
         self.sync_bounds()
             .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
         self.emit_state();
-        if emit_show {
-            self.emit_show_requested(&session_id);
-        }
         Ok(BrowserResponse::Session(
             self.session(&session_id).unwrap_or(session),
         ))
@@ -257,13 +269,13 @@ impl BrowserHost {
             let mut inner = self.lock()?;
             session_ref(&inner, session_id)?;
             inner.active_session_id = Some(session_id.to_string());
+            if emit_show {
+                record_presentation_request(&mut inner, session_id);
+            }
         }
         self.sync_bounds()
             .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
         self.emit_state();
-        if emit_show {
-            self.emit_show_requested(session_id);
-        }
         Ok(BrowserResponse::Session(self.session_or_error(session_id)?))
     }
 
@@ -274,6 +286,7 @@ impl BrowserHost {
             if inner.active_session_id.as_deref() == Some(session_id) {
                 inner.active_session_id = None;
             }
+            clear_presentation_request(&mut inner, session_id);
         }
         self.sync_bounds()
             .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
@@ -294,10 +307,16 @@ impl BrowserHost {
                         format!("Browser session not found: {session_id}"),
                     )
                 })?;
-            if inner.active_session_id.as_deref() == Some(session_id) {
-                inner.active_session_id = None;
+            let closing_active = inner.active_session_id.as_deref() == Some(session_id);
+            clear_presentation_request(&mut inner, session_id);
+            let browser = inner.browsers.remove(position);
+            if closing_active {
+                inner.active_session_id = inner
+                    .browsers
+                    .get(position.min(inner.browsers.len().saturating_sub(1)))
+                    .map(|browser| browser.session.session_id.clone());
             }
-            inner.browsers.remove(position)
+            browser
         };
         browser.session.visible = false;
         let close_result = browser.webview.close().map_err(|error| {
@@ -479,6 +498,24 @@ impl BrowserHost {
         Ok(self.state())
     }
 
+    pub fn acknowledge_presentation(&self, revision: u64) -> GuiBrowserState {
+        let state = match self.inner.lock() {
+            Ok(mut inner) => {
+                if inner
+                    .presentation_request
+                    .as_ref()
+                    .is_some_and(|request| request.revision == revision)
+                {
+                    inner.presentation_request = None;
+                }
+                state_from_inner(&inner)
+            }
+            Err(_) => return self.state(),
+        };
+        self.emit_state();
+        state
+    }
+
     pub fn navigate_for_user(
         &self,
         session_id: &str,
@@ -577,14 +614,6 @@ impl BrowserHost {
         })
     }
 
-    fn emit_show_requested(&self, session_id: &str) {
-        if let Ok(inner) = self.inner.lock()
-            && let Some(app) = inner.app.as_ref()
-        {
-            let _ = app.emit(BROWSER_SHOW_EVENT, session_id);
-        }
-    }
-
     fn emit_state(&self) {
         let (app, state) = match self.inner.lock() {
             Ok(inner) => (inner.app.clone(), state_from_inner(&inner)),
@@ -622,6 +651,14 @@ pub fn gui_browser_activate(
     session_id: String,
 ) -> Result<GuiBrowserState, String> {
     host.activate_for_user(&session_id)
+}
+
+#[tauri::command]
+pub fn gui_browser_ack_presentation(
+    host: tauri::State<'_, BrowserHost>,
+    revision: u64,
+) -> GuiBrowserState {
+    host.acknowledge_presentation(revision)
 }
 
 #[tauri::command]
@@ -717,6 +754,26 @@ fn state_from_inner(inner: &BrowserHostInner) -> GuiBrowserState {
             .collect(),
         active_session_id: inner.active_session_id.clone(),
         max_sessions: MAX_BROWSER_SESSIONS,
+        presentation_request: inner.presentation_request.clone(),
+    }
+}
+
+fn record_presentation_request(inner: &mut BrowserHostInner, session_id: &str) {
+    let revision = inner.next_presentation_revision;
+    inner.next_presentation_revision = inner.next_presentation_revision.saturating_add(1);
+    inner.presentation_request = Some(GuiBrowserPresentationRequest {
+        revision,
+        session_id: session_id.to_string(),
+    });
+}
+
+fn clear_presentation_request(inner: &mut BrowserHostInner, session_id: &str) {
+    if inner
+        .presentation_request
+        .as_ref()
+        .is_some_and(|request| request.session_id == session_id)
+    {
+        inner.presentation_request = None;
     }
 }
 
@@ -858,5 +915,32 @@ mod tests {
         assert!(SNAPSHOT_SCRIPT.contains("MAX_ELEMENTS = 200"));
         assert!(ACTION_FUNCTION.contains("manual browser control"));
         assert!(!ACTION_FUNCTION.contains("eval("));
+    }
+
+    #[test]
+    fn presentation_requests_are_revisioned_and_clearable() {
+        let mut inner = BrowserHostInner::default();
+
+        record_presentation_request(&mut inner, "browser-1");
+        assert_eq!(
+            inner.presentation_request,
+            Some(GuiBrowserPresentationRequest {
+                revision: 1,
+                session_id: "browser-1".into(),
+            })
+        );
+
+        record_presentation_request(&mut inner, "browser-2");
+        assert_eq!(
+            inner.presentation_request,
+            Some(GuiBrowserPresentationRequest {
+                revision: 2,
+                session_id: "browser-2".into(),
+            })
+        );
+        clear_presentation_request(&mut inner, "browser-1");
+        assert!(inner.presentation_request.is_some());
+        clear_presentation_request(&mut inner, "browser-2");
+        assert!(inner.presentation_request.is_none());
     }
 }

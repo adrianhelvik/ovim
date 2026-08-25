@@ -580,6 +580,7 @@ pub struct GuiChatMessage {
     pub model: Option<String>,
     pub tool_name: Option<String>,
     pub tools: Vec<String>,
+    pub images: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2534,23 +2535,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             waiting: editor.ai_chat_waiting(),
             input: editor.ai_chat_input().to_string(),
             input_cursor: editor.ai_chat_input_cursor(),
-            pending_images: editor
-                .ai_chat_pending_images()
-                .iter()
-                .enumerate()
-                .map(|(index, image)| {
-                    let name = image
-                        .path
-                        .file_name()
-                        .unwrap_or(image.path.as_os_str())
-                        .to_string_lossy();
-                    if name.starts_with("clipboard-") {
-                        format!("Pasted image {}", index + 1)
-                    } else {
-                        name.to_string()
-                    }
-                })
-                .collect(),
+            pending_images: projected_image_names(editor.ai_chat_pending_images()),
             queued_inputs: editor
                 .ai_chat_queued_inputs()
                 .map(|item| GuiQueuedChatInput {
@@ -2599,6 +2584,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                         .take(24)
                         .map(|tool| tool.name.clone())
                         .collect(),
+                    images: projected_image_names(&message.images),
                 })
                 .collect(),
             streaming: editor
@@ -2644,6 +2630,25 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             code_explanation: code_explanation(editor),
         }
     })
+}
+
+fn projected_image_names(images: &[ovim_core::ai::chat_types::ImageAttachment]) -> Vec<String> {
+    images
+        .iter()
+        .enumerate()
+        .map(|(index, image)| {
+            let name = image
+                .path
+                .file_name()
+                .unwrap_or(image.path.as_os_str())
+                .to_string_lossy();
+            if name.starts_with("clipboard-") {
+                format!("Pasted image {}", index + 1)
+            } else {
+                name.to_string()
+            }
+        })
+        .collect()
 }
 
 fn code_explanation(editor: &Editor) -> Option<GuiCodeExplanation> {
@@ -3257,6 +3262,28 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn submitted_image_remains_visible_in_the_transcript_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layout.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        let mut editor = Editor::new();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        attach_chat_images(&mut editor, std::slice::from_ref(&path)).unwrap();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "Inspect this layout".into();
+        chat.input_cursor = chat.input.len();
+
+        editor.submit_ai_chat_message().unwrap();
+
+        let view = snapshot(&editor, 1).ai_chat.unwrap();
+        assert!(view.pending_images.is_empty());
+        assert_eq!(view.messages[0].images, vec!["layout.png"]);
+        editor.cancel_ai_chat_generation();
     }
 
     #[test]

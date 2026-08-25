@@ -58,6 +58,47 @@ interface VectorPreview {
     fileName: string;
 }
 
+export type WorkbenchTabReference =
+    | { id: string; kind: "source"; index: number }
+    | { id: "vector"; kind: "vector" }
+    | { id: string; kind: "browser"; sessionId: string };
+
+export const composeWorkbenchTabs = (
+    sourceTabs: GuiSnapshot["tabs"],
+    includeVector: boolean,
+    browserSessions: BrowserSession[],
+): WorkbenchTabReference[] => [
+    ...sourceTabs.map((tab) => ({
+        id: `source:${tab.index}`,
+        kind: "source" as const,
+        index: tab.index,
+    })),
+    ...(includeVector
+        ? [{ id: "vector" as const, kind: "vector" as const }]
+        : []),
+    ...browserSessions.map((session) => ({
+        id: `browser:${session.sessionId}`,
+        kind: "browser" as const,
+        sessionId: session.sessionId,
+    })),
+];
+
+export const requestedBrowserPresentation = (
+    latestRevision: number,
+    state: BrowserState,
+) => {
+    const request = state.presentationRequest;
+    if (!request || request.revision <= latestRevision) return undefined;
+    return {
+        revision: request.revision,
+        sessionId: state.sessions.some(
+            (session) => session.sessionId === request.sessionId,
+        )
+            ? request.sessionId
+            : undefined,
+    };
+};
+
 const openExternalLink = (url: string) => {
     if (!/^(https?:\/\/|mailto:)/i.test(url)) return;
     if (isTauri()) {
@@ -600,6 +641,7 @@ const sameChatMessage = (left: GuiChatMessage, right: GuiChatMessage) =>
     left.model === right.model &&
     left.toolName === right.toolName &&
     sameStrings(left.tools, right.tools) &&
+    sameStrings(left.images ?? [], right.images ?? []) &&
     (left as ChatActivityEntry).live === (right as ChatActivityEntry).live;
 
 export const retainTranscriptItems = (
@@ -756,6 +798,21 @@ export const ChatMessageView = (props: {
                         <Markdown text={props.message.content} />
                     </Show>
                 </details>
+            </Show>
+            <Show when={props.message.images?.length}>
+                <footer
+                    class="chat-message-attachments"
+                    aria-label="Attached images"
+                >
+                    <For each={props.message.images}>
+                        {(name) => (
+                            <span title={name}>
+                                <Icon name="attach" size={16} />
+                                <span>{name}</span>
+                            </span>
+                        )}
+                    </For>
+                </footer>
             </Show>
         </article>
     );
@@ -1159,6 +1216,7 @@ function App() {
     let wheelRemainder = 0;
     let lastDimensions = { columns: 0, rows: 0 };
     let latestSnapshotRevision: number | undefined;
+    let latestBrowserPresentationRevision = 0;
     const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
     const hasContextDock = createMemo(() =>
         Boolean(
@@ -1191,6 +1249,13 @@ function App() {
         );
     });
     const activeStrok = createMemo(() => Boolean(activeStrokPath()));
+    const workbenchTabs = createMemo(() =>
+        composeWorkbenchTabs(
+            view().tabs,
+            activeStrok(),
+            browserState().sessions,
+        ),
+    );
     const activeBufferRevision = createMemo(() => view().bufferRevision);
 
     createEffect(() => {
@@ -1375,29 +1440,55 @@ function App() {
         if (chatInput?.isConnected) chatInput.focus({ preventScroll: true });
         else focusEditorInput();
     };
-    const acceptBrowserState = (next: BrowserState) => {
-        setBrowserState(next);
-        if (workbenchView() !== "browser") return;
-        const selected = activeBrowserId();
-        if (
-            !selected ||
-            !next.activeSessionId ||
-            !next.sessions.some((session) => session.sessionId === selected)
-        ) {
-            setActiveBrowserId(undefined);
-            setWorkbenchView("source");
-            return;
-        }
-        if (next.activeSessionId !== selected)
-            setActiveBrowserId(next.activeSessionId);
-    };
-    const focusBrowser = () => {
-        const sessionId = activeBrowserId();
+    const focusBrowser = (sessionId = activeBrowserId()) => {
         if (native && sessionId)
             void invoke("gui_browser_toolbar", {
                 sessionId,
                 action: "focus",
             }).catch(() => {});
+    };
+    const presentBrowserSession = (sessionId: string) => {
+        setActiveBrowserId(sessionId);
+        setWorkbenchView("browser");
+        requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+                if (
+                    workbenchView() === "browser" &&
+                    activeBrowserId() === sessionId
+                )
+                    focusBrowser(sessionId);
+            }),
+        );
+    };
+    const acceptBrowserState = (next: BrowserState) => {
+        setBrowserState(next);
+        const presentation = requestedBrowserPresentation(
+            latestBrowserPresentationRevision,
+            next,
+        );
+        if (presentation) {
+            latestBrowserPresentationRevision = presentation.revision;
+            if (native)
+                void invoke("gui_browser_ack_presentation", {
+                    revision: presentation.revision,
+                }).catch((reason) => setError(String(reason)));
+            if (presentation.sessionId)
+                presentBrowserSession(presentation.sessionId);
+            return;
+        }
+        if (workbenchView() !== "browser") return;
+        const synchronized = next.sessions.some(
+            (session) => session.sessionId === next.activeSessionId,
+        )
+            ? next.activeSessionId
+            : undefined;
+        if (!synchronized) {
+            setActiveBrowserId(undefined);
+            setWorkbenchView("source");
+            return;
+        }
+        if (synchronized !== activeBrowserId())
+            presentBrowserSession(synchronized);
     };
     const openBrowserSession = async () => {
         const current = browserState();
@@ -1414,9 +1505,7 @@ function App() {
             acceptBrowserState(next);
             const sessionId = next.activeSessionId;
             if (sessionId) {
-                setActiveBrowserId(sessionId);
-                setWorkbenchView("browser");
-                queueMicrotask(focusBrowser);
+                presentBrowserSession(sessionId);
             }
         } catch (reason) {
             setError(String(reason));
@@ -1439,9 +1528,7 @@ function App() {
         void invoke<BrowserState>("gui_browser_activate", { sessionId })
             .then((next) => {
                 acceptBrowserState(next);
-                setActiveBrowserId(sessionId);
-                setWorkbenchView("browser");
-                queueMicrotask(focusBrowser);
+                presentBrowserSession(sessionId);
             })
             .catch((reason) => {
                 setError(String(reason));
@@ -1632,29 +1719,24 @@ function App() {
     };
 
     const selectWorkbenchTab = (position: number) => {
-        const tabs = view().tabs;
-        if (position === tabs.length && activeStrok()) {
-            setWorkbenchView("vector");
-            return;
-        }
-        const browserPosition = tabs.length + (activeStrok() ? 1 : 0);
-        const browser = browserState().sessions[position - browserPosition];
-        if (browser) {
-            activateBrowserSession(browser.sessionId);
-            return;
-        }
-        const tab = tabs[position];
+        const tab = workbenchTabs()[position];
         if (!tab) return;
-        setWorkbenchView("source");
-        void mutate("gui_select_tab", { index: tab.index });
+        switch (tab.kind) {
+            case "source":
+                setWorkbenchView("source");
+                void mutate("gui_select_tab", { index: tab.index });
+                break;
+            case "vector":
+                setWorkbenchView("vector");
+                break;
+            case "browser":
+                activateBrowserSession(tab.sessionId);
+                break;
+        }
     };
 
     const handleTabNavigation = (event: KeyboardEvent, position: number) => {
-        const tabs = view().tabs;
-        const tabCount =
-            tabs.length +
-            (activeStrok() ? 1 : 0) +
-            browserState().sessions.length;
+        const tabCount = workbenchTabs().length;
         if (tabCount < 2) return;
         let next = position;
         if (event.key === "ArrowRight") next = (position + 1) % tabCount;
@@ -2839,7 +2921,6 @@ function App() {
         let unlistenMenu: (() => void) | undefined;
         let unlistenClose: (() => void) | undefined;
         let unlistenBrowserState: (() => void) | undefined;
-        let unlistenBrowserShow: (() => void) | undefined;
         if (native) {
             void listen<string>("ovim://menu-action", (event) =>
                 performMenuAction(event.payload),
@@ -2855,13 +2936,6 @@ function App() {
                 acceptBrowserState(event.payload),
             ).then((unlisten) => {
                 unlistenBrowserState = unlisten;
-            });
-            void listen<string>("ovim://browser-show-requested", (event) => {
-                setActiveBrowserId(event.payload);
-                setWorkbenchView("browser");
-                queueMicrotask(focusBrowser);
-            }).then((unlisten) => {
-                unlistenBrowserShow = unlisten;
             });
             void invoke<BrowserState>("gui_browser_state")
                 .then(acceptBrowserState)
@@ -2889,7 +2963,6 @@ function App() {
             unlistenMenu?.();
             unlistenClose?.();
             unlistenBrowserState?.();
-            unlistenBrowserShow?.();
         });
     });
 
@@ -3114,7 +3187,7 @@ function App() {
                 </Show>
 
                 <section class="editor-stack">
-                    <div class="tabs" role="tablist" aria-label="Open files">
+                    <div class="tabs" role="tablist" aria-label="Open tabs">
                         <Index each={view().tabs}>
                             {(tab, position) => (
                                 <button
@@ -3174,7 +3247,9 @@ function App() {
                                 aria-selected={workbenchView() === "vector"}
                                 aria-controls="editor-surface"
                                 tabIndex={workbenchView() === "vector" ? 0 : -1}
-                                data-workbench-tab-index={view().tabs.length}
+                                data-workbench-tab-index={workbenchTabs().findIndex(
+                                    (tab) => tab.kind === "vector",
+                                )}
                                 class="tab vector-tab"
                                 classList={{
                                     active: workbenchView() === "vector",
@@ -3184,7 +3259,9 @@ function App() {
                                 onKeyDown={(event) =>
                                     handleTabNavigation(
                                         event,
-                                        view().tabs.length,
+                                        workbenchTabs().findIndex(
+                                            (tab) => tab.kind === "vector",
+                                        ),
                                     )
                                 }
                             >
@@ -3201,11 +3278,13 @@ function App() {
                             </button>
                         </Show>
                         <For each={browserState().sessions}>
-                            {(session, index) => {
+                            {(session) => {
                                 const position = () =>
-                                    view().tabs.length +
-                                    (activeStrok() ? 1 : 0) +
-                                    index();
+                                    workbenchTabs().findIndex(
+                                        (tab) =>
+                                            tab.kind === "browser" &&
+                                            tab.sessionId === session.sessionId,
+                                    );
                                 const active = () =>
                                     workbenchView() === "browser" &&
                                     activeBrowserId() === session.sessionId;
@@ -3437,11 +3516,6 @@ function App() {
                                 view().lspManager,
                             )}
                             onState={acceptBrowserState}
-                            onClosed={() => {
-                                setActiveBrowserId(undefined);
-                                setWorkbenchView("source");
-                                queueMicrotask(focusEditorInput);
-                            }}
                         />
                         <textarea
                             ref={inputSink!}

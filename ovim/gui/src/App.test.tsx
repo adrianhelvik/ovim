@@ -14,10 +14,12 @@ import App, {
     activitySummary,
     chatSelectionText,
     chatTranscriptItems,
+    composeWorkbenchTabs,
     guiKeyInput,
     imageExtension,
     isNearChatBottom,
     retainTranscriptItems,
+    requestedBrowserPresentation,
     toolResultSummary,
 } from "./App";
 import { mockSnapshot } from "./mock";
@@ -60,6 +62,78 @@ afterEach(() => {
 });
 
 describe("Ovim Solid workbench", () => {
+    it("composes browser sessions into one navigable workbench tab model", () => {
+        const browserSessions = [
+            {
+                sessionId: "browser-1",
+                url: "https://nrk.no/",
+                title: "NRK",
+                visible: false,
+                loading: false,
+                documentId: 1,
+            },
+            {
+                sessionId: "browser-2",
+                url: "https://example.com/",
+                title: "Example",
+                visible: false,
+                loading: false,
+                documentId: 1,
+            },
+        ];
+
+        expect(
+            composeWorkbenchTabs(mockSnapshot.tabs, true, browserSessions),
+        ).toEqual([
+            { id: "source:0", kind: "source", index: 0 },
+            { id: "source:1", kind: "source", index: 1 },
+            { id: "vector", kind: "vector" },
+            {
+                id: "browser:browser-1",
+                kind: "browser",
+                sessionId: "browser-1",
+            },
+            {
+                id: "browser:browser-2",
+                kind: "browser",
+                sessionId: "browser-2",
+            },
+        ]);
+    });
+
+    it("replays a durable agent browser presentation request exactly once", () => {
+        const state = {
+            sessions: [
+                {
+                    sessionId: "browser-4",
+                    url: "https://nrk.no/",
+                    title: "NRK",
+                    visible: false,
+                    loading: false,
+                    documentId: 2,
+                },
+            ],
+            activeSessionId: "browser-4",
+            maxSessions: 8,
+            presentationRequest: {
+                revision: 7,
+                sessionId: "browser-4",
+            },
+        };
+
+        expect(requestedBrowserPresentation(0, state)).toEqual({
+            revision: 7,
+            sessionId: "browser-4",
+        });
+        expect(requestedBrowserPresentation(7, state)).toBeUndefined();
+        expect(
+            requestedBrowserPresentation(0, {
+                ...state,
+                sessions: [],
+            }),
+        ).toEqual({ revision: 7, sessionId: undefined });
+    });
+
     it("renders an interactive concept walkthrough from projected core state", () => {
         const onKey = vi.fn();
         const walkthrough: GuiCodeExplanation = {
@@ -135,7 +209,7 @@ describe("Ovim Solid workbench", () => {
         expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
         expect(screen.getByLabelText("Ovim editor input")).toBeTruthy();
         expect(
-            screen.getByRole("tablist", { name: "Open files" }),
+            screen.getByRole("tablist", { name: "Open tabs" }),
         ).toBeTruthy();
         expect(
             screen.getByRole("tree", { name: "Project files" }),
@@ -345,6 +419,26 @@ describe("Ovim Solid workbench", () => {
             result.container.querySelector("img")?.hasAttribute("onerror"),
         ).toBe(false);
         expect(result.container.querySelector("script")).toBeNull();
+    });
+
+    it("shows sent image attachments in the chat transcript", () => {
+        render(() => (
+            <ChatMessageView
+                message={{
+                    id: "1:1",
+                    index: 0,
+                    selected: false,
+                    role: "user",
+                    content: "Please inspect this screenshot",
+                    tools: [],
+                    images: ["layout.png", "Pasted image 2"],
+                }}
+            />
+        ));
+
+        expect(screen.getByLabelText("Attached images")).toBeTruthy();
+        expect(screen.getByText("layout.png")).toBeTruthy();
+        expect(screen.getByText("Pasted image 2")).toBeTruthy();
     });
 
     it("hands safe markdown links to the desktop opener without navigating the editor", () => {

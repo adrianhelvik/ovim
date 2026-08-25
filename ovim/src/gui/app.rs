@@ -581,6 +581,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             super::browser::gui_browser_state,
             super::browser::gui_browser_set_bounds,
             super::browser::gui_browser_activate,
+            super::browser::gui_browser_ack_presentation,
             super::browser::gui_browser_navigate,
             super::browser::gui_browser_toolbar,
             super::browser::gui_browser_close,

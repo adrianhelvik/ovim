@@ -94,6 +94,7 @@ export interface GuiAiChat {
         model?: string;
         toolName?: string;
         tools: string[];
+        images?: string[];
     }>;
     streaming?: string;
     streamingThinking?: string;

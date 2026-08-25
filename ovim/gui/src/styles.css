@@ -1663,6 +1663,30 @@ button:focus-visible {
     border-radius: var(--radius-2);
     font: var(--text-micro)/1 var(--editor-font);
 }
+.chat-message-attachments {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+.chat-message-attachments > span {
+    max-width: 100%;
+    padding: 4px 6px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--info);
+    border: 1px solid color-mix(in srgb, var(--info) 28%, var(--border));
+    border-radius: var(--radius-2);
+    background: color-mix(in srgb, var(--info) 7%, transparent);
+    white-space: nowrap;
+    font: var(--text-micro)/1 var(--editor-font);
+}
+.chat-message-attachments > span > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 .queued-actions {
     margin-top: 8px;
     display: flex;
