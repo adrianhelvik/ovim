@@ -1,6 +1,5 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Icon } from "./Icon";
 
 export interface BrowserSession {
@@ -12,15 +11,19 @@ export interface BrowserSession {
     documentId: number;
 }
 
-interface BrowserState {
-    session?: BrowserSession;
+export interface BrowserState {
+    sessions: BrowserSession[];
+    activeSessionId?: string;
+    maxSessions: number;
 }
 
 interface BrowserPanelProps {
     native: boolean;
     active: boolean;
     obscured: boolean;
-    onClose: () => void;
+    session?: BrowserSession;
+    onState: (state: BrowserState) => void;
+    onClosed: (sessionId: string) => void;
 }
 
 interface BrowserBounds {
@@ -37,27 +40,31 @@ const normalizeAddress = (value: string) => {
     return `https://${address}`;
 };
 
+export const browserTabTitle = (session: BrowserSession) => {
+    const title = session.title.trim();
+    if (title) return title;
+    try {
+        return new URL(session.url).hostname || "Browser";
+    } catch {
+        return "Browser";
+    }
+};
+
 export default function BrowserPanel(props: BrowserPanelProps) {
-    const [state, setState] = createSignal<BrowserState>({});
     const [address, setAddress] = createSignal("");
     const [error, setError] = createSignal("");
-    const [opening, setOpening] = createSignal(false);
     let viewport: HTMLDivElement | undefined;
     let addressInput: HTMLInputElement | undefined;
     let boundsFrame: number | undefined;
+    let projectedSessionId = "";
 
-    const session = () => state().session;
+    const session = () => props.session;
     const browserVisible = () =>
         props.native &&
         props.active &&
+        Boolean(session()) &&
         !props.obscured &&
         document.visibilityState !== "hidden";
-
-    const projectState = (next: BrowserState) => {
-        setState(next);
-        const url = next.session?.url ?? "";
-        if (document.activeElement !== addressInput) setAddress(url);
-    };
 
     const sendBounds = (visible = browserVisible()) => {
         if (!props.native) return;
@@ -83,37 +90,29 @@ export default function BrowserPanel(props: BrowserPanelProps) {
         });
     };
 
-    const open = async () => {
-        if (!props.native || !props.active || opening()) return;
-        setOpening(true);
-        setError("");
-        try {
-            projectState(await invoke<BrowserState>("gui_browser_open"));
-            scheduleBounds();
-        } catch (reason) {
-            setError(String(reason));
-        } finally {
-            setOpening(false);
-        }
-    };
-
     const runToolbarAction = async (action: "back" | "forward" | "reload") => {
+        const sessionId = session()?.sessionId;
+        if (!sessionId) return;
         setError("");
         try {
-            await invoke("gui_browser_toolbar", { action });
+            await invoke("gui_browser_toolbar", { sessionId, action });
         } catch (reason) {
             setError(String(reason));
         }
     };
 
     const navigate = async () => {
+        const sessionId = session()?.sessionId;
         const url = normalizeAddress(address());
-        if (!url) return;
+        if (!sessionId || !url) return;
         setAddress(url);
         setError("");
         try {
-            projectState(
-                await invoke<BrowserState>("gui_browser_navigate", { url }),
+            props.onState(
+                await invoke<BrowserState>("gui_browser_navigate", {
+                    sessionId,
+                    url,
+                }),
             );
         } catch (reason) {
             setError(String(reason));
@@ -121,51 +120,37 @@ export default function BrowserPanel(props: BrowserPanelProps) {
     };
 
     const close = async () => {
-        if (!props.native || !session()) {
-            props.onClose();
-            return;
-        }
+        const sessionId = session()?.sessionId;
+        if (!props.native || !sessionId) return;
         setError("");
         try {
-            await invoke("gui_browser_close");
-            projectState({});
-            props.onClose();
+            props.onState(
+                await invoke<BrowserState>("gui_browser_close", { sessionId }),
+            );
+            props.onClosed(sessionId);
         } catch (reason) {
             setError(String(reason));
         }
     };
 
     createEffect(() => {
-        if (!props.active) {
-            sendBounds(false);
-            return;
+        const next = session();
+        if (projectedSessionId !== (next?.sessionId ?? "")) {
+            projectedSessionId = next?.sessionId ?? "";
+            setError("");
         }
-        if (props.native) queueMicrotask(() => void open());
+        if (document.activeElement !== addressInput)
+            setAddress(next?.url ?? "");
     });
 
     createEffect(() => {
         void props.active;
         void props.obscured;
+        void session()?.sessionId;
         scheduleBounds();
     });
 
     onMount(() => {
-        let disposed = false;
-        let unlistenState: (() => void) | undefined;
-        if (props.native) {
-            if (!props.active) {
-                void invoke<BrowserState>("gui_browser_state")
-                    .then(projectState)
-                    .catch((reason) => setError(String(reason)));
-            }
-            void listen<BrowserState>("ovim://browser-state", (event) =>
-                projectState(event.payload),
-            ).then((unlisten) => {
-                if (disposed) unlisten();
-                else unlistenState = unlisten;
-            });
-        }
-
         const observer = new ResizeObserver(scheduleBounds);
         if (viewport) observer.observe(viewport);
         window.addEventListener("resize", scheduleBounds);
@@ -173,8 +158,6 @@ export default function BrowserPanel(props: BrowserPanelProps) {
         document.addEventListener("visibilitychange", scheduleBounds);
 
         onCleanup(() => {
-            disposed = true;
-            unlistenState?.();
             observer.disconnect();
             window.removeEventListener("resize", scheduleBounds);
             window.removeEventListener("scroll", scheduleBounds, true);
@@ -270,6 +253,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                     <button
                         type="button"
                         data-gui-native-control
+                        disabled={!session()}
                         aria-label="Close browser session"
                         title="Close browser session"
                         onClick={() => void close()}
@@ -284,9 +268,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                 <span>
                     {session()
                         ? "Agent actions use fresh, bounded page snapshots"
-                        : opening()
-                          ? "Starting an isolated browser session…"
-                          : "No browser session is open"}
+                        : "No browser session is selected"}
                 </span>
                 <Show when={error()}>
                     <em role="alert">{error()}</em>
@@ -303,16 +285,6 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                             webview.
                         </span>
                     </div>
-                </Show>
-                <Show when={props.native && !session() && !opening()}>
-                    <button
-                        type="button"
-                        class="browser-open-action"
-                        data-gui-native-control
-                        onClick={() => void open()}
-                    >
-                        Open browser session
-                    </button>
                 </Show>
             </div>
         </section>

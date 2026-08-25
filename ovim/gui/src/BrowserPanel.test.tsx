@@ -3,7 +3,11 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import BrowserPanel, { type BrowserSession } from "./BrowserPanel";
+import BrowserPanel, {
+    browserTabTitle,
+    type BrowserSession,
+    type BrowserState,
+} from "./BrowserPanel";
 
 const invoke = vi.hoisted(() => vi.fn());
 const listen = vi.hoisted(() => vi.fn());
@@ -25,6 +29,11 @@ const session = (overrides: Partial<BrowserSession> = {}): BrowserSession => ({
     documentId: 1,
     ...overrides,
 });
+
+const state = (
+    sessions: BrowserSession[] = [session()],
+    activeSessionId: string | undefined = sessions[0]?.sessionId,
+): BrowserState => ({ sessions, activeSessionId, maxSessions: 8 });
 
 beforeEach(() => {
     let frame = 0;
@@ -61,25 +70,27 @@ describe("BrowserPanel", () => {
     it("opens, navigates, controls, and hides the shared native session", async () => {
         invoke.mockImplementation(
             (command: string, args?: Record<string, unknown>) => {
-                if (command === "gui_browser_open")
-                    return Promise.resolve({ session: session() });
-                if (command === "gui_browser_state") return Promise.resolve({});
                 if (command === "gui_browser_navigate")
-                    return Promise.resolve({
-                        session: session({ url: String(args?.url) }),
-                    });
+                    return Promise.resolve(
+                        state([session({ url: String(args?.url) })]),
+                    );
+                if (command === "gui_browser_close")
+                    return Promise.resolve(state([], undefined));
                 return Promise.resolve();
             },
         );
         const [active, setActive] = createSignal(true);
         const [obscured, setObscured] = createSignal(false);
-        const onClose = vi.fn();
+        const [browserState, setBrowserState] = createSignal(state());
+        const onClosed = vi.fn();
         const result = render(() => (
             <BrowserPanel
                 native
                 active={active()}
                 obscured={obscured()}
-                onClose={onClose}
+                session={browserState().sessions[0]}
+                onState={setBrowserState}
+                onClosed={onClosed}
             />
         ));
         try {
@@ -106,6 +117,7 @@ describe("BrowserPanel", () => {
             );
             await waitFor(() =>
                 expect(invoke).toHaveBeenCalledWith("gui_browser_navigate", {
+                    sessionId: "browser-1",
                     url: "https://docs.rs/tauri",
                 }),
             );
@@ -115,9 +127,11 @@ describe("BrowserPanel", () => {
                 screen.getByRole("button", { name: "Reload page" }),
             );
             expect(invoke).toHaveBeenCalledWith("gui_browser_toolbar", {
+                sessionId: "browser-1",
                 action: "back",
             });
             expect(invoke).toHaveBeenCalledWith("gui_browser_toolbar", {
+                sessionId: "browser-1",
                 action: "reload",
             });
 
@@ -130,6 +144,12 @@ describe("BrowserPanel", () => {
                     }),
                 ),
             );
+            fireEvent.click(
+                screen.getByRole("button", { name: "Close browser session" }),
+            );
+            await waitFor(() =>
+                expect(onClosed).toHaveBeenCalledWith("browser-1"),
+            );
             setActive(false);
         } finally {
             result.unmount();
@@ -137,13 +157,14 @@ describe("BrowserPanel", () => {
     });
 
     it("explains the desktop requirement in a web preview", () => {
-        const onClose = vi.fn();
         const result = render(() => (
             <BrowserPanel
                 native={false}
                 active
                 obscured={false}
-                onClose={onClose}
+                session={session()}
+                onState={() => {}}
+                onClosed={() => {}}
             />
         ));
         try {
@@ -152,15 +173,16 @@ describe("BrowserPanel", () => {
                     "The embedded browser runs in the Ovim desktop app",
                 ),
             ).toBeTruthy();
-            fireEvent.click(
-                screen.getByRole("button", {
-                    name: "Close browser session",
-                }),
-            );
-            expect(onClose).toHaveBeenCalledOnce();
             expect(invoke).not.toHaveBeenCalled();
         } finally {
             result.unmount();
         }
+    });
+
+    it("derives stable tab titles before a document title is available", () => {
+        expect(browserTabTitle(session())).toBe("Example Domain");
+        expect(
+            browserTabTitle(session({ title: "", url: "https://docs.rs/" })),
+        ).toBe("docs.rs");
     });
 });

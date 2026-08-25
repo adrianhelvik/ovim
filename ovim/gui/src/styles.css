@@ -259,7 +259,12 @@ button:focus-visible {
     align-items: stretch;
     background: color-mix(in srgb, var(--surface-1) 64%, var(--canvas));
     border-bottom: 1px solid var(--border);
-    overflow: hidden;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar {
+    display: none;
 }
 .tab {
     min-width: 128px;
@@ -274,6 +279,13 @@ button:focus-visible {
     color: color-mix(in srgb, var(--text-primary) 66%, var(--text-secondary));
     font-size: 11.5px;
     position: relative;
+    flex: 0 1 210px;
+}
+.tab > span:not(.modified-dot):not(.browser-tab-loading) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .tab.active {
     color: var(--text-primary);
@@ -293,8 +305,46 @@ button:focus-visible {
     border-radius: 50%;
     background: var(--accent);
 }
+.browser-tab-loading {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    margin-left: auto;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: browser-loading-pulse 1.1s ease-in-out infinite;
+}
+.new-browser-tab {
+    position: sticky;
+    right: 0;
+    z-index: 1;
+    flex: 0 0 34px;
+    width: 34px;
+    border: 0;
+    border-right: 1px solid var(--border);
+    border-left: 1px solid var(--border);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--surface-1) 88%, var(--canvas));
+    font: 18px/1 var(--ui-font);
+}
+.new-browser-tab:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: var(--surface-selected);
+}
+.new-browser-tab:focus-visible {
+    z-index: 2;
+    outline: 1px solid var(--accent);
+    outline-offset: -2px;
+}
+.new-browser-tab:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
 .tabs-fill {
-    flex: 1;
+    flex: 1 0 24px;
 }
 .breadcrumbs {
     padding: 0 17px;
@@ -382,8 +432,7 @@ button:focus-visible {
     background: var(--surface-selected);
 }
 .browser-toolbar button:focus-visible,
-.browser-address:focus-within,
-.browser-open-action:focus-visible {
+.browser-address:focus-within {
     outline: 1px solid var(--accent);
     outline-offset: 1px;
 }
@@ -501,15 +550,6 @@ button:focus-visible {
 .browser-empty-state span {
     max-width: 52ch;
     color: #5a5e68;
-    font-size: 11.5px;
-}
-.browser-open-action {
-    min-height: 30px;
-    padding: 0 13px;
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-2);
-    color: var(--accent-foreground);
-    background: var(--accent);
     font-size: 11.5px;
 }
 .browser-view-active > .input-sink,
