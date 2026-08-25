@@ -168,7 +168,10 @@ mod tests {
         let request = host.recv().await.expect("browser host request");
         assert_eq!(
             request.command(),
-            &BrowserCommand::Start { incognito: true }
+            &BrowserCommand::Start {
+                incognito: true,
+                url: None,
+            }
         );
         request.respond(Ok(BrowserResponse::Session(BrowserSession {
             session_id: "browser-1".into(),

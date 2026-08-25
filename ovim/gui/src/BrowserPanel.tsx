@@ -140,6 +140,8 @@ export default function BrowserPanel(props: BrowserPanelProps) {
         if (projectedSessionId !== (next?.sessionId ?? "")) {
             projectedSessionId = next?.sessionId ?? "";
             setError("");
+            if (props.active && next && !next.url)
+                queueMicrotask(() => addressInput?.focus());
         }
         if (document.activeElement !== addressInput)
             setAddress(next?.url ?? "");
@@ -181,7 +183,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                     <button
                         type="button"
                         data-gui-native-control
-                        disabled={!session()}
+                        disabled={!session()?.url}
                         aria-label="Go back"
                         title="Go back"
                         onClick={() => void runToolbarAction("back")}
@@ -193,7 +195,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                     <button
                         type="button"
                         data-gui-native-control
-                        disabled={!session()}
+                        disabled={!session()?.url}
                         aria-label="Go forward"
                         title="Go forward"
                         onClick={() => void runToolbarAction("forward")}
@@ -203,7 +205,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                     <button
                         type="button"
                         data-gui-native-control
-                        disabled={!session()}
+                        disabled={!session()?.url}
                         aria-label="Reload page"
                         onClick={() => void runToolbarAction("reload")}
                     >
@@ -278,6 +280,16 @@ export default function BrowserPanel(props: BrowserPanelProps) {
             </div>
 
             <div ref={viewport} class="browser-viewport">
+                <Show when={props.native && session() && !session()?.url}>
+                    <div class="browser-empty-state">
+                        <Icon name="command" size={24} tone="accent" />
+                        <b>Where do you want to go?</b>
+                        <span>
+                            Enter an address above. The browser is created only
+                            when you navigate.
+                        </span>
+                    </div>
+                </Show>
                 <Show when={!props.native}>
                     <div class="browser-empty-state">
                         <Icon name="command" size={24} tone="accent" />

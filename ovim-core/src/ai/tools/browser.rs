@@ -39,7 +39,7 @@ fn browser_scope() -> RequiredScope {
 fn browser_session_def() -> ToolDefinition {
     ToolDefinition {
         name: BROWSER_SESSION_TOOL.into(),
-        description: "List, create, select, hide, or close Ovim's embedded browser tabs. Every start creates an independent ephemeral session shared by the user and agent. Use the returned session_id for navigation and inspection."
+        description: "List, create, select, hide, or close Ovim's embedded browser tabs. Every start creates an independent ephemeral session shared by the user and agent. When opening a page, pass its URL to start so the tab opens atomically at that page. Use the returned session_id for later navigation and inspection."
             .into(),
         required_scope: browser_scope(),
         side_effect: SideEffect::Navigation,
@@ -66,6 +66,13 @@ fn browser_session_def() -> ToolDefinition {
                 param_type: ParamType::Boolean,
                 required: false,
                 description: "Start with an ephemeral browser data store (default true).".into(),
+            },
+            ToolParam {
+                name: "url".into(),
+                param_type: ParamType::String,
+                required: false,
+                description: "Optional initial absolute http:// or https:// URL. Omit only to create an empty browser tab."
+                    .into(),
             },
         ],
     }

@@ -176,6 +176,47 @@ describe("BrowserPanel", () => {
         }
     });
 
+    it("presents and focuses an unloaded native browser tab", async () => {
+        invoke.mockResolvedValue(undefined);
+        const result = render(() => (
+            <BrowserPanel
+                native
+                active
+                obscured={false}
+                session={session({
+                    url: "",
+                    title: "",
+                    visible: false,
+                    documentId: 0,
+                })}
+                onState={() => {}}
+            />
+        ));
+        try {
+            expect(
+                screen.getByText(/browser is created only when you navigate/i),
+            ).toBeTruthy();
+            const address = screen.getByLabelText("Browser address");
+            await waitFor(() => expect(document.activeElement).toBe(address));
+            expect(
+                (
+                    screen.getByRole("button", {
+                        name: "Go back",
+                    }) as HTMLButtonElement
+                ).disabled,
+            ).toBe(true);
+            expect(
+                (
+                    screen.getByRole("button", {
+                        name: "Reload page",
+                    }) as HTMLButtonElement
+                ).disabled,
+            ).toBe(true);
+        } finally {
+            result.unmount();
+        }
+    });
+
     it("switches the toolbar and address between independent sessions", async () => {
         invoke.mockResolvedValue(undefined);
         const sessions = [

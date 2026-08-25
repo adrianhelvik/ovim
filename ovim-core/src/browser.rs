@@ -16,6 +16,9 @@ pub enum BrowserCommand {
     List,
     Start {
         incognito: bool,
+        /// Optional initial page. `None` creates an unloaded browser session
+        /// that can be presented before any native webview is materialized.
+        url: Option<String>,
     },
     Show {
         session_id: String,
@@ -203,14 +206,20 @@ mod tests {
         let (client, mut host) = browser_channel();
         let request = tokio::spawn(async move {
             client
-                .execute(BrowserCommand::Start { incognito: true })
+                .execute(BrowserCommand::Start {
+                    incognito: true,
+                    url: Some("https://example.com/".into()),
+                })
                 .await
         });
 
         let incoming = host.recv().await.expect("browser request");
         assert_eq!(
             incoming.command(),
-            &BrowserCommand::Start { incognito: true }
+            &BrowserCommand::Start {
+                incognito: true,
+                url: Some("https://example.com/".into()),
+            }
         );
         incoming.respond(Ok(BrowserResponse::Session(BrowserSession {
             session_id: "browser-1".into(),
@@ -231,7 +240,10 @@ mod tests {
         drop(host);
 
         let error = client
-            .execute(BrowserCommand::Start { incognito: true })
+            .execute(BrowserCommand::Start {
+                incognito: true,
+                url: None,
+            })
             .await
             .unwrap_err();
         assert_eq!(error.kind, BrowserErrorKind::Unavailable);

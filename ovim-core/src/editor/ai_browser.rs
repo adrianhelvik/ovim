@@ -25,6 +25,7 @@ impl Editor {
                         .get("incognito")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(true),
+                    url: optional_browser_url(arguments, "url")?,
                 }),
                 "show" => Ok(BrowserCommand::Show {
                     session_id: session_id(arguments)?,
@@ -40,19 +41,7 @@ impl Editor {
                 ))),
             },
             BROWSER_NAVIGATE_TOOL => {
-                let raw_url = required_string(arguments, "url")?;
-                let parsed = url::Url::parse(&raw_url)
-                    .map_err(|error| invalid(format!("invalid browser URL: {error}")))?;
-                if !matches!(parsed.scheme(), "http" | "https") {
-                    return Err(invalid(
-                        "browser navigation allows only http:// and https:// URLs",
-                    ));
-                }
-                if !parsed.username().is_empty() || parsed.password().is_some() {
-                    return Err(invalid(
-                        "browser URLs must not contain embedded credentials",
-                    ));
-                }
+                let parsed = parse_browser_url(&required_string(arguments, "url")?)?;
                 Ok(BrowserCommand::Navigate {
                     session_id: session_id(arguments)?,
                     url: parsed.into(),
@@ -115,6 +104,35 @@ impl Editor {
             _ => Err(invalid(format!("unknown browser tool: {}", call.name))),
         }
     }
+}
+
+fn optional_browser_url(
+    arguments: &serde_json::Value,
+    name: &str,
+) -> Result<Option<String>, ToolResult> {
+    let Some(value) = arguments.get(name) else {
+        return Ok(None);
+    };
+    let raw_url = value
+        .as_str()
+        .ok_or_else(|| invalid(format!("{name} must be a string")))?;
+    Ok(Some(parse_browser_url(raw_url)?.into()))
+}
+
+fn parse_browser_url(raw_url: &str) -> Result<url::Url, ToolResult> {
+    let parsed = url::Url::parse(raw_url)
+        .map_err(|error| invalid(format!("invalid browser URL: {error}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(invalid(
+            "browser navigation allows only http:// and https:// URLs",
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(invalid(
+            "browser URLs must not contain embedded credentials",
+        ));
+    }
+    Ok(parsed)
 }
 
 pub(super) fn browser_response_result(response: BrowserResponse) -> ToolResult {
@@ -274,5 +292,38 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(command, BrowserCommand::List);
+    }
+
+    #[test]
+    fn session_start_accepts_an_optional_validated_initial_url() {
+        let editor = Editor::default();
+        let command = editor
+            .prepare_browser_command(&call(
+                crate::ai::tools::browser::BROWSER_SESSION_TOOL,
+                serde_json::json!({
+                    "action": "start",
+                    "url": "https://example.com/docs"
+                }),
+            ))
+            .unwrap();
+        assert_eq!(
+            command,
+            BrowserCommand::Start {
+                incognito: true,
+                url: Some("https://example.com/docs".into()),
+            }
+        );
+
+        for url in ["file:///etc/passwd", "https://user:secret@example.com/"] {
+            assert!(
+                editor
+                    .prepare_browser_command(&call(
+                        crate::ai::tools::browser::BROWSER_SESSION_TOOL,
+                        serde_json::json!({"action": "start", "url": url}),
+                    ))
+                    .is_err(),
+                "accepted {url}"
+            );
+        }
     }
 }
