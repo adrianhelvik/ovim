@@ -89,6 +89,7 @@ describe("BrowserPanel", () => {
                 obscured={obscured()}
                 session={browserState().sessions[0]}
                 onState={setBrowserState}
+                onPageFocus={vi.fn()}
             />
         ));
         try {
@@ -162,6 +163,7 @@ describe("BrowserPanel", () => {
                 obscured={false}
                 session={session()}
                 onState={() => {}}
+                onPageFocus={vi.fn()}
             />
         ));
         try {
@@ -176,20 +178,35 @@ describe("BrowserPanel", () => {
         }
     });
 
-    it("presents and focuses an unloaded native browser tab", async () => {
-        invoke.mockResolvedValue(undefined);
+    it("focuses the materialized page after navigating an unloaded tab", async () => {
+        invoke.mockImplementation(
+            (command: string, args?: Record<string, unknown>) => {
+                if (command === "gui_browser_navigate")
+                    return Promise.resolve(
+                        state([session({ url: String(args?.url) })]),
+                    );
+                return Promise.resolve();
+            },
+        );
+        const [browserState, setBrowserState] = createSignal(
+            state([
+                session({
+                    url: "",
+                    title: "",
+                    visible: false,
+                    documentId: 0,
+                }),
+            ]),
+        );
+        const focusPage = vi.fn();
         const result = render(() => (
             <BrowserPanel
                 native
                 active
                 obscured={false}
-                session={session({
-                    url: "",
-                    title: "",
-                    visible: false,
-                    documentId: 0,
-                })}
-                onState={() => {}}
+                session={browserState().sessions[0]}
+                onState={setBrowserState}
+                onPageFocus={focusPage}
             />
         ));
         try {
@@ -212,6 +229,11 @@ describe("BrowserPanel", () => {
                     }) as HTMLButtonElement
                 ).disabled,
             ).toBe(true);
+            fireEvent.input(address, { target: { value: "docs.rs" } });
+            fireEvent.submit(address.closest("form")!);
+            await waitFor(() =>
+                expect(focusPage).toHaveBeenCalledWith("browser-1"),
+            );
         } finally {
             result.unmount();
         }
@@ -238,6 +260,7 @@ describe("BrowserPanel", () => {
                     (candidate) => candidate.sessionId === activeSessionId(),
                 )}
                 onState={() => {}}
+                onPageFocus={vi.fn()}
             />
         ));
         try {

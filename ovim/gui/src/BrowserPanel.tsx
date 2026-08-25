@@ -28,6 +28,7 @@ interface BrowserPanelProps {
     obscured: boolean;
     session?: BrowserSession;
     onState: (state: BrowserState) => void;
+    onPageFocus: (sessionId: string) => void;
 }
 
 interface BrowserBounds {
@@ -106,12 +107,12 @@ export default function BrowserPanel(props: BrowserPanelProps) {
         setAddress(url);
         setError("");
         try {
-            props.onState(
-                await invoke<BrowserState>("gui_browser_navigate", {
-                    sessionId,
-                    url,
-                }),
-            );
+            const next = await invoke<BrowserState>("gui_browser_navigate", {
+                sessionId,
+                url,
+            });
+            props.onState(next);
+            props.onPageFocus(sessionId);
         } catch (reason) {
             setError(String(reason));
         }

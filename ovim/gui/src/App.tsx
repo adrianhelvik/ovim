@@ -3402,6 +3402,7 @@ function App() {
                                 view().lspManager,
                             )}
                             onState={acceptBrowserState}
+                            onPageFocus={focusBrowser}
                         />
                         <SurfaceCommandLine
                             active={Boolean(browserCommandRequest())}

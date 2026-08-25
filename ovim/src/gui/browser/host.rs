@@ -299,7 +299,7 @@ impl BrowserHost {
         let expected_command_token = command_token.clone();
         let builder = WebviewBuilder::new(session_id, WebviewUrl::External(url))
             .incognito(incognito)
-            .initialization_script(command_script)
+            .initialization_script_for_all_frames(command_script)
             .on_navigation(allowed_browser_url)
             .on_new_window(move |url, _| {
                 if is_browser_command_url(&url, &expected_command_token) {
