@@ -1871,6 +1871,7 @@ function App() {
             classList={{
                 focused: props.pane.focused,
                 single: view().panes.length === 1,
+                "insert-mode": view().mode === "INSERT",
             }}
             onMouseDown={() => {
                 inputSink.focus({ preventScroll: true });

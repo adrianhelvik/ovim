@@ -170,6 +170,23 @@ describe("Ovim Solid workbench", () => {
         expect(focus.mock.instances).toContain(tabs[1]);
     });
 
+    it("switches the editor caret shape with insert mode without replacing its text", () => {
+        const previousMode = mockSnapshot.mode;
+        mockSnapshot.mode = "INSERT";
+
+        try {
+            const result = render(() => <App />);
+            const cursor = result.container.querySelector(
+                ".editor-pane.insert-mode .code-segment.cursor",
+            );
+
+            expect(cursor).toBeTruthy();
+            expect(cursor?.textContent).toBe("            title");
+        } finally {
+            mockSnapshot.mode = previousMode;
+        }
+    });
+
     it("opens an actionable workspace-scoped Gdiff collaboration tab", async () => {
         render(() => <App />);
 

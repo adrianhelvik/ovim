@@ -656,11 +656,23 @@ button:focus-visible {
     border-radius: var(--radius-1);
 }
 .code-segment.cursor {
+    position: relative;
+}
+.editor-pane:not(.insert-mode) .code-segment.cursor {
     color: var(--accent-foreground) !important;
     background: var(--accent);
     box-shadow:
         0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
         0 0 8px color-mix(in srgb, var(--accent) 18%, transparent);
+    animation: cursor-blink 1.15s steps(1) infinite;
+}
+.editor-pane.insert-mode .code-segment.cursor::after {
+    content: "";
+    position: absolute;
+    inset: 1px auto 1px 0;
+    width: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 25%, transparent);
     animation: cursor-blink 1.15s steps(1) infinite;
 }
 @keyframes cursor-blink {
@@ -2883,6 +2895,7 @@ kbd {
         animation-iteration-count: 1 !important;
     }
     .code-segment.cursor,
+    .code-segment.cursor::after,
     .prompt i,
     .walkthrough-spinner,
     .thinking-spinner {
