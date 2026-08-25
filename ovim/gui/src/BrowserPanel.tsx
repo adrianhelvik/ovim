@@ -2,6 +2,7 @@ import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "./Icon";
 import { normalizeBrowserAddress } from "./browserCommands";
+import type { BrowserToolbarAction } from "./browserWorkbench";
 
 export interface BrowserSession {
     sessionId: string;
@@ -27,8 +28,12 @@ interface BrowserPanelProps {
     active: boolean;
     obscured: boolean;
     session?: BrowserSession;
-    onState: (state: BrowserState) => void;
-    onPageFocus: (sessionId: string) => void;
+    onNavigate: (sessionId: string, url: string) => Promise<void>;
+    onToolbar: (
+        sessionId: string,
+        action: BrowserToolbarAction,
+    ) => Promise<void>;
+    onClose: (sessionId: string) => Promise<void>;
 }
 
 interface BrowserBounds {
@@ -94,7 +99,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
         if (!sessionId) return;
         setError("");
         try {
-            await invoke("gui_browser_toolbar", { sessionId, action });
+            await props.onToolbar(sessionId, action);
         } catch (reason) {
             setError(String(reason));
         }
@@ -107,12 +112,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
         setAddress(url);
         setError("");
         try {
-            const next = await invoke<BrowserState>("gui_browser_navigate", {
-                sessionId,
-                url,
-            });
-            props.onState(next);
-            props.onPageFocus(sessionId);
+            await props.onNavigate(sessionId, url);
         } catch (reason) {
             setError(String(reason));
         }
@@ -123,9 +123,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
         if (!props.native || !sessionId) return;
         setError("");
         try {
-            props.onState(
-                await invoke<BrowserState>("gui_browser_close", { sessionId }),
-            );
+            await props.onClose(sessionId);
         } catch (reason) {
             setError(String(reason));
         }

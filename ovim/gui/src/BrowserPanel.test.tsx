@@ -10,10 +10,8 @@ import BrowserPanel, {
 } from "./BrowserPanel";
 
 const invoke = vi.hoisted(() => vi.fn());
-const listen = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
 class ResizeObserverMock {
     observe() {}
@@ -55,8 +53,6 @@ beforeEach(() => {
         height: 600,
         toJSON: () => ({}),
     });
-    listen.mockReset();
-    listen.mockResolvedValue(() => {});
     invoke.mockReset();
 });
 
@@ -68,28 +64,26 @@ afterEach(() => {
 
 describe("BrowserPanel", () => {
     it("opens, navigates, controls, and hides the shared native session", async () => {
-        invoke.mockImplementation(
-            (command: string, args?: Record<string, unknown>) => {
-                if (command === "gui_browser_navigate")
-                    return Promise.resolve(
-                        state([session({ url: String(args?.url) })]),
-                    );
-                if (command === "gui_browser_close")
-                    return Promise.resolve(state([], undefined));
-                return Promise.resolve();
-            },
-        );
+        invoke.mockResolvedValue(undefined);
         const [active, setActive] = createSignal(true);
         const [obscured, setObscured] = createSignal(false);
         const [browserState, setBrowserState] = createSignal(state());
+        const navigate = vi.fn(async (_sessionId: string, url: string) => {
+            setBrowserState(state([session({ url })]));
+        });
+        const toolbar = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn(async () => {
+            setBrowserState(state([], undefined));
+        });
         const result = render(() => (
             <BrowserPanel
                 native
                 active={active()}
                 obscured={obscured()}
                 session={browserState().sessions[0]}
-                onState={setBrowserState}
-                onPageFocus={vi.fn()}
+                onNavigate={navigate}
+                onToolbar={toolbar}
+                onClose={close}
             />
         ));
         try {
@@ -115,24 +109,18 @@ describe("BrowserPanel", () => {
                 screen.getByLabelText("Browser address").closest("form")!,
             );
             await waitFor(() =>
-                expect(invoke).toHaveBeenCalledWith("gui_browser_navigate", {
-                    sessionId: "browser-1",
-                    url: "https://docs.rs/tauri",
-                }),
+                expect(navigate).toHaveBeenCalledWith(
+                    "browser-1",
+                    "https://docs.rs/tauri",
+                ),
             );
 
             fireEvent.click(screen.getByRole("button", { name: "Go back" }));
             fireEvent.click(
                 screen.getByRole("button", { name: "Reload page" }),
             );
-            expect(invoke).toHaveBeenCalledWith("gui_browser_toolbar", {
-                sessionId: "browser-1",
-                action: "back",
-            });
-            expect(invoke).toHaveBeenCalledWith("gui_browser_toolbar", {
-                sessionId: "browser-1",
-                action: "reload",
-            });
+            expect(toolbar).toHaveBeenCalledWith("browser-1", "back");
+            expect(toolbar).toHaveBeenCalledWith("browser-1", "reload");
 
             setObscured(true);
             await waitFor(() =>
@@ -162,8 +150,9 @@ describe("BrowserPanel", () => {
                 active
                 obscured={false}
                 session={session()}
-                onState={() => {}}
-                onPageFocus={vi.fn()}
+                onNavigate={vi.fn().mockResolvedValue(undefined)}
+                onToolbar={vi.fn().mockResolvedValue(undefined)}
+                onClose={vi.fn().mockResolvedValue(undefined)}
             />
         ));
         try {
@@ -178,17 +167,9 @@ describe("BrowserPanel", () => {
         }
     });
 
-    it("focuses the materialized page after navigating an unloaded tab", async () => {
-        invoke.mockImplementation(
-            (command: string, args?: Record<string, unknown>) => {
-                if (command === "gui_browser_navigate")
-                    return Promise.resolve(
-                        state([session({ url: String(args?.url) })]),
-                    );
-                return Promise.resolve();
-            },
-        );
-        const [browserState, setBrowserState] = createSignal(
+    it("delegates navigation from an unloaded tab", async () => {
+        invoke.mockResolvedValue(undefined);
+        const [browserState] = createSignal(
             state([
                 session({
                     url: "",
@@ -198,15 +179,16 @@ describe("BrowserPanel", () => {
                 }),
             ]),
         );
-        const focusPage = vi.fn();
+        const navigate = vi.fn().mockResolvedValue(undefined);
         const result = render(() => (
             <BrowserPanel
                 native
                 active
                 obscured={false}
                 session={browserState().sessions[0]}
-                onState={setBrowserState}
-                onPageFocus={focusPage}
+                onNavigate={navigate}
+                onToolbar={vi.fn().mockResolvedValue(undefined)}
+                onClose={vi.fn().mockResolvedValue(undefined)}
             />
         ));
         try {
@@ -232,7 +214,10 @@ describe("BrowserPanel", () => {
             fireEvent.input(address, { target: { value: "docs.rs" } });
             fireEvent.submit(address.closest("form")!);
             await waitFor(() =>
-                expect(focusPage).toHaveBeenCalledWith("browser-1"),
+                expect(navigate).toHaveBeenCalledWith(
+                    "browser-1",
+                    "https://docs.rs",
+                ),
             );
         } finally {
             result.unmount();
@@ -251,6 +236,7 @@ describe("BrowserPanel", () => {
             }),
         ];
         const [activeSessionId, setActiveSessionId] = createSignal("browser-1");
+        const toolbar = vi.fn().mockResolvedValue(undefined);
         const result = render(() => (
             <BrowserPanel
                 native
@@ -259,8 +245,9 @@ describe("BrowserPanel", () => {
                 session={sessions.find(
                     (candidate) => candidate.sessionId === activeSessionId(),
                 )}
-                onState={() => {}}
-                onPageFocus={vi.fn()}
+                onNavigate={vi.fn().mockResolvedValue(undefined)}
+                onToolbar={toolbar}
+                onClose={vi.fn().mockResolvedValue(undefined)}
             />
         ));
         try {
@@ -282,10 +269,7 @@ describe("BrowserPanel", () => {
             fireEvent.click(
                 screen.getByRole("button", { name: "Reload page" }),
             );
-            expect(invoke).toHaveBeenCalledWith("gui_browser_toolbar", {
-                sessionId: "browser-2",
-                action: "reload",
-            });
+            expect(toolbar).toHaveBeenCalledWith("browser-2", "reload");
         } finally {
             result.unmount();
         }

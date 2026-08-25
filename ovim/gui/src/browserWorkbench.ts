@@ -4,6 +4,8 @@ import type { BrowserSession, BrowserState } from "./BrowserPanel";
 import type { GuiSnapshot } from "./types";
 import { projectBrowserState, type WorkbenchSelection } from "./workbench";
 
+export type BrowserToolbarAction = "back" | "forward" | "reload" | "stop";
+
 interface BrowserWorkbenchOptions {
     native: boolean;
     sourceTabs: Accessor<GuiSnapshot["tabs"]>;
@@ -21,6 +23,7 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
     });
     const [opening, setOpening] = createSignal(false);
     let latestPresentationRevision = 0;
+    const closing = new Set<string>();
 
     const activeSessionId = () => {
         const selection = options.selection();
@@ -32,18 +35,25 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
             (session) => session.sessionId === sessionId,
         );
     });
-    const focus = (sessionId = activeSessionId()) => {
+    const hasSession = (sessionId: string) =>
+        state().sessions.some((session) => session.sessionId === sessionId);
+    const requireSession = (sessionId: string) => {
+        if (!options.native || !hasSession(sessionId))
+            throw new Error("Browser session is no longer available");
+    };
+    const focus = async (sessionId = activeSessionId()) => {
         if (options.native && sessionId)
-            void invoke("gui_browser_toolbar", {
+            await invoke("gui_browser_toolbar", {
                 sessionId,
                 action: "focus",
-            }).catch(() => {});
+            });
     };
     const present = (sessionId: string) => {
         options.setSelection({ kind: "browser", sessionId });
         requestAnimationFrame(() =>
             requestAnimationFrame(() => {
-                if (activeSessionId() === sessionId) focus(sessionId);
+                if (activeSessionId() === sessionId)
+                    void focus(sessionId).catch(() => {});
             }),
         );
     };
@@ -92,11 +102,38 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
             setOpening(false);
         }
     };
-    const activate = (sessionId: string) => {
-        if (
-            !state().sessions.some((session) => session.sessionId === sessionId)
-        )
+    const close = async (sessionId: string) => {
+        if (!options.native || closing.has(sessionId) || !hasSession(sessionId))
             return;
+        closing.add(sessionId);
+        try {
+            accept(
+                await invoke<BrowserState>("gui_browser_close", { sessionId }),
+            );
+        } finally {
+            closing.delete(sessionId);
+        }
+    };
+    const navigate = async (sessionId: string, url: string) => {
+        requireSession(sessionId);
+        accept(
+            await invoke<BrowserState>("gui_browser_navigate", {
+                sessionId,
+                url,
+            }),
+        );
+        await focus(sessionId);
+    };
+    const toolbar = async (
+        sessionId: string,
+        action: BrowserToolbarAction,
+        count = 1,
+    ) => {
+        requireSession(sessionId);
+        await invoke("gui_browser_toolbar", { sessionId, action, count });
+    };
+    const activate = (sessionId: string) => {
+        if (!hasSession(sessionId)) return;
         if (!options.native) {
             present(sessionId);
             return;
@@ -116,6 +153,9 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
         activeSession,
         accept,
         open,
+        close,
+        navigate,
+        toolbar,
         activate,
         present,
         focus,

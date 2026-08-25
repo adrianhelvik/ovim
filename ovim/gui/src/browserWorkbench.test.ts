@@ -109,4 +109,103 @@ describe("browser workbench controller", () => {
             }),
         );
     });
+
+    it("owns navigation, toolbar, focus, and idempotent close mutations", async () => {
+        const original = {
+            sessionId: "browser-1",
+            url: "",
+            title: "",
+            visible: false,
+            loading: false,
+            documentId: 0,
+        };
+        const navigated = {
+            ...original,
+            url: "https://example.com/",
+            title: "Example Domain",
+            visible: true,
+            documentId: 1,
+        };
+        let resolveClose!: (state: {
+            sessions: (typeof original)[];
+            maxSessions: number;
+        }) => void;
+        const closeReply = new Promise<{
+            sessions: (typeof original)[];
+            maxSessions: number;
+        }>((resolve) => {
+            resolveClose = resolve;
+        });
+        invoke.mockImplementation((command: string) => {
+            if (command === "gui_browser_navigate")
+                return Promise.resolve({
+                    sessions: [navigated],
+                    activeSessionId: navigated.sessionId,
+                    maxSessions: 8,
+                });
+            if (command === "gui_browser_close") return closeReply;
+            return Promise.resolve();
+        });
+
+        await new Promise<void>((resolve) =>
+            createRoot((dispose) => {
+                const [selection, setSelection] =
+                    createSignal<WorkbenchSelection>({
+                        kind: "browser",
+                        sessionId: original.sessionId,
+                    });
+                const controller = createBrowserWorkbench({
+                    native: true,
+                    sourceTabs: () => sourceTabs,
+                    includeVector: () => false,
+                    selection,
+                    setSelection,
+                    setError: vi.fn(),
+                });
+                controller.accept({
+                    sessions: [original],
+                    activeSessionId: original.sessionId,
+                    maxSessions: 8,
+                });
+
+                void (async () => {
+                    await controller.navigate(
+                        original.sessionId,
+                        navigated.url,
+                    );
+                    expect(invoke).toHaveBeenCalledWith(
+                        "gui_browser_navigate",
+                        {
+                            sessionId: original.sessionId,
+                            url: navigated.url,
+                        },
+                    );
+                    expect(invoke).toHaveBeenCalledWith("gui_browser_toolbar", {
+                        sessionId: original.sessionId,
+                        action: "focus",
+                    });
+
+                    await controller.toolbar(original.sessionId, "back", 2);
+                    expect(invoke).toHaveBeenCalledWith("gui_browser_toolbar", {
+                        sessionId: original.sessionId,
+                        action: "back",
+                        count: 2,
+                    });
+
+                    const firstClose = controller.close(original.sessionId);
+                    const duplicateClose = controller.close(original.sessionId);
+                    expect(
+                        invoke.mock.calls.filter(
+                            ([command]) => command === "gui_browser_close",
+                        ),
+                    ).toHaveLength(1);
+                    resolveClose({ sessions: [], maxSessions: 8 });
+                    await Promise.all([firstClose, duplicateClose]);
+
+                    dispose();
+                    resolve();
+                })();
+            }),
+        );
+    });
 });

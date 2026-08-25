@@ -1453,6 +1453,9 @@ function App() {
     const presentBrowserSession = browserWorkbench.present;
     const acceptBrowserState = browserWorkbench.accept;
     const openBrowserSession = browserWorkbench.open;
+    const closeBrowserSession = browserWorkbench.close;
+    const navigateBrowserSession = browserWorkbench.navigate;
+    const runBrowserToolbar = browserWorkbench.toolbar;
     const activateBrowserSession = browserWorkbench.activate;
     const openBrowserCommand = (sessionId = activeBrowserId()) => {
         if (
@@ -1473,14 +1476,17 @@ function App() {
         const sessionId = browserCommandRefocusSession;
         browserCommandRefocusSession = undefined;
         setBrowserCommandRequest(undefined);
-        if (sessionId) requestAnimationFrame(() => focusBrowser(sessionId));
+        if (sessionId)
+            requestAnimationFrame(() => {
+                void focusBrowser(sessionId).catch(() => {});
+            });
         else if (workbenchView() === "source")
             requestAnimationFrame(focusEditorInput);
     };
     const focusPrimaryInput = () => {
         if (browserCommandRequest()) return;
         if (workbenchView() === "browser") {
-            focusBrowser();
+            void focusBrowser().catch(() => {});
             return;
         }
         if (
@@ -1694,36 +1700,28 @@ function App() {
         try {
             switch (parsed.command.kind) {
                 case "close":
-                    {
-                        const next = await invoke<BrowserState>(
-                            "gui_browser_close",
-                            { sessionId: request.sessionId },
-                        );
-                        browserCommandRefocusSession = undefined;
-                        acceptBrowserState(next);
-                    }
+                    browserCommandRefocusSession = undefined;
+                    await closeBrowserSession(request.sessionId);
                     break;
                 case "navigate":
-                    acceptBrowserState(
-                        await invoke<BrowserState>("gui_browser_navigate", {
-                            sessionId: request.sessionId,
-                            url: parsed.command.url,
-                        }),
+                    await navigateBrowserSession(
+                        request.sessionId,
+                        parsed.command.url,
                     );
                     break;
                 case "history":
-                    await invoke("gui_browser_toolbar", {
-                        sessionId: request.sessionId,
-                        action: parsed.command.direction,
-                        count: parsed.command.count,
-                    });
+                    await runBrowserToolbar(
+                        request.sessionId,
+                        parsed.command.direction,
+                        parsed.command.count,
+                    );
                     break;
                 case "reload":
                 case "stop":
-                    await invoke("gui_browser_toolbar", {
-                        sessionId: request.sessionId,
-                        action: parsed.command.kind,
-                    });
+                    await runBrowserToolbar(
+                        request.sessionId,
+                        parsed.command.kind,
+                    );
                     break;
                 case "select_relative_tab": {
                     const tabs = workbenchTabs();
@@ -3401,8 +3399,9 @@ function App() {
                                 view().picker ||
                                 view().lspManager,
                             )}
-                            onState={acceptBrowserState}
-                            onPageFocus={focusBrowser}
+                            onNavigate={navigateBrowserSession}
+                            onToolbar={runBrowserToolbar}
+                            onClose={closeBrowserSession}
                         />
                         <SurfaceCommandLine
                             active={Boolean(browserCommandRequest())}
