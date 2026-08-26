@@ -1,145 +1,34 @@
+//! Browser lifecycle coordinator and core request bridge.
+
 use ovim_core::browser::{
-    BrowserAction, BrowserCommand, BrowserError, BrowserErrorKind, BrowserRequest,
-    BrowserRequestReceiver, BrowserResponse, BrowserResult, BrowserSession, BrowserSnapshot,
+    BrowserCommand, BrowserError, BrowserErrorKind, BrowserRequest, BrowserRequestReceiver,
+    BrowserResponse, BrowserResult, BrowserSession,
 };
-use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
-use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
-use tauri::{Emitter, EventTarget, LogicalPosition, LogicalSize, Url, Webview, WebviewUrl, Window};
+use tauri::Window;
+
+use super::state::{
+    browser_error, clear_presentation_request, parse_browser_url, record_presentation_request,
+    session_mut, session_ref, state_from_inner, BrowserHostInner, GuiBrowserKeyMode,
+    GuiBrowserState, HostedBrowser, MAX_BROWSER_SESSIONS,
+};
 
 #[cfg(test)]
-use super::bridge::KEY_BRIDGE_SCRIPT;
 use super::bridge::{
     browser_key_request, key_bridge_control_script, key_bridge_find_script, key_bridge_script,
-    GuiBrowserKeyEvent, GuiBrowserKeyIntent,
+    GuiBrowserKeyIntent, KEY_BRIDGE_SCRIPT,
 };
-use super::document::{
-    eval_json, ActionPayload, SnapshotPayload, ACTION_FUNCTION, SNAPSHOT_SCRIPT,
-};
-
-const MAX_BROWSER_SESSIONS: usize = 8;
-
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiBrowserBounds {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-    pub visible: bool,
-}
-
-impl GuiBrowserBounds {
-    fn validate(self) -> Result<Self, String> {
-        if !self.x.is_finite()
-            || !self.y.is_finite()
-            || !self.width.is_finite()
-            || !self.height.is_finite()
-            || self.width < 0.0
-            || self.height < 0.0
-        {
-            return Err("Browser bounds must be finite and non-negative".into());
-        }
-        Ok(self)
-    }
-
-    fn has_area(self) -> bool {
-        self.width >= 1.0 && self.height >= 1.0
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiBrowserState {
-    pub sessions: Vec<GuiBrowserSession>,
-    pub active_session_id: Option<String>,
-    pub max_sessions: usize,
-    pub presentation_request: Option<GuiBrowserPresentationRequest>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiBrowserSession {
-    #[serde(flatten)]
-    pub session: BrowserSession,
-    pub vim_keys_enabled: bool,
-    pub key_mode: GuiBrowserKeyMode,
-}
-
-impl std::ops::Deref for GuiBrowserSession {
-    type Target = BrowserSession;
-
-    fn deref(&self) -> &Self::Target {
-        &self.session
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GuiBrowserKeyMode {
-    Normal,
-    Insert,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiBrowserPresentationRequest {
-    pub revision: u64,
-    pub session_id: String,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GuiBrowserToolbarAction {
-    Back,
-    Forward,
-    Reload,
-    Stop,
-    Focus,
-    Find,
-}
-
-struct HostedBrowser {
-    webview: Option<Webview>,
-    materializing: bool,
-    command_token: Option<String>,
-    vim_keys_enabled: bool,
-    key_mode: GuiBrowserKeyMode,
-    session: BrowserSession,
-    active_snapshot: Option<(u64, u64)>,
-    next_snapshot_id: u64,
-}
-
-struct BrowserHostInner {
-    parent: Option<Window>,
-    state_updates: Option<Channel<GuiBrowserState>>,
-    browsers: Vec<HostedBrowser>,
-    active_session_id: Option<String>,
-    bounds: GuiBrowserBounds,
-    next_session_id: u64,
-    next_presentation_revision: u64,
-    presentation_request: Option<GuiBrowserPresentationRequest>,
-}
-
-impl Default for BrowserHostInner {
-    fn default() -> Self {
-        Self {
-            parent: None,
-            state_updates: None,
-            browsers: Vec::new(),
-            active_session_id: None,
-            bounds: GuiBrowserBounds::default(),
-            next_session_id: 1,
-            next_presentation_revision: 1,
-            presentation_request: None,
-        }
-    }
-}
+#[cfg(test)]
+use super::document::{ACTION_FUNCTION, SNAPSHOT_SCRIPT};
+#[cfg(test)]
+use super::state::{allowed_browser_url, GuiBrowserBounds, GuiBrowserPresentationRequest};
+#[cfg(test)]
+use tauri::Url;
 
 #[derive(Clone)]
 pub struct BrowserHost {
-    inner: Arc<Mutex<BrowserHostInner>>,
+    pub(super) inner: Arc<Mutex<BrowserHostInner>>,
     requests: Arc<Mutex<Option<BrowserRequestReceiver>>>,
 }
 
@@ -286,114 +175,6 @@ impl BrowserHost {
         ))
     }
 
-    fn materialize(&self, session_id: &str, url: Url) -> Result<(), BrowserError> {
-        let (parent, vim_keys_enabled) = {
-            let mut inner = self.lock()?;
-            let parent = inner.parent.clone().ok_or_else(|| {
-                browser_error(
-                    BrowserErrorKind::Unavailable,
-                    "Browser host is not attached",
-                )
-            })?;
-            let browser = session_mut(&mut inner, session_id)?;
-            if browser.webview.is_some() {
-                return Err(browser_error(
-                    BrowserErrorKind::InvalidRequest,
-                    "Browser session already has a loaded page",
-                ));
-            }
-            if browser.materializing {
-                return Err(browser_error(
-                    BrowserErrorKind::Unavailable,
-                    "Browser session is already opening a page",
-                ));
-            }
-            browser.materializing = true;
-            browser.session.document_id = browser.session.document_id.saturating_add(1);
-            browser.session.url = url.to_string();
-            browser.session.loading = true;
-            browser.active_snapshot = None;
-            (parent, browser.vim_keys_enabled)
-        };
-
-        let weak = Arc::downgrade(&self.inner);
-        let key_weak = weak.clone();
-        let load_key_weak = weak.clone();
-        let title_weak = weak.clone();
-        let load_session_id = session_id.to_string();
-        let title_session_id = session_id.to_string();
-        let command_parent = parent.clone();
-        let command_session_id = session_id.to_string();
-        let command_token = format!("{:032x}", rand::random::<u128>());
-        let state_token = format!("{:032x}", rand::random::<u128>());
-        let command_script = key_bridge_script(&command_token, &state_token, vim_keys_enabled);
-        let expected_command_token = command_token.clone();
-        let builder = WebviewBuilder::new(session_id, WebviewUrl::External(url))
-            .incognito(true)
-            .initialization_script_for_all_frames(command_script)
-            .on_navigation(allowed_browser_url)
-            .on_new_window(move |url, _| {
-                if let Some(request) = browser_key_request(&url, &expected_command_token) {
-                    match request.intent {
-                        GuiBrowserKeyIntent::ModeInsert => update_key_mode(
-                            &key_weak,
-                            &command_session_id,
-                            GuiBrowserKeyMode::Insert,
-                        ),
-                        GuiBrowserKeyIntent::ModeNormal => update_key_mode(
-                            &key_weak,
-                            &command_session_id,
-                            GuiBrowserKeyMode::Normal,
-                        ),
-                        _ => {
-                            let _ = command_parent.emit_to(
-                                EventTarget::webview("main"),
-                                "ovim://browser-key",
-                                GuiBrowserKeyEvent {
-                                    session_id: command_session_id.clone(),
-                                    intent: request.intent,
-                                    count: request.count,
-                                    url: request.url,
-                                },
-                            );
-                        }
-                    }
-                }
-                NewWindowResponse::Deny
-            })
-            .on_download(|_, _| false)
-            .on_page_load(move |webview, payload| {
-                update_page_load(&weak, &load_session_id, payload.url(), payload.event());
-                sync_key_bridge_state(&load_key_weak, &load_session_id, &webview);
-            })
-            .on_document_title_changed(move |_, title| {
-                update_title(&title_weak, &title_session_id, title);
-            });
-        let webview = match parent.add_child(
-            builder,
-            LogicalPosition::new(0.0, 0.0),
-            LogicalSize::new(1.0, 1.0),
-        ) {
-            Ok(webview) => webview,
-            Err(error) => {
-                self.reset_failed_materialization(session_id);
-                return Err(browser_error(
-                    BrowserErrorKind::Unavailable,
-                    format!("Could not create embedded browser: {error}"),
-                ));
-            }
-        };
-        let _ = webview.hide();
-        {
-            let mut inner = self.lock()?;
-            let browser = session_mut(&mut inner, session_id)?;
-            browser.webview = Some(webview);
-            browser.command_token = Some(command_token);
-            browser.materializing = false;
-        }
-        Ok(())
-    }
-
     fn show(&self, session_id: &str, emit_show: bool) -> BrowserResult {
         {
             let mut inner = self.lock()?;
@@ -498,185 +279,6 @@ impl BrowserHost {
         Ok(BrowserResponse::Session(session))
     }
 
-    async fn snapshot(&self, session_id: &str) -> BrowserResult {
-        let (webview, document_id, snapshot_id) = {
-            let mut inner = self.lock()?;
-            let browser = session_mut(&mut inner, session_id)?;
-            let snapshot_id = browser.next_snapshot_id;
-            browser.next_snapshot_id = browser.next_snapshot_id.saturating_add(1);
-            let webview = browser.webview.clone().ok_or_else(|| {
-                browser_error(
-                    BrowserErrorKind::InvalidRequest,
-                    "Browser session has no loaded page to inspect",
-                )
-            })?;
-            (webview, browser.session.document_id, snapshot_id)
-        };
-        let value = eval_json(&webview, SNAPSHOT_SCRIPT).await?;
-        let payload: SnapshotPayload = serde_json::from_str(&value).map_err(|error| {
-            browser_error(
-                BrowserErrorKind::EvaluationFailed,
-                format!("Could not decode browser snapshot: {error}"),
-            )
-        })?;
-        let session = {
-            let mut inner = self.lock()?;
-            let browser = session_mut(&mut inner, session_id)?;
-            if browser.session.document_id != document_id {
-                return Err(browser_error(
-                    BrowserErrorKind::StaleSnapshot,
-                    "The page navigated while the snapshot was being captured",
-                ));
-            }
-            browser.active_snapshot = Some((document_id, snapshot_id));
-            browser.session.clone()
-        };
-        Ok(BrowserResponse::Snapshot(BrowserSnapshot {
-            session,
-            snapshot_id,
-            text: payload.text,
-            elements: payload.elements,
-            viewport: payload.viewport,
-            truncated: payload.truncated,
-        }))
-    }
-
-    async fn act(
-        &self,
-        session_id: &str,
-        document_id: u64,
-        snapshot_id: u64,
-        action: BrowserAction,
-    ) -> BrowserResult {
-        let webview = {
-            let inner = self.lock()?;
-            let browser = session_ref(&inner, session_id)?;
-            if browser.active_snapshot != Some((document_id, snapshot_id)) {
-                return Err(browser_error(
-                    BrowserErrorKind::StaleSnapshot,
-                    "Browser action references a stale document or snapshot",
-                ));
-            }
-            browser.webview.clone().ok_or_else(|| {
-                browser_error(
-                    BrowserErrorKind::InvalidRequest,
-                    "Browser session has no loaded page to control",
-                )
-            })?
-        };
-        let action_json = serde_json::to_string(&action).map_err(|error| {
-            browser_error(
-                BrowserErrorKind::InvalidRequest,
-                format!("Could not encode browser action: {error}"),
-            )
-        })?;
-        let script = format!("({ACTION_FUNCTION})({action_json})");
-        let value = eval_json(&webview, &script).await?;
-        let payload: ActionPayload = serde_json::from_str(&value).map_err(|error| {
-            browser_error(
-                BrowserErrorKind::EvaluationFailed,
-                format!("Could not decode browser action result: {error}"),
-            )
-        })?;
-        if !payload.ok {
-            return Err(browser_error(
-                BrowserErrorKind::InvalidRequest,
-                payload
-                    .error
-                    .unwrap_or_else(|| "Browser action was rejected".into()),
-            ));
-        }
-        let session = {
-            let mut inner = self.lock()?;
-            let browser = session_mut(&mut inner, session_id)?;
-            if browser.session.document_id != document_id {
-                return Err(browser_error(
-                    BrowserErrorKind::StaleSnapshot,
-                    "The page navigated while the browser action was running",
-                ));
-            }
-            browser.active_snapshot = None;
-            browser.session.url = payload.url;
-            browser.session.title = payload.title;
-            browser.session.clone()
-        };
-        self.publish_state();
-        Ok(BrowserResponse::Session(session))
-    }
-
-    pub fn set_bounds(&self, bounds: GuiBrowserBounds) -> Result<(), String> {
-        let bounds = bounds.validate()?;
-        let visibility_before = {
-            let inner = self
-                .inner
-                .lock()
-                .map_err(|_| "Browser host lock failed".to_string())?;
-            inner
-                .browsers
-                .iter()
-                .map(|browser| browser.session.visible)
-                .collect::<Vec<_>>()
-        };
-        {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|_| "Browser host lock failed".to_string())?;
-            inner.bounds = bounds;
-        }
-        self.sync_bounds()?;
-        let visibility_changed = self
-            .inner
-            .lock()
-            .map(|inner| {
-                inner
-                    .browsers
-                    .iter()
-                    .map(|browser| browser.session.visible)
-                    .ne(visibility_before)
-            })
-            .unwrap_or(false);
-        if visibility_changed {
-            self.publish_state();
-        }
-        Ok(())
-    }
-
-    pub fn toolbar_action(
-        &self,
-        session_id: &str,
-        action: GuiBrowserToolbarAction,
-        count: u32,
-    ) -> Result<(), String> {
-        let (webview, command_token) = {
-            let inner = self
-                .inner
-                .lock()
-                .map_err(|_| "Browser host lock failed".to_string())?;
-            let browser = inner
-                .browsers
-                .iter()
-                .find(|browser| browser.session.session_id == session_id)
-                .ok_or_else(|| format!("Browser session not found: {session_id}"))?;
-            (browser.webview.clone(), browser.command_token.clone())
-        };
-        let webview = webview.ok_or_else(|| "Browser session has no loaded page".to_string())?;
-        let count = count.clamp(1, 100);
-        match action {
-            GuiBrowserToolbarAction::Back => webview.eval(format!("history.go(-{count})")),
-            GuiBrowserToolbarAction::Forward => webview.eval(format!("history.go({count})")),
-            GuiBrowserToolbarAction::Reload => webview.reload(),
-            GuiBrowserToolbarAction::Stop => webview.eval("window.stop()"),
-            GuiBrowserToolbarAction::Focus => webview.set_focus(),
-            GuiBrowserToolbarAction::Find => {
-                let token =
-                    command_token.ok_or_else(|| "Browser key bridge is unavailable".to_string())?;
-                webview.eval(key_bridge_find_script(&token))
-            }
-        }
-        .map_err(|error| format!("Browser toolbar action failed: {error}"))
-    }
-
     pub fn activate_for_user(&self, session_id: &str) -> Result<GuiBrowserState, String> {
         self.show(session_id, false)
             .map_err(|error| error.message)?;
@@ -716,81 +318,6 @@ impl BrowserHost {
         Ok(self.state())
     }
 
-    pub fn set_vim_keys_enabled(
-        &self,
-        session_id: &str,
-        enabled: bool,
-    ) -> Result<GuiBrowserState, String> {
-        let control = {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|_| "Browser host lock failed".to_string())?;
-            let browser = inner
-                .browsers
-                .iter_mut()
-                .find(|browser| browser.session.session_id == session_id)
-                .ok_or_else(|| format!("Browser session not found: {session_id}"))?;
-            browser.vim_keys_enabled = enabled;
-            browser.key_mode = GuiBrowserKeyMode::Normal;
-            browser
-                .webview
-                .clone()
-                .zip(browser.command_token.as_deref().map(str::to_owned))
-        };
-        if let Some((webview, token)) = control {
-            let _ = webview.eval(key_bridge_control_script(&token, enabled));
-        }
-        self.publish_state();
-        Ok(self.state())
-    }
-
-    fn sync_bounds(&self) -> Result<(), String> {
-        let operations = {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|_| "Browser host lock failed".to_string())?;
-            let bounds = inner.bounds;
-            let active_session_id = inner.active_session_id.clone();
-            inner
-                .browsers
-                .iter_mut()
-                .filter_map(|browser| {
-                    let visible = active_session_id.as_deref()
-                        == Some(browser.session.session_id.as_str())
-                        && bounds.visible
-                        && bounds.has_area()
-                        && browser.webview.is_some();
-                    browser.session.visible = visible;
-                    browser
-                        .webview
-                        .clone()
-                        .map(|webview| (webview, visible, bounds))
-                })
-                .collect::<Vec<_>>()
-        };
-
-        let mut first_error = None;
-        for (webview, visible, bounds) in operations {
-            let result = if visible {
-                webview
-                    .set_position(LogicalPosition::new(bounds.x, bounds.y))
-                    .and_then(|_| webview.set_size(LogicalSize::new(bounds.width, bounds.height)))
-                    .and_then(|_| webview.show())
-                    .map_err(|error| format!("Could not position embedded browser: {error}"))
-            } else {
-                webview
-                    .hide()
-                    .map_err(|error| format!("Could not hide embedded browser: {error}"))
-            };
-            if first_error.is_none() {
-                first_error = result.err();
-            }
-        }
-        first_error.map_or(Ok(()), Err)
-    }
-
     fn sessions(&self) -> Vec<BrowserSession> {
         self.inner
             .lock()
@@ -823,21 +350,6 @@ impl BrowserHost {
         })
     }
 
-    fn reset_failed_materialization(&self, session_id: &str) {
-        if let Ok(mut inner) = self.inner.lock()
-            && let Ok(browser) = session_mut(&mut inner, session_id)
-        {
-            browser.materializing = false;
-            browser.session.url.clear();
-            browser.session.title.clear();
-            browser.session.loading = false;
-            browser.session.document_id = 0;
-            browser.command_token = None;
-            browser.key_mode = GuiBrowserKeyMode::Normal;
-            browser.active_snapshot = None;
-        }
-    }
-
     fn discard_session(&self, session_id: &str) {
         if let Ok(mut inner) = self.inner.lock()
             && let Some(position) = inner
@@ -856,7 +368,7 @@ impl BrowserHost {
         }
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, BrowserHostInner>, BrowserError> {
+    pub(super) fn lock(&self) -> Result<std::sync::MutexGuard<'_, BrowserHostInner>, BrowserError> {
         self.inner.lock().map_err(|_| {
             browser_error(
                 BrowserErrorKind::Unavailable,
@@ -865,7 +377,7 @@ impl BrowserHost {
         })
     }
 
-    fn publish_state(&self) {
+    pub(super) fn publish_state(&self) {
         let (updates, state) = match self.inner.lock() {
             Ok(inner) => (inner.state_updates.clone(), state_from_inner(&inner)),
             Err(_) => return,
@@ -873,226 +385,6 @@ impl BrowserHost {
         if let Some(updates) = updates {
             let _ = updates.send(state);
         }
-    }
-}
-
-fn session_ref<'a>(
-    inner: &'a BrowserHostInner,
-    session_id: &str,
-) -> Result<&'a HostedBrowser, BrowserError> {
-    inner
-        .browsers
-        .iter()
-        .find(|browser| browser.session.session_id == session_id)
-        .ok_or_else(|| {
-            browser_error(
-                BrowserErrorKind::SessionNotFound,
-                format!("Browser session not found: {session_id}"),
-            )
-        })
-}
-
-fn session_mut<'a>(
-    inner: &'a mut BrowserHostInner,
-    session_id: &str,
-) -> Result<&'a mut HostedBrowser, BrowserError> {
-    inner
-        .browsers
-        .iter_mut()
-        .find(|browser| browser.session.session_id == session_id)
-        .ok_or_else(|| {
-            browser_error(
-                BrowserErrorKind::SessionNotFound,
-                format!("Browser session not found: {session_id}"),
-            )
-        })
-}
-
-fn parse_browser_url(raw_url: &str) -> Result<Url, BrowserError> {
-    let url = Url::parse(raw_url).map_err(|error| {
-        browser_error(
-            BrowserErrorKind::NavigationRejected,
-            format!("Invalid browser URL: {error}"),
-        )
-    })?;
-    if !allowed_browser_url(&url) {
-        return Err(browser_error(
-            BrowserErrorKind::NavigationRejected,
-            "Embedded browser navigation allows only credential-free http:// and https:// URLs",
-        ));
-    }
-    Ok(url)
-}
-
-fn allowed_browser_url(url: &Url) -> bool {
-    matches!(url.scheme(), "http" | "https")
-        && url.username().is_empty()
-        && url.password().is_none()
-}
-
-fn browser_error(kind: BrowserErrorKind, message: impl Into<String>) -> BrowserError {
-    BrowserError::new(kind, message)
-}
-
-fn state_from_inner(inner: &BrowserHostInner) -> GuiBrowserState {
-    GuiBrowserState {
-        sessions: inner
-            .browsers
-            .iter()
-            .map(|browser| GuiBrowserSession {
-                session: browser.session.clone(),
-                vim_keys_enabled: browser.vim_keys_enabled,
-                key_mode: browser.key_mode,
-            })
-            .collect(),
-        active_session_id: inner.active_session_id.clone(),
-        max_sessions: MAX_BROWSER_SESSIONS,
-        presentation_request: inner.presentation_request.clone(),
-    }
-}
-
-fn record_presentation_request(inner: &mut BrowserHostInner, session_id: &str) {
-    let revision = inner.next_presentation_revision;
-    inner.next_presentation_revision = inner.next_presentation_revision.saturating_add(1);
-    inner.presentation_request = Some(GuiBrowserPresentationRequest {
-        revision,
-        session_id: session_id.to_string(),
-    });
-}
-
-fn clear_presentation_request(inner: &mut BrowserHostInner, session_id: &str) {
-    if inner
-        .presentation_request
-        .as_ref()
-        .is_some_and(|request| request.session_id == session_id)
-    {
-        inner.presentation_request = None;
-    }
-}
-
-fn update_key_mode(
-    inner: &Weak<Mutex<BrowserHostInner>>,
-    session_id: &str,
-    mode: GuiBrowserKeyMode,
-) {
-    let Some(inner) = inner.upgrade() else {
-        return;
-    };
-    let (updates, state) = {
-        let Ok(mut inner) = inner.lock() else {
-            return;
-        };
-        let updates = inner.state_updates.clone();
-        let Some(browser) = inner
-            .browsers
-            .iter_mut()
-            .find(|browser| browser.session.session_id == session_id)
-        else {
-            return;
-        };
-        if !browser.vim_keys_enabled || browser.key_mode == mode {
-            return;
-        }
-        browser.key_mode = mode;
-        (updates, state_from_inner(&inner))
-    };
-    if let Some(updates) = updates {
-        let _ = updates.send(state);
-    }
-}
-
-fn sync_key_bridge_state(
-    inner: &Weak<Mutex<BrowserHostInner>>,
-    session_id: &str,
-    webview: &Webview,
-) {
-    let Some(inner) = inner.upgrade() else {
-        return;
-    };
-    let control = {
-        let Ok(inner) = inner.lock() else {
-            return;
-        };
-        inner
-            .browsers
-            .iter()
-            .find(|browser| browser.session.session_id == session_id)
-            .and_then(|browser| {
-                browser
-                    .command_token
-                    .as_deref()
-                    .map(|token| (token.to_owned(), browser.vim_keys_enabled))
-            })
-    };
-    if let Some((token, enabled)) = control {
-        let _ = webview.eval(key_bridge_control_script(&token, enabled));
-    }
-}
-
-fn update_page_load(
-    inner: &Weak<Mutex<BrowserHostInner>>,
-    session_id: &str,
-    url: &Url,
-    event: PageLoadEvent,
-) {
-    let Some(inner) = inner.upgrade() else {
-        return;
-    };
-    let (updates, state) = {
-        let Ok(mut inner) = inner.lock() else {
-            return;
-        };
-        let updates = inner.state_updates.clone();
-        let Some(browser) = inner
-            .browsers
-            .iter_mut()
-            .find(|browser| browser.session.session_id == session_id)
-        else {
-            return;
-        };
-        match event {
-            PageLoadEvent::Started => {
-                if browser.session.url != url.as_str() || !browser.session.loading {
-                    browser.session.document_id = browser.session.document_id.saturating_add(1);
-                }
-                browser.session.url = url.to_string();
-                browser.session.loading = true;
-                browser.key_mode = GuiBrowserKeyMode::Normal;
-                browser.active_snapshot = None;
-            }
-            PageLoadEvent::Finished => {
-                browser.session.url = url.to_string();
-                browser.session.loading = false;
-            }
-        }
-        (updates, state_from_inner(&inner))
-    };
-    if let Some(updates) = updates {
-        let _ = updates.send(state);
-    }
-}
-
-fn update_title(inner: &Weak<Mutex<BrowserHostInner>>, session_id: &str, title: String) {
-    let Some(inner) = inner.upgrade() else {
-        return;
-    };
-    let (updates, state) = {
-        let Ok(mut inner) = inner.lock() else {
-            return;
-        };
-        let updates = inner.state_updates.clone();
-        let Some(browser) = inner
-            .browsers
-            .iter_mut()
-            .find(|browser| browser.session.session_id == session_id)
-        else {
-            return;
-        };
-        browser.session.title = title;
-        (updates, state_from_inner(&inner))
-    };
-    if let Some(updates) = updates {
-        let _ = updates.send(state);
     }
 }
 

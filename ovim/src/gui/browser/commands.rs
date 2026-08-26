@@ -1,6 +1,7 @@
 use tauri::ipc::Channel;
 
-use super::host::{BrowserHost, GuiBrowserBounds, GuiBrowserState, GuiBrowserToolbarAction};
+use super::host::BrowserHost;
+use super::state::{GuiBrowserBounds, GuiBrowserState, GuiBrowserToolbarAction};
 
 #[tauri::command]
 pub async fn gui_browser_open(
