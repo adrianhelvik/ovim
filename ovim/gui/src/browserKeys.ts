@@ -3,6 +3,7 @@ import type { WorkbenchSelection, WorkbenchTabReference } from "./workbench";
 export type BrowserKeyIntent =
     | "command"
     | "new_tab"
+    | "restore_tab"
     | "close_tab"
     | "focus_address"
     | "reload"
@@ -24,6 +25,7 @@ export interface BrowserKeyEvent {
 export type BrowserShortcutAction =
     | "file.close"
     | "browser.new-tab"
+    | "browser.restore-tab"
     | "browser.focus-address"
     | "browser.reload"
     | "browser.back"
@@ -38,7 +40,8 @@ export const browserShortcutAction = (
 ): BrowserShortcutAction | undefined => {
     const key = event.key.toLowerCase();
     if (key === "w" && (browserActive || macos)) return "file.close";
-    if (key === "t" && (browserActive || macos)) return "browser.new-tab";
+    if (key === "t" && (browserActive || macos))
+        return event.shiftKey ? "browser.restore-tab" : "browser.new-tab";
     if (!browserActive) return undefined;
     if (key === "l") return "browser.focus-address";
     if (key === "r") return "browser.reload";
@@ -54,6 +57,7 @@ interface BrowserKeyRouterOptions {
     selection: () => WorkbenchSelection;
     hasSession: (sessionId: string) => boolean;
     openTab: (url?: string) => Promise<void>;
+    restoreTab: () => Promise<void>;
     closeTab: (sessionId: string) => Promise<void>;
     focusAddress: (sessionId: string) => void;
     openCommand: (sessionId: string) => void;
@@ -104,6 +108,10 @@ export const createBrowserKeyRouter = (options: BrowserKeyRouterOptions) => {
         if (event.intent === "new_tab") {
             for (let index = 0; index < count; index += 1)
                 await options.openTab(event.url);
+            return;
+        }
+        if (event.intent === "restore_tab") {
+            await options.restoreTab();
             return;
         }
 

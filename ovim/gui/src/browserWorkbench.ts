@@ -2,7 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { createMemo, createSignal, type Accessor, type Setter } from "solid-js";
 import type { BrowserSession, BrowserState } from "./BrowserPanel";
 import type { GuiSnapshot } from "./types";
-import { projectBrowserState, type WorkbenchSelection } from "./workbench";
+import {
+    projectBrowserState,
+    workbenchSelectionId,
+    type WorkbenchSelection,
+    type WorkbenchTabPlacement,
+} from "./workbench";
 
 export type BrowserToolbarAction =
     "back" | "forward" | "reload" | "stop" | "focus" | "find";
@@ -15,7 +20,19 @@ interface BrowserWorkbenchOptions {
     setSelection: Setter<WorkbenchSelection>;
     setError: Setter<string>;
     onSessionsChanged?: (state: BrowserState) => void;
+    onSessionCreated?: (
+        sessionId: string,
+        placement: WorkbenchTabPlacement,
+    ) => void;
 }
+
+interface ClosedBrowserTab {
+    url?: string;
+    position: number;
+    vimKeysEnabled: boolean;
+}
+
+const MAX_CLOSED_BROWSER_TABS = 20;
 
 export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
     const [state, setState] = createSignal<BrowserState>({
@@ -23,6 +40,7 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
         maxSessions: 8,
     });
     const [opening, setOpening] = createSignal(false);
+    const [closedTabs, setClosedTabs] = createSignal<ClosedBrowserTab[]>([]);
     let latestPresentationRevision = 0;
     const closing = new Set<string>();
 
@@ -58,7 +76,20 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
             }),
         );
     };
-    const accept = (next: BrowserState) => {
+    const accept = (next: BrowserState, placement?: WorkbenchTabPlacement) => {
+        const knownSessions = new Set(
+            state().sessions.map((session) => session.sessionId),
+        );
+        const defaultPlacement = {
+            afterId: workbenchSelectionId(options.selection()),
+        };
+        for (const session of next.sessions) {
+            if (!knownSessions.has(session.sessionId))
+                options.onSessionCreated?.(
+                    session.sessionId,
+                    placement ?? defaultPlacement,
+                );
+        }
         setState(next);
         options.onSessionsChanged?.(next);
         const projection = projectBrowserState(
@@ -83,14 +114,14 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
             present(selection.sessionId);
         else options.setSelection(selection);
     };
-    const open = async (url?: string) => {
+    const open = async (url?: string, placement?: WorkbenchTabPlacement) => {
         const current = state();
         if (
             !options.native ||
             opening() ||
             current.sessions.length >= current.maxSessions
         )
-            return;
+            return undefined;
         setOpening(true);
         options.setError("");
         try {
@@ -98,25 +129,60 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
                 "gui_browser_open",
                 url ? { url } : undefined,
             );
-            accept(next);
+            const createdSession = next.sessions.find(
+                (session) =>
+                    !current.sessions.some(
+                        (existing) => existing.sessionId === session.sessionId,
+                    ),
+            );
+            accept(next, placement);
             if (next.activeSessionId) present(next.activeSessionId);
+            return createdSession?.sessionId ?? next.activeSessionId;
         } catch (reason) {
             options.setError(String(reason));
+            return undefined;
         } finally {
             setOpening(false);
         }
     };
-    const close = async (sessionId: string) => {
+    const close = async (
+        sessionId: string,
+        position = state().sessions.length,
+    ) => {
         if (!options.native || closing.has(sessionId) || !hasSession(sessionId))
             return;
+        const closingSession = state().sessions.find(
+            (session) => session.sessionId === sessionId,
+        );
         closing.add(sessionId);
         try {
             accept(
                 await invoke<BrowserState>("gui_browser_close", { sessionId }),
             );
+            if (closingSession)
+                setClosedTabs((previous) =>
+                    [
+                        {
+                            url: closingSession.url || undefined,
+                            position,
+                            vimKeysEnabled: closingSession.vimKeysEnabled,
+                        },
+                        ...previous,
+                    ].slice(0, MAX_CLOSED_BROWSER_TABS),
+                );
         } finally {
             closing.delete(sessionId);
         }
+    };
+    const restore = async () => {
+        const closed = closedTabs()[0];
+        if (!closed) return;
+        const sessionId = await open(closed.url, {
+            position: closed.position,
+        });
+        if (!sessionId) return;
+        setClosedTabs((previous) => previous.slice(1));
+        if (!closed.vimKeysEnabled) await setVimKeys(sessionId, false);
     };
     const navigate = async (sessionId: string, url: string) => {
         requireSession(sessionId);
@@ -162,11 +228,13 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
     return {
         state,
         opening,
+        canRestore: () => closedTabs().length > 0,
         activeSessionId,
         activeSession,
         accept,
         open,
         close,
+        restore,
         navigate,
         toolbar,
         setVimKeys,

@@ -31,7 +31,7 @@ export const workbenchSelectionId = (selection: WorkbenchSelection) => {
     }
 };
 
-export const composeWorkbenchTabs = (
+const availableWorkbenchTabs = (
     sourceTabs: SourceTab[],
     includeVector: boolean,
     browserSessions: BrowserSession[],
@@ -59,6 +59,141 @@ export const composeWorkbenchTabs = (
             sessionId: session.sessionId,
         })),
     ];
+};
+
+export interface WorkbenchTabPlacement {
+    afterId?: string;
+    position?: number;
+}
+
+const sameTabReference = (
+    left: WorkbenchTabReference,
+    right: WorkbenchTabReference,
+) => {
+    if (left.kind !== right.kind || left.id !== right.id) return false;
+    switch (left.kind) {
+        case "source":
+            return right.kind === "source" && left.index === right.index;
+        case "vector":
+            return (
+                right.kind === "vector" &&
+                left.sourceTabId === right.sourceTabId
+            );
+        case "browser":
+            return (
+                right.kind === "browser" && left.sessionId === right.sessionId
+            );
+    }
+};
+
+const insertAfter = (
+    tabs: WorkbenchTabReference[],
+    tab: WorkbenchTabReference,
+    afterId?: string,
+) => {
+    const anchor = afterId
+        ? tabs.findIndex((candidate) => candidate.id === afterId)
+        : -1;
+    tabs.splice(anchor >= 0 ? anchor + 1 : tabs.length, 0, tab);
+};
+
+export const reconcileWorkbenchTabs = (
+    previous: WorkbenchTabReference[],
+    sourceTabs: SourceTab[],
+    includeVector: boolean,
+    browserSessions: BrowserSession[],
+    selection: WorkbenchSelection,
+    placements: ReadonlyMap<string, WorkbenchTabPlacement> = new Map(),
+): WorkbenchTabReference[] => {
+    const available = availableWorkbenchTabs(
+        sourceTabs,
+        includeVector,
+        browserSessions,
+    );
+    const availableById = new Map(available.map((tab) => [tab.id, tab]));
+    const ordered = previous.flatMap((tab) => {
+        const next = availableById.get(tab.id);
+        if (!next) return [];
+        return [sameTabReference(tab, next) ? tab : next];
+    });
+    const retained = new Set(ordered.map((tab) => tab.id));
+
+    for (const source of available.filter((tab) => tab.kind === "source")) {
+        if (retained.has(source.id)) continue;
+        const sourcePosition = sourceTabs.findIndex(
+            (tab) => tab.id === source.tabId,
+        );
+        const precedingSource = sourceTabs
+            .slice(0, sourcePosition)
+            .reverse()
+            .map((tab) => `source:${tab.id}`)
+            .find((id) => retained.has(id));
+        const followingSource = sourceTabs
+            .slice(sourcePosition + 1)
+            .map((tab) => `source:${tab.id}`)
+            .find((id) => retained.has(id));
+        if (precedingSource) insertAfter(ordered, source, precedingSource);
+        else if (followingSource) {
+            const position = ordered.findIndex(
+                (tab) => tab.id === followingSource,
+            );
+            ordered.splice(position, 0, source);
+        } else ordered.push(source);
+        retained.add(source.id);
+    }
+
+    const vector = available.find((tab) => tab.kind === "vector");
+    if (vector && !retained.has(vector.id)) {
+        insertAfter(ordered, vector, `source:${vector.sourceTabId}`);
+        retained.add(vector.id);
+    }
+
+    let defaultBrowserAnchor = workbenchSelectionId(selection);
+    for (const browser of available.filter((tab) => tab.kind === "browser")) {
+        if (retained.has(browser.id)) continue;
+        const placement = placements.get(browser.id);
+        if (placement?.position !== undefined) {
+            ordered.splice(
+                Math.max(0, Math.min(placement.position, ordered.length)),
+                0,
+                browser,
+            );
+        } else {
+            const afterId = placement?.afterId ?? defaultBrowserAnchor;
+            insertAfter(ordered, browser, afterId);
+        }
+        retained.add(browser.id);
+        defaultBrowserAnchor = browser.id;
+    }
+
+    return ordered;
+};
+
+export const createWorkbenchTabOrder = () => {
+    const placements = new Map<string, WorkbenchTabPlacement>();
+    return {
+        placeBrowser(sessionId: string, placement: WorkbenchTabPlacement = {}) {
+            placements.set(`browser:${sessionId}`, placement);
+        },
+        reconcile(
+            previous: WorkbenchTabReference[],
+            sourceTabs: SourceTab[],
+            includeVector: boolean,
+            browserSessions: BrowserSession[],
+            selection: WorkbenchSelection,
+        ) {
+            const next = reconcileWorkbenchTabs(
+                previous,
+                sourceTabs,
+                includeVector,
+                browserSessions,
+                selection,
+                placements,
+            );
+            for (const tab of next) placements.delete(tab.id);
+            return next;
+        },
+    };
 };
 
 export const reconcileWorkbenchSelection = (

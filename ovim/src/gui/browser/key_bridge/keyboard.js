@@ -124,6 +124,11 @@
         count();
         emit("close_tab");
         break;
+      case "X":
+        prevent(event);
+        count();
+        emit("restore_tab");
+        break;
       case "i":
         prevent(event);
         count();

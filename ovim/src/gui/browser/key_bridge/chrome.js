@@ -7,6 +7,7 @@
     ["r", "reload"],
     ["o", "focus address"],
     ["t / x", "new / close tab"],
+    ["X", "restore closed tab"],
     ["J / K", "previous / next tab"],
     ["gt / gT", "next / previous tab"],
     ["g0 / g$", "first / last tab"],

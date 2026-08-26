@@ -11,6 +11,7 @@ const tabs: WorkbenchTabReference[] = [
 const setup = () => {
     const actions = {
         openTab: vi.fn().mockResolvedValue(undefined),
+        restoreTab: vi.fn().mockResolvedValue(undefined),
         closeTab: vi.fn().mockResolvedValue(undefined),
         focusAddress: vi.fn(),
         openCommand: vi.fn(),
@@ -75,6 +76,13 @@ describe("browser key router", () => {
                 true,
             ),
         ).toBe("browser.new-tab");
+        expect(
+            browserShortcutAction(
+                { key: "T", code: "KeyT", shiftKey: true },
+                false,
+                true,
+            ),
+        ).toBe("browser.restore-tab");
     });
 
     it("routes browser actions through the shared workbench controller", async () => {
@@ -104,6 +112,7 @@ describe("browser key router", () => {
             count: 2,
             url: "https://example.com/",
         });
+        await route({ intent: "restore_tab" });
         await route({ sessionId: "one", intent: "previous_tab" });
         await route({ sessionId: "one", intent: "next_tab", count: 2 });
         await route({ sessionId: "one", intent: "first_tab", count: 2 });
@@ -111,6 +120,7 @@ describe("browser key router", () => {
 
         expect(actions.openTab).toHaveBeenCalledTimes(2);
         expect(actions.openTab).toHaveBeenCalledWith("https://example.com/");
+        expect(actions.restoreTab).toHaveBeenCalledOnce();
         expect(actions.selectTab.mock.calls).toEqual([[0], [0], [1], [2]]);
     });
 

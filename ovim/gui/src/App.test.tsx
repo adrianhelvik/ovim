@@ -14,11 +14,11 @@ import App, {
     activitySummary,
     chatSelectionText,
     chatTranscriptItems,
-    composeWorkbenchTabs,
     guiKeyInput,
     imageExtension,
     isNearChatBottom,
     retainTranscriptItems,
+    reconcileWorkbenchTabs,
     requestedBrowserPresentation,
     toolResultSummary,
 } from "./App";
@@ -87,11 +87,15 @@ describe("Ovim Solid workbench", () => {
         ];
 
         expect(
-            composeWorkbenchTabs(mockSnapshot.tabs, true, browserSessions),
+            reconcileWorkbenchTabs(
+                [],
+                mockSnapshot.tabs,
+                true,
+                browserSessions,
+                { kind: "source", tabId: 1 },
+            ),
         ).toEqual([
             { id: "source:1", kind: "source", index: 0, tabId: 1 },
-            { id: "source:2", kind: "source", index: 1, tabId: 2 },
-            { id: "vector:1", kind: "vector", sourceTabId: 1 },
             {
                 id: "browser:browser-1",
                 kind: "browser",
@@ -102,6 +106,8 @@ describe("Ovim Solid workbench", () => {
                 kind: "browser",
                 sessionId: "browser-2",
             },
+            { id: "vector:1", kind: "vector", sourceTabId: 1 },
+            { id: "source:2", kind: "source", index: 1, tabId: 2 },
         ]);
     });
 

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { BrowserState } from "./BrowserPanel";
 import {
     activeSourceSelection,
+    createWorkbenchTabOrder,
     projectBrowserState,
     reconcileWorkbenchSelection,
+    reconcileWorkbenchTabs,
     type WorkbenchSelection,
 } from "./workbench";
 
@@ -31,6 +33,62 @@ const browserState = (
 });
 
 describe("workbench selection", () => {
+    it("preserves integrated order and inserts new browsers beside their creator", () => {
+        const first = reconcileWorkbenchTabs(
+            [],
+            sourceTabs,
+            false,
+            browserState(["browser-1"]).sessions,
+            { kind: "source", tabId: 84 },
+        );
+        expect(first.map((tab) => tab.id)).toEqual([
+            "source:41",
+            "source:84",
+            "browser:browser-1",
+        ]);
+
+        const second = reconcileWorkbenchTabs(
+            first,
+            sourceTabs,
+            false,
+            browserState(["browser-1", "browser-2"]).sessions,
+            { kind: "browser", sessionId: "browser-1" },
+        );
+        expect(second.map((tab) => tab.id)).toEqual([
+            "source:41",
+            "source:84",
+            "browser:browser-1",
+            "browser:browser-2",
+        ]);
+
+        expect(
+            reconcileWorkbenchTabs(
+                second,
+                sourceTabs,
+                false,
+                browserState(["browser-2"]).sessions,
+                { kind: "browser", sessionId: "browser-2" },
+            ).map((tab) => tab.id),
+        ).toEqual(["source:41", "source:84", "browser:browser-2"]);
+    });
+
+    it("restores a browser at its remembered integrated position", () => {
+        const order = createWorkbenchTabOrder();
+        order.placeBrowser("browser-restored", { position: 1 });
+        const restored = order.reconcile(
+            [],
+            sourceTabs,
+            false,
+            browserState(["browser-restored"]).sessions,
+            { kind: "source", tabId: 84 },
+        );
+        expect(restored.map((tab) => tab.id)).toEqual([
+            "source:41",
+            "browser:browser-restored",
+            "source:84",
+        ]);
+    });
+
     it("tracks source identity independently of tab position", () => {
         expect(activeSourceSelection(sourceTabs)).toEqual({
             kind: "source",

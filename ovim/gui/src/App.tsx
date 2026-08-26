@@ -46,9 +46,11 @@ import {
 } from "./layoutPersistence";
 import {
     activeSourceSelection,
-    composeWorkbenchTabs,
+    createWorkbenchTabOrder,
+    reconcileWorkbenchTabs,
     workbenchSelectionId,
     type WorkbenchSelection,
+    type WorkbenchTabReference,
 } from "./workbench";
 import type {
     GuiAiChat,
@@ -63,7 +65,7 @@ import type {
 export { default as ChatComposer } from "./ChatComposer";
 export { guiKeyInput } from "./guiInput";
 export {
-    composeWorkbenchTabs,
+    reconcileWorkbenchTabs,
     requestedBrowserPresentation,
 } from "./workbench";
 
@@ -1227,6 +1229,7 @@ function App() {
             : undefined;
     });
     const activeStrok = createMemo(() => Boolean(activeStrokPath()));
+    const workbenchTabOrder = createWorkbenchTabOrder();
     const browserWorkbench = createBrowserWorkbench({
         native,
         sourceTabs: () => view().tabs,
@@ -1234,6 +1237,8 @@ function App() {
         selection: workbenchSelection,
         setSelection: setWorkbenchSelection,
         setError,
+        onSessionCreated: (sessionId, placement) =>
+            workbenchTabOrder.placeBrowser(sessionId, placement),
         onSessionsChanged: (next) => {
             if (
                 browserCommandRequest() &&
@@ -1250,21 +1255,26 @@ function App() {
     const browserOpening = browserWorkbench.opening;
     const activeBrowserId = browserWorkbench.activeSessionId;
     const activeBrowser = browserWorkbench.activeSession;
-    const workbenchTabs = createMemo(() =>
-        composeWorkbenchTabs(
-            view().tabs,
-            activeStrok(),
-            browserState().sessions,
-        ),
+    const workbenchTabs = createMemo<WorkbenchTabReference[]>(
+        (previous = []) =>
+            workbenchTabOrder.reconcile(
+                previous,
+                view().tabs,
+                activeStrok(),
+                browserState().sessions,
+                workbenchSelection(),
+            ),
+        [],
     );
     const activeBufferRevision = createMemo(() => view().bufferRevision);
 
     createEffect(() => {
         if (!native) return;
         const surface = workbenchView() === "browser" ? "browser" : "source";
-        void invoke("gui_set_menu_surface", { surface }).catch((reason) =>
-            setError(String(reason)),
-        );
+        void invoke("gui_set_menu_surface", {
+            surface,
+            canRestoreBrowser: browserWorkbench.canRestore(),
+        }).catch((reason) => setError(String(reason)));
     });
 
     createEffect(() => {
@@ -1470,7 +1480,23 @@ function App() {
     const presentBrowserSession = browserWorkbench.present;
     const acceptBrowserState = browserWorkbench.accept;
     const openBrowserSession = browserWorkbench.open;
-    const closeBrowserSession = browserWorkbench.close;
+    const closeBrowser = browserWorkbench.close;
+    const restoreBrowserSession = browserWorkbench.restore;
+    const closeBrowserSession = async (sessionId: string) => {
+        const tabs = workbenchTabs();
+        const position = tabs.findIndex(
+            (tab) => tab.kind === "browser" && tab.sessionId === sessionId,
+        );
+        const closingSelected =
+            workbenchSelection().kind === "browser" &&
+            activeBrowserId() === sessionId;
+        const fallback =
+            position >= 0
+                ? (tabs[position + 1] ?? tabs[position - 1])
+                : undefined;
+        await closeBrowser(sessionId, position >= 0 ? position : tabs.length);
+        if (closingSelected && fallback) selectWorkbenchReference(fallback);
+    };
     const navigateBrowserSession = browserWorkbench.navigate;
     const runBrowserToolbar = browserWorkbench.toolbar;
     const setBrowserVimKeys = browserWorkbench.setVimKeys;
@@ -1596,7 +1622,10 @@ function App() {
             browserState().sessions.some(
                 (session) => session.sessionId === sessionId,
             ),
-        openTab: openBrowserSession,
+        openTab: async (url) => {
+            await openBrowserSession(url);
+        },
+        restoreTab: restoreBrowserSession,
         closeTab: closeBrowserSession,
         focusAddress: focusBrowserAddress,
         openCommand: openBrowserCommand,
@@ -1628,6 +1657,9 @@ function App() {
                 break;
             case "browser.new-tab":
                 performBrowserKey({ intent: "new_tab" });
+                break;
+            case "browser.restore-tab":
+                performBrowserKey({ intent: "restore_tab" });
                 break;
             case "browser.focus-address":
                 performBrowserKey({
@@ -1758,9 +1790,7 @@ function App() {
         }
     };
 
-    const selectWorkbenchTab = (position: number) => {
-        const tab = workbenchTabs()[position];
-        if (!tab) return false;
+    const selectWorkbenchReference = (tab: WorkbenchTabReference) => {
         switch (tab.kind) {
             case "source":
                 setWorkbenchSelection({ kind: "source", tabId: tab.tabId });
@@ -1776,6 +1806,12 @@ function App() {
                 activateBrowserSession(tab.sessionId);
                 break;
         }
+    };
+
+    const selectWorkbenchTab = (position: number) => {
+        const tab = workbenchTabs()[position];
+        if (!tab) return false;
+        selectWorkbenchReference(tab);
         return true;
     };
 

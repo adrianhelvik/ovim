@@ -23,6 +23,82 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("browser workbench controller", () => {
+    it("restores a closed session at its prior workbench position", async () => {
+        const original = {
+            sessionId: "browser-1",
+            url: "https://example.com/article",
+            title: "Article",
+            visible: false,
+            loading: false,
+            documentId: 2,
+            vimKeysEnabled: false,
+            keyMode: "normal" as const,
+        };
+        const restored = {
+            ...original,
+            sessionId: "browser-2",
+            vimKeysEnabled: true,
+        };
+        invoke.mockImplementation((command: string) => {
+            if (command === "gui_browser_close")
+                return Promise.resolve({ sessions: [], maxSessions: 8 });
+            if (command === "gui_browser_open")
+                return Promise.resolve({
+                    sessions: [restored],
+                    activeSessionId: restored.sessionId,
+                    maxSessions: 8,
+                });
+            if (command === "gui_browser_set_vim_keys")
+                return Promise.resolve({
+                    sessions: [{ ...restored, vimKeysEnabled: false }],
+                    activeSessionId: restored.sessionId,
+                    maxSessions: 8,
+                });
+            return Promise.resolve();
+        });
+        const created = vi.fn();
+        let disposeRoot = () => {};
+        const controller = createRoot((dispose) => {
+            disposeRoot = dispose;
+            const [selection, setSelection] = createSignal<WorkbenchSelection>({
+                kind: "browser",
+                sessionId: original.sessionId,
+            });
+            return createBrowserWorkbench({
+                native: true,
+                sourceTabs: () => sourceTabs,
+                includeVector: () => false,
+                selection,
+                setSelection,
+                setError: vi.fn(),
+                onSessionCreated: created,
+            });
+        });
+        controller.accept({
+            sessions: [original],
+            activeSessionId: original.sessionId,
+            maxSessions: 8,
+        });
+        created.mockClear();
+
+        await controller.close(original.sessionId, 1);
+        expect(controller.canRestore()).toBe(true);
+        await controller.restore();
+
+        expect(invoke).toHaveBeenCalledWith("gui_browser_open", {
+            url: original.url,
+        });
+        expect(created).toHaveBeenCalledWith(restored.sessionId, {
+            position: 1,
+        });
+        expect(invoke).toHaveBeenCalledWith("gui_browser_set_vim_keys", {
+            sessionId: restored.sessionId,
+            enabled: false,
+        });
+        expect(controller.canRestore()).toBe(false);
+        disposeRoot();
+    });
+
     it("projects a durable agent presentation and falls back after close", () =>
         createRoot((dispose) => {
             const [selection, setSelection] = createSignal<WorkbenchSelection>({

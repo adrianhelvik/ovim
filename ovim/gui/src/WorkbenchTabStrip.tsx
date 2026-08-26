@@ -1,4 +1,4 @@
-import { For, Index, Show } from "solid-js";
+import { For, Show, type Accessor } from "solid-js";
 import { browserTabTitle, type BrowserState } from "./BrowserPanel";
 import { Icon } from "./Icon";
 import type { GuiSnapshot } from "./types";
@@ -18,12 +18,6 @@ interface WorkbenchTabStripProps {
 }
 
 export default function WorkbenchTabStrip(props: WorkbenchTabStripProps) {
-    const positionOf = (kind: WorkbenchTabReference["kind"], id?: string) =>
-        props.tabs.findIndex(
-            (tab) =>
-                tab.kind === kind &&
-                (tab.kind !== "browser" || tab.sessionId === id),
-        );
     const selected = (tab: WorkbenchTabReference) => {
         const selection = props.selection;
         if (tab.kind !== selection.kind) return false;
@@ -45,130 +39,139 @@ export default function WorkbenchTabStrip(props: WorkbenchTabStripProps) {
         }
     };
 
+    const renderTab = (
+        reference: WorkbenchTabReference,
+        position: Accessor<number>,
+    ) => {
+        const active = () => selected(reference);
+        const common = {
+            role: "tab",
+            "aria-controls": "editor-surface",
+        } as const;
+
+        switch (reference.kind) {
+            case "source": {
+                const source = () =>
+                    props.sourceTabs.find((tab) => tab.id === reference.tabId);
+                return (
+                    <Show when={source()}>
+                        {(tab) => (
+                            <button
+                                {...common}
+                                type="button"
+                                aria-selected={active()}
+                                tabIndex={active() ? 0 : -1}
+                                data-tab-index={tab().index}
+                                data-workbench-tab-index={position()}
+                                class="tab"
+                                classList={{ active: active() }}
+                                aria-label={
+                                    tab().title +
+                                    (tab().modified ? ", modified" : "")
+                                }
+                                title={
+                                    tab().title +
+                                    (tab().modified ? " · modified" : "")
+                                }
+                                onClick={() => {
+                                    props.onSelect(position());
+                                    props.onSourceFocus();
+                                }}
+                                onKeyDown={(event) =>
+                                    props.onNavigate(event, position())
+                                }
+                            >
+                                <Icon
+                                    name="file"
+                                    size={16}
+                                    tone={active() ? "accent" : "muted"}
+                                />
+                                <span>{tab().title}</span>
+                                <Show when={tab().modified}>
+                                    <span class="modified-dot" />
+                                </Show>
+                            </button>
+                        )}
+                    </Show>
+                );
+            }
+            case "vector":
+                return (
+                    <button
+                        {...common}
+                        type="button"
+                        aria-selected={active()}
+                        tabIndex={active() ? 0 : -1}
+                        data-workbench-tab-index={position()}
+                        class="tab vector-tab"
+                        classList={{ active: active() }}
+                        title="Live Strøk render and review"
+                        onClick={() => props.onSelect(position())}
+                        onKeyDown={(event) =>
+                            props.onNavigate(event, position())
+                        }
+                    >
+                        <Icon
+                            name="ai-spark"
+                            size={16}
+                            tone={active() ? "accent" : "muted"}
+                        />
+                        <span>Vector</span>
+                    </button>
+                );
+            case "browser": {
+                const session = () =>
+                    props.browserState.sessions.find(
+                        (candidate) =>
+                            candidate.sessionId === reference.sessionId,
+                    );
+                const title = () =>
+                    session() ? browserTabTitle(session()!) : "Browser";
+                return (
+                    <Show when={session()}>
+                        {(current) => (
+                            <button
+                                {...common}
+                                type="button"
+                                aria-selected={active()}
+                                aria-label={`Browser: ${title()}`}
+                                tabIndex={active() ? 0 : -1}
+                                data-workbench-tab-index={position()}
+                                class="tab browser-tab"
+                                classList={{ active: active() }}
+                                title={
+                                    current().url
+                                        ? `${title()} · ${current().url}`
+                                        : title()
+                                }
+                                onClick={() => props.onSelect(position())}
+                                onKeyDown={(event) =>
+                                    props.onNavigate(event, position())
+                                }
+                            >
+                                <Icon
+                                    name="search"
+                                    size={16}
+                                    tone={active() ? "accent" : "muted"}
+                                />
+                                <span>{title()}</span>
+                                <Show when={current().loading}>
+                                    <span
+                                        class="browser-tab-loading"
+                                        aria-label="Loading"
+                                    />
+                                </Show>
+                            </button>
+                        )}
+                    </Show>
+                );
+            }
+        }
+    };
+
     return (
         <div class="tabs" role="tablist" aria-label="Open tabs">
-            <Index each={props.sourceTabs}>
-                {(tab, position) => {
-                    const reference = () => props.tabs[position];
-                    const active = () =>
-                        Boolean(reference() && selected(reference()!));
-                    return (
-                        <button
-                            type="button"
-                            role="tab"
-                            aria-selected={active()}
-                            aria-controls="editor-surface"
-                            tabIndex={active() ? 0 : -1}
-                            data-tab-index={tab().index}
-                            data-workbench-tab-index={position}
-                            class="tab"
-                            classList={{ active: active() }}
-                            aria-label={
-                                tab().title +
-                                (tab().modified ? ", modified" : "")
-                            }
-                            title={
-                                tab().title +
-                                (tab().modified ? " · modified" : "")
-                            }
-                            onClick={() => {
-                                props.onSelect(position);
-                                props.onSourceFocus();
-                            }}
-                            onKeyDown={(event) =>
-                                props.onNavigate(event, position)
-                            }
-                        >
-                            <Icon
-                                name="file"
-                                size={16}
-                                tone={active() ? "accent" : "muted"}
-                            />
-                            <span>{tab().title}</span>
-                            <Show when={tab().modified}>
-                                <span class="modified-dot" />
-                            </Show>
-                        </button>
-                    );
-                }}
-            </Index>
-            <Show when={positionOf("vector") >= 0}>
-                {(() => {
-                    const position = () => positionOf("vector");
-                    const reference = () => props.tabs[position()];
-                    const active = () =>
-                        Boolean(reference() && selected(reference()!));
-                    return (
-                        <button
-                            type="button"
-                            role="tab"
-                            aria-selected={active()}
-                            aria-controls="editor-surface"
-                            tabIndex={active() ? 0 : -1}
-                            data-workbench-tab-index={position()}
-                            class="tab vector-tab"
-                            classList={{ active: active() }}
-                            title="Live Strøk render and review"
-                            onClick={() => props.onSelect(position())}
-                            onKeyDown={(event) =>
-                                props.onNavigate(event, position())
-                            }
-                        >
-                            <Icon
-                                name="ai-spark"
-                                size={16}
-                                tone={active() ? "accent" : "muted"}
-                            />
-                            <span>Vector</span>
-                        </button>
-                    );
-                })()}
-            </Show>
-            <For each={props.browserState.sessions}>
-                {(session) => {
-                    const position = () =>
-                        positionOf("browser", session.sessionId);
-                    const reference = () => props.tabs[position()];
-                    const active = () =>
-                        Boolean(reference() && selected(reference()!));
-                    const title = () => browserTabTitle(session);
-                    return (
-                        <button
-                            type="button"
-                            role="tab"
-                            aria-selected={active()}
-                            aria-controls="editor-surface"
-                            aria-label={`Browser: ${title()}`}
-                            tabIndex={active() ? 0 : -1}
-                            data-workbench-tab-index={position()}
-                            class="tab browser-tab"
-                            classList={{ active: active() }}
-                            title={
-                                session.url
-                                    ? `${title()} · ${session.url}`
-                                    : title()
-                            }
-                            onClick={() => props.onSelect(position())}
-                            onKeyDown={(event) =>
-                                props.onNavigate(event, position())
-                            }
-                        >
-                            <Icon
-                                name="search"
-                                size={16}
-                                tone={active() ? "accent" : "muted"}
-                            />
-                            <span>{title()}</span>
-                            <Show when={session.loading}>
-                                <span
-                                    class="browser-tab-loading"
-                                    aria-label="Loading"
-                                />
-                            </Show>
-                        </button>
-                    );
-                }}
-            </For>
+            <For each={props.tabs}>{renderTab}</For>
             <button
                 type="button"
                 class="new-browser-tab"
