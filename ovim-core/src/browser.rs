@@ -15,9 +15,9 @@ const BROWSER_CHANNEL_CAPACITY: usize = 32;
 pub enum BrowserCommand {
     List,
     Start {
-        incognito: bool,
-        /// Optional initial page. `None` creates an unloaded browser session
-        /// that can be presented before any native webview is materialized.
+        /// Optional initial page. `None` creates an unloaded, ephemeral browser
+        /// session that can be presented before any native webview is
+        /// materialized.
         url: Option<String>,
     },
     Show {
@@ -207,7 +207,6 @@ mod tests {
         let request = tokio::spawn(async move {
             client
                 .execute(BrowserCommand::Start {
-                    incognito: true,
                     url: Some("https://example.com/".into()),
                 })
                 .await
@@ -217,7 +216,6 @@ mod tests {
         assert_eq!(
             incoming.command(),
             &BrowserCommand::Start {
-                incognito: true,
                 url: Some("https://example.com/".into()),
             }
         );
@@ -240,10 +238,7 @@ mod tests {
         drop(host);
 
         let error = client
-            .execute(BrowserCommand::Start {
-                incognito: true,
-                url: None,
-            })
+            .execute(BrowserCommand::Start { url: None })
             .await
             .unwrap_err();
         assert_eq!(error.kind, BrowserErrorKind::Unavailable);

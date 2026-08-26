@@ -21,10 +21,6 @@ impl Editor {
             BROWSER_SESSION_TOOL => match required_string(arguments, "action")?.as_str() {
                 "list" => Ok(BrowserCommand::List),
                 "start" => Ok(BrowserCommand::Start {
-                    incognito: arguments
-                        .get("incognito")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(true),
                     url: optional_browser_url(arguments, "url")?,
                 }),
                 "show" => Ok(BrowserCommand::Show {
@@ -309,7 +305,6 @@ mod tests {
         assert_eq!(
             command,
             BrowserCommand::Start {
-                incognito: true,
                 url: Some("https://example.com/docs".into()),
             }
         );

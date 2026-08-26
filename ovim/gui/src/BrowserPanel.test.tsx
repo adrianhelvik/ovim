@@ -304,6 +304,51 @@ describe("BrowserPanel", () => {
         }
     });
 
+    it("does not reproject native bounds for state-only session updates", async () => {
+        invoke.mockResolvedValue(undefined);
+        const [current, setCurrent] = createSignal(session());
+        const result = render(() => (
+            <BrowserPanel
+                native
+                active
+                obscured={false}
+                session={current()}
+                onNavigate={vi.fn().mockResolvedValue(undefined)}
+                onToolbar={vi.fn().mockResolvedValue(undefined)}
+                onClose={vi.fn().mockResolvedValue(undefined)}
+                onVimKeysChange={vi.fn().mockResolvedValue(undefined)}
+            />
+        ));
+        try {
+            await waitFor(() =>
+                expect(invoke).toHaveBeenCalledWith(
+                    "gui_browser_set_bounds",
+                    expect.anything(),
+                ),
+            );
+            invoke.mockClear();
+
+            setCurrent(
+                session({
+                    title: "Updated title",
+                    loading: true,
+                    documentId: 2,
+                }),
+            );
+            await waitFor(() =>
+                expect(screen.getByText("Updated title")).toBeTruthy(),
+            );
+            await Promise.resolve();
+
+            expect(invoke).not.toHaveBeenCalledWith(
+                "gui_browser_set_bounds",
+                expect.anything(),
+            );
+        } finally {
+            result.unmount();
+        }
+    });
+
     it("derives stable tab titles before a document title is available", () => {
         expect(browserTabTitle(session())).toBe("Example Domain");
         expect(

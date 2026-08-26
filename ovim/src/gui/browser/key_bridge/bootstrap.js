@@ -76,16 +76,22 @@
     return count;
   };
 
+  const editableRoles = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
+  const editableElement = node =>
+    node instanceof HTMLElement &&
+    (node.isContentEditable ||
+      /^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName) ||
+      editableRoles.has(node.getAttribute("role")) ||
+      node.dataset.ovimBrowserOverlay === "find");
+  const deepActiveElement = () => {
+    let active = document.activeElement;
+    while (active instanceof HTMLElement && active.shadowRoot?.activeElement)
+      active = active.shadowRoot.activeElement;
+    return active;
+  };
   const editableInPath = event =>
-    event.composedPath().some(
-      node =>
-        node instanceof HTMLElement &&
-        (node.isContentEditable ||
-          /^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName) ||
-          node.getAttribute("role") === "textbox" ||
-          node.dataset.ovimBrowserOverlay === "find" ||
-          node.tagName.includes("-")),
-    );
+    event.composedPath().some(editableElement) ||
+    editableElement(deepActiveElement());
 
   const removeHints = () => {
     hintSession?.host.remove();

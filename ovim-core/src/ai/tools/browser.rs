@@ -62,12 +62,6 @@ fn browser_session_def() -> ToolDefinition {
                     .into(),
             },
             ToolParam {
-                name: "incognito".into(),
-                param_type: ParamType::Boolean,
-                required: false,
-                description: "Start with an ephemeral browser data store (default true).".into(),
-            },
-            ToolParam {
                 name: "url".into(),
                 param_type: ParamType::String,
                 required: false,

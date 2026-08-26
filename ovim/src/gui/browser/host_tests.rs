@@ -23,6 +23,9 @@ fn scripts_keep_snapshot_and_action_surfaces_bounded() {
     assert!(!ACTION_FUNCTION.contains("eval("));
     assert!(KEY_BRIDGE_SCRIPT.contains("ovim-browser://key"));
     assert!(KEY_BRIDGE_SCRIPT.contains("event.isTrusted"));
+    assert!(KEY_BRIDGE_SCRIPT.contains("deepActiveElement"));
+    assert!(KEY_BRIDGE_SCRIPT.contains("searchbox"));
+    assert!(!KEY_BRIDGE_SCRIPT.contains("tagName.includes(\"-\")"));
     assert!(!KEY_BRIDGE_SCRIPT.contains("__TAURI_INTERNALS__"));
 }
 
@@ -156,12 +159,38 @@ async fn user_tabs_stay_unloaded_until_the_first_navigation() {
 }
 
 #[tokio::test]
+async fn geometry_only_updates_do_not_republish_browser_state() {
+    let (_, requests) = ovim_core::browser::browser_channel();
+    let host = BrowserHost::new(requests);
+    host.open_for_user(None).await.unwrap();
+
+    let payloads = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let received = payloads.clone();
+    host.subscribe(Channel::new(move |body| {
+        received.lock().unwrap().push(body.deserialize().unwrap());
+        Ok(())
+    }))
+    .unwrap();
+
+    host.set_bounds(GuiBrowserBounds {
+        x: 16.0,
+        y: 72.0,
+        width: 900.0,
+        height: 640.0,
+        visible: true,
+    })
+    .unwrap();
+
+    assert_eq!(payloads.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn atomic_start_discards_the_session_when_a_webview_cannot_be_created() {
     let (_, requests) = ovim_core::browser::browser_channel();
     let host = BrowserHost::new(requests);
 
     let error = host
-        .start(true, Some("https://example.com/"), true)
+        .start(Some("https://example.com/"), true)
         .await
         .unwrap_err();
     assert_eq!(error.kind, BrowserErrorKind::Unavailable);

@@ -102,7 +102,6 @@ pub enum GuiBrowserToolbarAction {
 
 struct HostedBrowser {
     webview: Option<Webview>,
-    incognito: bool,
     materializing: bool,
     command_token: Option<String>,
     vim_keys_enabled: bool,
@@ -194,9 +193,7 @@ impl BrowserHost {
     async fn execute(&self, command: BrowserCommand, agent_requested: bool) -> BrowserResult {
         match command {
             BrowserCommand::List => Ok(BrowserResponse::Sessions(self.sessions())),
-            BrowserCommand::Start { incognito, url } => {
-                self.start(incognito, url.as_deref(), agent_requested).await
-            }
+            BrowserCommand::Start { url } => self.start(url.as_deref(), agent_requested).await,
             BrowserCommand::Show { session_id } => self.show(&session_id, agent_requested),
             BrowserCommand::Hide { session_id } => self.hide(&session_id),
             BrowserCommand::Close { session_id } => self.close(&session_id),
@@ -218,7 +215,7 @@ impl BrowserHost {
         &self,
         initial_url: Option<&str>,
     ) -> Result<GuiBrowserState, String> {
-        self.start(true, initial_url, false)
+        self.start(initial_url, false)
             .await
             .map_err(|error| error.message)?;
         Ok(self.state())
@@ -236,12 +233,7 @@ impl BrowserHost {
             })
     }
 
-    async fn start(
-        &self,
-        incognito: bool,
-        initial_url: Option<&str>,
-        emit_show: bool,
-    ) -> BrowserResult {
+    async fn start(&self, initial_url: Option<&str>, emit_show: bool) -> BrowserResult {
         let parsed_url = initial_url.map(parse_browser_url).transpose()?;
         let session_id = {
             let mut inner = self.lock()?;
@@ -256,7 +248,6 @@ impl BrowserHost {
             let session_id = format!("browser-{id}");
             inner.browsers.push(HostedBrowser {
                 webview: None,
-                incognito,
                 materializing: false,
                 command_token: None,
                 vim_keys_enabled: true,
@@ -296,7 +287,7 @@ impl BrowserHost {
     }
 
     fn materialize(&self, session_id: &str, url: Url) -> Result<(), BrowserError> {
-        let (parent, incognito, vim_keys_enabled) = {
+        let (parent, vim_keys_enabled) = {
             let mut inner = self.lock()?;
             let parent = inner.parent.clone().ok_or_else(|| {
                 browser_error(
@@ -322,7 +313,7 @@ impl BrowserHost {
             browser.session.url = url.to_string();
             browser.session.loading = true;
             browser.active_snapshot = None;
-            (parent, browser.incognito, browser.vim_keys_enabled)
+            (parent, browser.vim_keys_enabled)
         };
 
         let weak = Arc::downgrade(&self.inner);
@@ -338,7 +329,7 @@ impl BrowserHost {
         let command_script = key_bridge_script(&command_token, &state_token, vim_keys_enabled);
         let expected_command_token = command_token.clone();
         let builder = WebviewBuilder::new(session_id, WebviewUrl::External(url))
-            .incognito(incognito)
+            .incognito(true)
             .initialization_script_for_all_frames(command_script)
             .on_navigation(allowed_browser_url)
             .on_new_window(move |url, _| {
@@ -615,6 +606,17 @@ impl BrowserHost {
 
     pub fn set_bounds(&self, bounds: GuiBrowserBounds) -> Result<(), String> {
         let bounds = bounds.validate()?;
+        let visibility_before = {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser host lock failed".to_string())?;
+            inner
+                .browsers
+                .iter()
+                .map(|browser| browser.session.visible)
+                .collect::<Vec<_>>()
+        };
         {
             let mut inner = self
                 .inner
@@ -623,7 +625,20 @@ impl BrowserHost {
             inner.bounds = bounds;
         }
         self.sync_bounds()?;
-        self.publish_state();
+        let visibility_changed = self
+            .inner
+            .lock()
+            .map(|inner| {
+                inner
+                    .browsers
+                    .iter()
+                    .map(|browser| browser.session.visible)
+                    .ne(visibility_before)
+            })
+            .unwrap_or(false);
+        if visibility_changed {
+            self.publish_state();
+        }
         Ok(())
     }
 

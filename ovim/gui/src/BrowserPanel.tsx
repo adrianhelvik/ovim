@@ -1,4 +1,11 @@
-import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import {
+    Show,
+    createEffect,
+    createMemo,
+    createSignal,
+    onCleanup,
+    onMount,
+} from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "./Icon";
 import { normalizeBrowserAddress } from "./browserCommands";
@@ -68,6 +75,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
     let handledAddressFocusSerial = 0;
 
     const session = () => props.session;
+    const sessionId = createMemo(() => session()?.sessionId ?? "");
     const browserVisible = () =>
         props.native &&
         props.active &&
@@ -178,7 +186,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
     createEffect(() => {
         void props.active;
         void props.obscured;
-        void session()?.sessionId;
+        void sessionId();
         scheduleBounds();
     });
 
