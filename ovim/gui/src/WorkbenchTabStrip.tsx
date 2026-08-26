@@ -1,5 +1,6 @@
 import { For, Show, type Accessor } from "solid-js";
-import { browserTabTitle, type BrowserState } from "./BrowserPanel";
+import { browserTabTitle } from "./BrowserPanel";
+import type { BrowserState } from "./browserProtocol";
 import { Icon } from "./Icon";
 import type { GuiSnapshot } from "./types";
 import type { WorkbenchSelection, WorkbenchTabReference } from "./workbench";

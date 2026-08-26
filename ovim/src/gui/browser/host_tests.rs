@@ -25,6 +25,7 @@ fn scripts_keep_snapshot_and_action_surfaces_bounded() {
     assert!(KEY_BRIDGE_SCRIPT.contains("event.isTrusted"));
     assert!(KEY_BRIDGE_SCRIPT.contains("deepActiveElement"));
     assert!(KEY_BRIDGE_SCRIPT.contains("searchbox"));
+    assert!(KEY_BRIDGE_SCRIPT.contains("passNextKeys"));
     assert!(!KEY_BRIDGE_SCRIPT.contains("tagName.includes(\"-\")"));
     assert!(!KEY_BRIDGE_SCRIPT.contains("__TAURI_INTERNALS__"));
 }

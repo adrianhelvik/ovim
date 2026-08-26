@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createMemo, createSignal, type Accessor, type Setter } from "solid-js";
-import type { BrowserSession, BrowserState } from "./BrowserPanel";
+import type {
+    BrowserSession,
+    BrowserState,
+    BrowserToolbarAction,
+} from "./browserProtocol";
 import type { GuiSnapshot } from "./types";
 import {
     projectBrowserState,
@@ -8,9 +12,6 @@ import {
     type WorkbenchSelection,
     type WorkbenchTabPlacement,
 } from "./workbench";
-
-export type BrowserToolbarAction =
-    "back" | "forward" | "reload" | "stop" | "focus" | "find";
 
 interface BrowserWorkbenchOptions {
     native: boolean;

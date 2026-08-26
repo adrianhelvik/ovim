@@ -367,12 +367,6 @@ button:focus-visible {
     letter-spacing: 0.08em;
     color: var(--warning);
 }
-.browser-breadcrumb-note {
-    margin-left: auto;
-    color: var(--text-secondary) !important;
-    font-size: var(--text-micro);
-}
-
 .editor-body {
     min-height: 0;
     min-width: 0;
@@ -385,7 +379,7 @@ button:focus-visible {
     inset: 0;
     z-index: var(--layer-inline);
     display: none;
-    grid-template-rows: 44px 25px minmax(0, 1fr);
+    grid-template-rows: 44px auto minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
     color: var(--text-primary);
@@ -508,36 +502,27 @@ button:focus-visible {
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 8%, var(--surface-1));
 }
-.browser-page-meta {
+.browser-notice {
     min-width: 0;
-    padding: 0 12px;
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
+    min-height: 0;
+    max-height: 0;
     display: flex;
     align-items: center;
-    gap: 9px;
     overflow: hidden;
-    color: var(--text-secondary);
     background: color-mix(in srgb, var(--surface-1) 40%, var(--canvas));
     font-size: var(--text-micro);
-    white-space: nowrap;
 }
-.browser-page-meta strong {
-    max-width: min(34%, 320px);
-    overflow: hidden;
-    color: var(--text-primary);
-    font-weight: 600;
-    text-overflow: ellipsis;
+.browser-notice.visible {
+    max-height: 40px;
+    padding: 5px 12px;
+    border-bottom: 1px solid color-mix(in srgb, var(--error) 34%, var(--border));
 }
-.browser-page-meta > span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.browser-page-meta em {
-    margin-left: auto;
+.browser-notice em {
     overflow: hidden;
     color: var(--error);
     font-style: normal;
     text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .browser-viewport {
     min-width: 0;
@@ -640,8 +625,7 @@ button:focus-visible {
 }
 @media (max-width: 980px) {
     .browser-agent-state,
-    .browser-key-toggle span,
-    .browser-page-meta > span {
+    .browser-key-toggle span {
         display: none;
     }
 }

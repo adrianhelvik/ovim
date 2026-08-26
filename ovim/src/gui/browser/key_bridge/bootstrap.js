@@ -22,6 +22,7 @@
   let findOverlay;
   let findQuery = "";
   let toastTimer;
+  let passNextKeys = 0;
 
   const directFrames = () => Array.from(window.frames);
   const isDirectChild = source =>
@@ -116,6 +117,7 @@
     sharedState.mode =
       sharedState.enabled && mode === "insert" ? "insert" : "normal";
     clearSequence();
+    passNextKeys = 0;
     if (!sharedState.enabled || sharedState.mode === "insert")
       clearTransientUi();
     if (relay) sendToFrames(stateMessage());

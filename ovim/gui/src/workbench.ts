@@ -1,4 +1,4 @@
-import type { BrowserSession, BrowserState } from "./BrowserPanel";
+import type { BrowserSession, BrowserState } from "./browserProtocol";
 import type { GuiSnapshot } from "./types";
 
 type SourceTab = GuiSnapshot["tabs"][number];

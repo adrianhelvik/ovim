@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { BrowserState } from "./BrowserPanel";
+import type { BrowserState } from "./browserProtocol";
 import {
     activeSourceSelection,
     createWorkbenchTabOrder,

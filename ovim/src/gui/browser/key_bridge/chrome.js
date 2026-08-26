@@ -15,6 +15,7 @@
     ["/ · n / N", "find · next / previous"],
     ["yy", "copy page address"],
     ["i / Esc", "Insert / Normal mode"],
+    ["\\", "pass the next key to the page"],
     [":", "Ovim browser commands"],
     ["count + key", "repeat, up to 100"],
   ];

@@ -25,6 +25,10 @@
 
   const handleNormalKey = event => {
     const key = event.key;
+    if (passNextKeys > 0) {
+      passNextKeys -= 1;
+      return;
+    }
     if (handleHintKey(event)) return;
     if (helpOverlay && (key === "?" || key === "Escape")) {
       prevent(event);
@@ -59,6 +63,15 @@
         prevent(event);
         count();
         emit("command");
+        break;
+      case "\\":
+        prevent(event);
+        passNextKeys = count();
+        showToast(
+          passNextKeys === 1
+            ? "Passing the next key"
+            : `Passing the next ${passNextKeys} keys`,
+        );
         break;
       case "h":
         prevent(event);

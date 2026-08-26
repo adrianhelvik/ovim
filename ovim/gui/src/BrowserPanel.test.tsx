@@ -3,11 +3,8 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import BrowserPanel, {
-    browserTabTitle,
-    type BrowserSession,
-    type BrowserState,
-} from "./BrowserPanel";
+import BrowserPanel, { browserTabTitle } from "./BrowserPanel";
+import type { BrowserSession, BrowserState } from "./browserProtocol";
 
 const invoke = vi.hoisted(() => vi.fn());
 
@@ -65,6 +62,34 @@ afterEach(() => {
 });
 
 describe("BrowserPanel", () => {
+    it("offers Stop instead of Reload while the page is loading", () => {
+        invoke.mockResolvedValue(undefined);
+        const toolbar = vi.fn().mockResolvedValue(undefined);
+        const result = render(() => (
+            <BrowserPanel
+                native
+                active
+                obscured={false}
+                session={session({ loading: true })}
+                onNavigate={vi.fn().mockResolvedValue(undefined)}
+                onToolbar={toolbar}
+                onClose={vi.fn().mockResolvedValue(undefined)}
+                onVimKeysChange={vi.fn().mockResolvedValue(undefined)}
+            />
+        ));
+        try {
+            fireEvent.click(
+                screen.getByRole("button", { name: "Stop loading" }),
+            );
+            expect(toolbar).toHaveBeenCalledWith("browser-1", "stop");
+            expect(
+                screen.queryByText(/fresh, bounded page snapshots/i),
+            ).toBeNull();
+        } finally {
+            result.unmount();
+        }
+    });
+
     it("opens, navigates, controls, and hides the shared native session", async () => {
         invoke.mockResolvedValue(undefined);
         const [active, setActive] = createSignal(true);
@@ -336,7 +361,9 @@ describe("BrowserPanel", () => {
                 }),
             );
             await waitFor(() =>
-                expect(screen.getByText("Updated title")).toBeTruthy(),
+                expect(
+                    screen.getByRole("button", { name: "Stop loading" }),
+                ).toBeTruthy(),
             );
             await Promise.resolve();
 

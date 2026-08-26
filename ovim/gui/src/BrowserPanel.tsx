@@ -9,35 +9,21 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "./Icon";
 import { normalizeBrowserAddress } from "./browserCommands";
-import type { BrowserToolbarAction } from "./browserWorkbench";
+import type {
+    BrowserAddressFocusRequest,
+    BrowserBounds,
+    BrowserSession,
+    BrowserToolbarAction,
+} from "./browserProtocol";
 
-export interface BrowserSession {
-    sessionId: string;
-    url: string;
-    title: string;
-    visible: boolean;
-    loading: boolean;
-    documentId: number;
-    vimKeysEnabled: boolean;
-    keyMode: "normal" | "insert";
-}
-
-export interface BrowserState {
-    sessions: BrowserSession[];
-    activeSessionId?: string;
-    maxSessions: number;
-    presentationRequest?: {
-        revision: number;
-        sessionId: string;
-    };
-}
+export type { BrowserSession, BrowserState } from "./browserProtocol";
 
 interface BrowserPanelProps {
     native: boolean;
     active: boolean;
     obscured: boolean;
     session?: BrowserSession;
-    addressFocusRequest?: { serial: number; sessionId: string };
+    addressFocusRequest?: BrowserAddressFocusRequest;
     onNavigate: (sessionId: string, url: string) => Promise<void>;
     onToolbar: (
         sessionId: string,
@@ -45,14 +31,6 @@ interface BrowserPanelProps {
     ) => Promise<void>;
     onClose: (sessionId: string) => Promise<void>;
     onVimKeysChange: (sessionId: string, enabled: boolean) => Promise<void>;
-}
-
-interface BrowserBounds {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    visible: boolean;
 }
 
 export const browserTabTitle = (session: BrowserSession) => {
@@ -122,7 +100,9 @@ export default function BrowserPanel(props: BrowserPanelProps) {
         });
     };
 
-    const runToolbarAction = async (action: "back" | "forward" | "reload") => {
+    const runToolbarAction = async (
+        action: "back" | "forward" | "reload" | "stop",
+    ) => {
         const sessionId = session()?.sessionId;
         if (!sessionId) return;
         setError("");
@@ -221,6 +201,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                         data-gui-native-control
                         disabled={!session()?.url}
                         aria-label="Go back"
+                        aria-keyshortcuts="Meta+[ Control+["
                         title="Go back"
                         onClick={() => void runToolbarAction("back")}
                     >
@@ -233,6 +214,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                         data-gui-native-control
                         disabled={!session()?.url}
                         aria-label="Go forward"
+                        aria-keyshortcuts="Meta+] Control+]"
                         title="Go forward"
                         onClick={() => void runToolbarAction("forward")}
                     >
@@ -242,10 +224,20 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                         type="button"
                         data-gui-native-control
                         disabled={!session()?.url}
-                        aria-label="Reload page"
-                        onClick={() => void runToolbarAction("reload")}
+                        aria-label={
+                            session()?.loading ? "Stop loading" : "Reload page"
+                        }
+                        aria-keyshortcuts="Meta+R Control+R"
+                        title={
+                            session()?.loading ? "Stop loading" : "Reload page"
+                        }
+                        onClick={() =>
+                            void runToolbarAction(
+                                session()?.loading ? "stop" : "reload",
+                            )
+                        }
                     >
-                        Reload
+                        {session()?.loading ? "Stop" : "Reload"}
                     </button>
                 </div>
 
@@ -271,6 +263,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                         spellcheck={false}
                         autocomplete="off"
                         aria-label="Browser address"
+                        aria-keyshortcuts="Meta+L Control+L"
                         placeholder="Enter an HTTP or HTTPS address"
                         value={address()}
                         onInput={(event) =>
@@ -338,6 +331,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                         data-gui-native-control
                         disabled={!session()}
                         aria-label="Close browser session"
+                        aria-keyshortcuts="Meta+W Control+W"
                         title="Close browser session"
                         onClick={() => void close()}
                     >
@@ -346,13 +340,11 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                 </div>
             </header>
 
-            <div class="browser-page-meta">
-                <strong>{session()?.title || "Embedded browser"}</strong>
-                <span>
-                    {session()
-                        ? "Agent actions use fresh, bounded page snapshots"
-                        : "No browser session is selected"}
-                </span>
+            <div
+                class="browser-notice"
+                classList={{ visible: Boolean(error()) }}
+                aria-live="polite"
+            >
                 <Show when={error()}>
                     <em role="alert">{error()}</em>
                 </Show>

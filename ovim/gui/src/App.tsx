@@ -15,10 +15,8 @@ import { marked } from "marked";
 import { mockSnapshot } from "./mock";
 import ChatModelPicker from "./ChatModelPicker";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
-import BrowserPanel, {
-    browserTabTitle,
-    type BrowserState,
-} from "./BrowserPanel";
+import BrowserPanel, { browserTabTitle } from "./BrowserPanel";
+import type { BrowserState } from "./browserProtocol";
 import { createBrowserWorkbench } from "./browserWorkbench";
 import {
     browserShortcutAction,
@@ -3401,9 +3399,6 @@ function App() {
                                 {activeBrowser()
                                     ? browserTabTitle(activeBrowser()!)
                                     : "Browser"}
-                            </span>
-                            <span class="browser-breadcrumb-note">
-                                isolated · shared with agent
                             </span>
                         </Show>
                     </div>
