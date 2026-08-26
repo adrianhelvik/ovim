@@ -1149,6 +1149,7 @@ export const ChatPanel = (props: {
 
 function App() {
     const native = isTauri();
+    const macos = /Mac|iPhone|iPad/.test(navigator.platform);
     const compactDockQuery = window.matchMedia?.("(max-width: 1439px)");
     const [view, setView] = createSignal<GuiSnapshot>(mockSnapshot);
     const [error, setError] = createSignal("");
@@ -1257,6 +1258,14 @@ function App() {
         ),
     );
     const activeBufferRevision = createMemo(() => view().bufferRevision);
+
+    createEffect(() => {
+        if (!native) return;
+        const surface = workbenchView() === "browser" ? "browser" : "source";
+        void invoke("gui_set_menu_surface", { surface }).catch((reason) =>
+            setError(String(reason)),
+        );
+    });
 
     createEffect(() => {
         const activeSource = activeSourceSelection(view().tabs);
@@ -1880,9 +1889,7 @@ function App() {
         )
             return;
         const target = event.target as Element | null;
-        const primaryModifier = /Mac|iPhone|iPad/.test(navigator.platform)
-            ? event.metaKey
-            : event.ctrlKey;
+        const primaryModifier = macos ? event.metaKey : event.ctrlKey;
         if (primaryModifier && event.key.toLowerCase() === "s") {
             event.preventDefault();
             performMenuAction(event.altKey ? "file.save-all" : "file.save");
@@ -1894,7 +1901,7 @@ function App() {
             return;
         }
         const browserShortcut = primaryModifier
-            ? browserShortcutAction(event, workbenchView() === "browser")
+            ? browserShortcutAction(event, workbenchView() === "browser", macos)
             : undefined;
         if (browserShortcut) {
             event.preventDefault();
@@ -1933,7 +1940,7 @@ function App() {
         if (event.key === "Tab" && target?.closest?.("[data-gui-core-dialog]"))
             return;
         if (nativeControl) return;
-        const clipboardModifier = /Mac|iPhone|iPad/.test(navigator.platform)
+        const clipboardModifier = macos
             ? event.metaKey
             : event.ctrlKey && event.shiftKey;
         if (

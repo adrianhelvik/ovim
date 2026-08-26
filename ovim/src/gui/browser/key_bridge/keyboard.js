@@ -5,7 +5,7 @@
       if (key === "g") scrollToEdge("top");
       else if (key === "t") emit("next_tab", count);
       else if (key === "T") emit("previous_tab", count);
-      else if (key === "0") emit("first_tab");
+      else if (key === "0") emit("first_tab", count);
       else if (key === "$") emit("last_tab");
       else if (key === "i") focusInput(count);
       return true;
@@ -99,11 +99,11 @@
         break;
       case "J":
         prevent(event);
-        emit("next_tab", count());
+        emit("previous_tab", count());
         break;
       case "K":
         prevent(event);
-        emit("previous_tab", count());
+        emit("next_tab", count());
         break;
       case "r":
         prevent(event);

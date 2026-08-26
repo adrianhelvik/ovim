@@ -14,7 +14,6 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, InvokeBody, Request};
-use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::{DragDropEvent, Emitter, EventTarget, Manager, RunEvent, State, Window, WindowEvent};
 
 #[derive(Clone, Default)]
@@ -462,118 +461,6 @@ fn gui_open_external(url: String) -> Result<(), String> {
 }
 
 /// Run the native application on the calling thread until its last window closes.
-fn install_menu(app: &tauri::App) -> Result<()> {
-    let new_browser_tab = MenuItem::with_id(
-        app,
-        "browser.new-tab",
-        "New Browser Tab",
-        true,
-        Some("CmdOrCtrl+T"),
-    )?;
-    let save = MenuItem::with_id(app, "file.save", "Save", true, Some("CmdOrCtrl+S"))?;
-    let save_all = MenuItem::with_id(
-        app,
-        "file.save-all",
-        "Save All",
-        true,
-        Some("CmdOrCtrl+Alt+S"),
-    )?;
-    let close = MenuItem::with_id(app, "file.close", "Close", true, Some("CmdOrCtrl+W"))?;
-    let quit = MenuItem::with_id(app, "app.quit", "Quit Ovim", true, Some("CmdOrCtrl+Q"))?;
-    let undo = MenuItem::with_id(app, "edit.undo", "Undo", true, Some("CmdOrCtrl+Z"))?;
-    let redo = MenuItem::with_id(app, "edit.redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?;
-    let select_all = MenuItem::with_id(
-        app,
-        "edit.select-all",
-        "Select All",
-        true,
-        Some("CmdOrCtrl+A"),
-    )?;
-    let find = MenuItem::with_id(app, "edit.find", "Find", true, Some("CmdOrCtrl+F"))?;
-    let focus_address = MenuItem::with_id(
-        app,
-        "browser.focus-address",
-        "Open Location",
-        true,
-        Some("CmdOrCtrl+L"),
-    )?;
-    let back = MenuItem::with_id(app, "browser.back", "Back", true, Some("CmdOrCtrl+["))?;
-    let forward = MenuItem::with_id(app, "browser.forward", "Forward", true, Some("CmdOrCtrl+]"))?;
-    let reload = MenuItem::with_id(app, "browser.reload", "Reload", true, Some("CmdOrCtrl+R"))?;
-    let previous_tab = MenuItem::with_id(
-        app,
-        "browser.previous-tab",
-        "Previous Tab",
-        true,
-        Some("CmdOrCtrl+Shift+["),
-    )?;
-    let next_tab = MenuItem::with_id(
-        app,
-        "browser.next-tab",
-        "Next Tab",
-        true,
-        Some("CmdOrCtrl+Shift+]"),
-    )?;
-
-    let app_menu = SubmenuBuilder::new(app, "Ovim")
-        .about(None)
-        .separator()
-        .hide()
-        .hide_others()
-        .show_all()
-        .separator()
-        .item(&quit)
-        .build()?;
-    let file_menu = SubmenuBuilder::new(app, "File")
-        .item(&new_browser_tab)
-        .separator()
-        .item(&save)
-        .item(&save_all)
-        .separator()
-        .item(&close)
-        .build()?;
-    let edit_menu = SubmenuBuilder::new(app, "Edit")
-        .item(&undo)
-        .item(&redo)
-        .separator()
-        .cut()
-        .copy()
-        .paste()
-        .item(&select_all)
-        .separator()
-        .item(&find)
-        .build()?;
-    let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
-    let navigation_menu = SubmenuBuilder::new(app, "Navigate")
-        .item(&focus_address)
-        .separator()
-        .item(&back)
-        .item(&forward)
-        .item(&reload)
-        .separator()
-        .item(&previous_tab)
-        .item(&next_tab)
-        .build()?;
-    let window_menu = SubmenuBuilder::new(app, "Window")
-        .minimize()
-        .maximize()
-        .separator()
-        .bring_all_to_front()
-        .build()?;
-    let menu = MenuBuilder::new(app)
-        .items(&[
-            &app_menu,
-            &file_menu,
-            &edit_menu,
-            &view_menu,
-            &navigation_menu,
-            &window_menu,
-        ])
-        .build()?;
-    app.set_menu(menu)?;
-    Ok(())
-}
-
 pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
     // Keep Tauri's patchable bundle marker linked even without the updater
     // plugin. The bundler uses it to distinguish deb/AppImage/MSI installs.
@@ -627,6 +514,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_gdiff_state,
             gui_gdiff_start,
             gui_gdiff_comment,
+            super::menu::gui_set_menu_surface,
             super::browser::gui_browser_open,
             super::browser::gui_browser_state,
             super::browser::gui_browser_subscribe,
@@ -639,7 +527,8 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             super::browser::gui_browser_set_vim_keys,
         ])
         .setup(move |app| {
-            install_menu(app)?;
+            let menu = super::menu::install(app)?;
+            app.manage(menu);
             if let Some(window) = app.get_webview_window("main") {
                 app.state::<BrowserHost>()
                     .attach(window.as_ref().window())

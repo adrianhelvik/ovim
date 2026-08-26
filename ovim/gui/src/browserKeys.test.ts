@@ -29,22 +29,25 @@ const setup = () => {
 };
 
 describe("browser key router", () => {
-    it("maps native shortcuts without stealing browser-only keys elsewhere", () => {
+    it("releases Vim control keys outside the browser on non-macOS hosts", () => {
         expect(
             browserShortcutAction(
                 { key: "w", code: "KeyW", shiftKey: false },
                 false,
+                false,
             ),
-        ).toBe("file.close");
+        ).toBeUndefined();
         expect(
             browserShortcutAction(
                 { key: "t", code: "KeyT", shiftKey: false },
                 false,
+                false,
             ),
-        ).toBe("browser.new-tab");
+        ).toBeUndefined();
         expect(
             browserShortcutAction(
                 { key: "l", code: "KeyL", shiftKey: false },
+                false,
                 false,
             ),
         ).toBeUndefined();
@@ -52,8 +55,26 @@ describe("browser key router", () => {
             browserShortcutAction(
                 { key: "{", code: "BracketLeft", shiftKey: true },
                 true,
+                false,
             ),
         ).toBe("browser.previous-tab");
+    });
+
+    it("keeps conventional tab and close shortcuts on macOS", () => {
+        expect(
+            browserShortcutAction(
+                { key: "w", code: "KeyW", shiftKey: false },
+                false,
+                true,
+            ),
+        ).toBe("file.close");
+        expect(
+            browserShortcutAction(
+                { key: "t", code: "KeyT", shiftKey: false },
+                false,
+                true,
+            ),
+        ).toBe("browser.new-tab");
     });
 
     it("routes browser actions through the shared workbench controller", async () => {
@@ -85,12 +106,12 @@ describe("browser key router", () => {
         });
         await route({ sessionId: "one", intent: "previous_tab" });
         await route({ sessionId: "one", intent: "next_tab", count: 2 });
-        await route({ sessionId: "one", intent: "first_tab" });
+        await route({ sessionId: "one", intent: "first_tab", count: 2 });
         await route({ sessionId: "one", intent: "last_tab" });
 
         expect(actions.openTab).toHaveBeenCalledTimes(2);
         expect(actions.openTab).toHaveBeenCalledWith("https://example.com/");
-        expect(actions.selectTab.mock.calls).toEqual([[0], [0], [0], [2]]);
+        expect(actions.selectTab.mock.calls).toEqual([[0], [0], [1], [2]]);
     });
 
     it("ignores stale session events", async () => {

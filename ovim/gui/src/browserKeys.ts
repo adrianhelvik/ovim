@@ -34,10 +34,11 @@ export type BrowserShortcutAction =
 export const browserShortcutAction = (
     event: Pick<KeyboardEvent, "key" | "code" | "shiftKey">,
     browserActive: boolean,
+    macos: boolean,
 ): BrowserShortcutAction | undefined => {
     const key = event.key.toLowerCase();
-    if (key === "w") return "file.close";
-    if (key === "t") return "browser.new-tab";
+    if (key === "w" && (browserActive || macos)) return "file.close";
+    if (key === "t" && (browserActive || macos)) return "browser.new-tab";
     if (!browserActive) return undefined;
     if (key === "l") return "browser.focus-address";
     if (key === "r") return "browser.reload";
@@ -135,7 +136,7 @@ export const createBrowserKeyRouter = (options: BrowserKeyRouterOptions) => {
                 selectRelativeTab(count);
                 break;
             case "first_tab":
-                options.selectTab(0);
+                options.selectTab(count - 1);
                 break;
             case "last_tab":
                 options.selectTab(options.tabs().length - 1);

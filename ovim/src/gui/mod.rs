@@ -10,6 +10,8 @@
 pub mod app;
 #[cfg(feature = "gui")]
 pub mod browser;
+#[cfg(feature = "gui")]
+mod menu;
 
 use crate::cli::FileArg;
 use crate::color::Color;

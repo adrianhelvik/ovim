@@ -7,7 +7,7 @@
     ["r", "reload"],
     ["o", "focus address"],
     ["t / x", "new / close tab"],
-    ["J / K", "next / previous tab"],
+    ["J / K", "previous / next tab"],
     ["gt / gT", "next / previous tab"],
     ["g0 / g$", "first / last tab"],
     ["gi", "focus an input"],
@@ -143,4 +143,3 @@
         target.select();
     }
   };
-
