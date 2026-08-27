@@ -9,7 +9,7 @@ use super::bridge::{
     browser_key_request, key_bridge_control_script, key_bridge_find_script, key_bridge_script,
     GuiBrowserKeyEvent, GuiBrowserKeyIntent,
 };
-use super::host::BrowserHost;
+use super::host::{attach_cleanup_failure, combine_results, BrowserHost};
 use super::state::{
     allowed_browser_url, browser_error, session_mut, BrowserHostInner, GuiBrowserBounds,
     GuiBrowserKeyMode, GuiBrowserState, GuiBrowserToolbarAction,
@@ -114,28 +114,38 @@ impl BrowserHost {
             }
         };
         let _ = webview.hide();
-        {
+        let store_result = (|| {
             let mut inner = self.lock()?;
             let browser = session_mut(&mut inner, session_id)?;
-            browser.webview = Some(webview);
+            browser.webview = Some(webview.clone());
             browser.command_token = Some(command_token);
             browser.materializing = false;
+            Ok::<(), BrowserError>(())
+        })();
+        if let Err(error) = store_result {
+            let cleanup = Self::close_webview(Some(&webview));
+            self.reset_failed_materialization(session_id);
+            return Err(attach_cleanup_failure(error, cleanup));
         }
         Ok(())
     }
 
     pub fn set_bounds(&self, bounds: GuiBrowserBounds) -> Result<(), String> {
         let bounds = bounds.validate()?;
-        let visibility_before = {
+        let _lifecycle = self.lifecycle_lock().map_err(|error| error.message)?;
+        let (previous_bounds, visibility_before) = {
             let inner = self
                 .inner
                 .lock()
                 .map_err(|_| "Browser host lock failed".to_string())?;
-            inner
-                .browsers
-                .iter()
-                .map(|browser| browser.session.visible)
-                .collect::<Vec<_>>()
+            (
+                inner.bounds,
+                inner
+                    .browsers
+                    .iter()
+                    .map(|browser| browser.session.visible)
+                    .collect::<Vec<_>>(),
+            )
         };
         {
             let mut inner = self
@@ -144,7 +154,19 @@ impl BrowserHost {
                 .map_err(|_| "Browser host lock failed".to_string())?;
             inner.bounds = bounds;
         }
-        self.sync_bounds()?;
+        if let Err(error) = self.sync_bounds() {
+            if let Ok(mut inner) = self.inner.lock() {
+                inner.bounds = previous_bounds;
+            }
+            let recovery = self
+                .sync_bounds()
+                .map_err(|recovery| format!("Could not restore prior bounds: {recovery}"));
+            self.publish_state();
+            return match recovery {
+                Ok(()) => Err(error),
+                Err(recovery) => Err(format!("{error}; {recovery}")),
+            };
+        }
         let visibility_changed = self
             .inner
             .lock()
@@ -168,6 +190,7 @@ impl BrowserHost {
         action: GuiBrowserToolbarAction,
         count: u32,
     ) -> Result<(), String> {
+        let _lifecycle = self.lifecycle_lock().map_err(|error| error.message)?;
         let (webview, command_token) = {
             let inner = self
                 .inner
@@ -202,7 +225,34 @@ impl BrowserHost {
         session_id: &str,
         enabled: bool,
     ) -> Result<GuiBrowserState, String> {
+        let _lifecycle = self.lifecycle_lock().map_err(|error| error.message)?;
         let control = {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser host lock failed".to_string())?;
+            let browser = inner
+                .browsers
+                .iter()
+                .find(|browser| browser.session.session_id == session_id)
+                .ok_or_else(|| format!("Browser session not found: {session_id}"))?;
+            match browser.webview.clone() {
+                Some(webview) => Some((
+                    webview,
+                    browser
+                        .command_token
+                        .clone()
+                        .ok_or_else(|| "Browser key bridge is unavailable".to_string())?,
+                )),
+                None => None,
+            }
+        };
+        if let Some((webview, token)) = control {
+            webview
+                .eval(key_bridge_control_script(&token, enabled))
+                .map_err(|error| format!("Could not update browser key handling: {error}"))?;
+        }
+        {
             let mut inner = self
                 .inner
                 .lock()
@@ -214,13 +264,6 @@ impl BrowserHost {
                 .ok_or_else(|| format!("Browser session not found: {session_id}"))?;
             browser.vim_keys_enabled = enabled;
             browser.key_mode = GuiBrowserKeyMode::Normal;
-            browser
-                .webview
-                .clone()
-                .zip(browser.command_token.as_deref().map(str::to_owned))
-        };
-        if let Some((webview, token)) = control {
-            let _ = webview.eval(key_bridge_control_script(&token, enabled));
         }
         self.publish_state();
         Ok(self.state())
@@ -243,17 +286,17 @@ impl BrowserHost {
                         && bounds.visible
                         && bounds.has_area()
                         && browser.webview.is_some();
-                    browser.session.visible = visible;
-                    browser
-                        .webview
-                        .clone()
-                        .map(|webview| (webview, visible, bounds))
+                    let Some(webview) = browser.webview.clone() else {
+                        browser.session.visible = false;
+                        return None;
+                    };
+                    Some((browser.session.session_id.clone(), webview, visible, bounds))
                 })
                 .collect::<Vec<_>>()
         };
 
         let mut first_error = None;
-        for (webview, visible, bounds) in operations {
+        for (session_id, webview, visible, bounds) in operations {
             let result = if visible {
                 webview
                     .set_position(LogicalPosition::new(bounds.x, bounds.y))
@@ -265,25 +308,48 @@ impl BrowserHost {
                     .hide()
                     .map_err(|error| format!("Could not hide embedded browser: {error}"))
             };
-            if first_error.is_none() {
-                first_error = result.err();
+            match result {
+                Ok(()) => {
+                    let mut inner = self
+                        .inner
+                        .lock()
+                        .map_err(|_| "Browser host lock failed".to_string())?;
+                    if let Some(browser) = inner
+                        .browsers
+                        .iter_mut()
+                        .find(|browser| browser.session.session_id == session_id)
+                    {
+                        browser.session.visible = visible;
+                    }
+                }
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    pub(super) fn rollback_materialization(&self, session_id: &str) -> Result<(), String> {
+        let webview = {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser host lock failed".to_string())?;
+            let browser = session_mut(&mut inner, session_id).map_err(|error| error.message)?;
+            browser.reset_to_unloaded()
+        };
+        let close_result = Self::close_webview(webview.as_ref());
+        let bounds_result = self
+            .sync_bounds()
+            .map_err(|error| format!("Could not restore embedded browser bounds: {error}"));
+        combine_results(close_result, bounds_result)
     }
 
     fn reset_failed_materialization(&self, session_id: &str) {
         if let Ok(mut inner) = self.inner.lock()
             && let Ok(browser) = session_mut(&mut inner, session_id)
         {
-            browser.materializing = false;
-            browser.session.url.clear();
-            browser.session.title.clear();
-            browser.session.loading = false;
-            browser.session.document_id = 0;
-            browser.command_token = None;
-            browser.key_mode = GuiBrowserKeyMode::Normal;
-            browser.active_snapshot = None;
+            browser.reset_to_unloaded();
         }
     }
 }

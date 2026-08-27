@@ -11,7 +11,7 @@ use tauri::Window;
 use super::state::{
     browser_error, clear_presentation_request, parse_browser_url, record_presentation_request,
     session_mut, session_ref, state_from_inner, BrowserHostInner, GuiBrowserKeyMode,
-    GuiBrowserState, HostedBrowser, MAX_BROWSER_SESSIONS,
+    GuiBrowserPresentationRequest, GuiBrowserState, HostedBrowser, MAX_BROWSER_SESSIONS,
 };
 
 #[cfg(test)]
@@ -22,7 +22,7 @@ use super::bridge::{
 #[cfg(test)]
 use super::document::{ACTION_FUNCTION, SNAPSHOT_SCRIPT};
 #[cfg(test)]
-use super::state::{allowed_browser_url, GuiBrowserBounds, GuiBrowserPresentationRequest};
+use super::state::{allowed_browser_url, GuiBrowserBounds};
 #[cfg(test)]
 use tauri::Url;
 
@@ -30,6 +30,27 @@ use tauri::Url;
 pub struct BrowserHost {
     pub(super) inner: Arc<Mutex<BrowserHostInner>>,
     requests: Arc<Mutex<Option<BrowserRequestReceiver>>>,
+    lifecycle: Arc<Mutex<()>>,
+}
+
+#[derive(Clone)]
+struct BrowserSelection {
+    active_session_id: Option<String>,
+    presentation_request: Option<GuiBrowserPresentationRequest>,
+}
+
+impl BrowserSelection {
+    fn capture(inner: &BrowserHostInner) -> Self {
+        Self {
+            active_session_id: inner.active_session_id.clone(),
+            presentation_request: inner.presentation_request.clone(),
+        }
+    }
+
+    fn restore(self, inner: &mut BrowserHostInner) {
+        inner.active_session_id = self.active_session_id;
+        inner.presentation_request = self.presentation_request;
+    }
 }
 
 impl BrowserHost {
@@ -37,10 +58,15 @@ impl BrowserHost {
         Self {
             inner: Arc::new(Mutex::new(BrowserHostInner::default())),
             requests: Arc::new(Mutex::new(Some(requests))),
+            lifecycle: Arc::new(Mutex::new(())),
         }
     }
 
     pub fn attach(&self, parent: Window) -> Result<(), String> {
+        let _lifecycle = self
+            .lifecycle
+            .lock()
+            .map_err(|_| "Browser lifecycle lock failed")?;
         {
             let mut inner = self.inner.lock().map_err(|_| "Browser host lock failed")?;
             inner.parent = Some(parent);
@@ -82,7 +108,7 @@ impl BrowserHost {
     async fn execute(&self, command: BrowserCommand, agent_requested: bool) -> BrowserResult {
         match command {
             BrowserCommand::List => Ok(BrowserResponse::Sessions(self.sessions())),
-            BrowserCommand::Start { url } => self.start(url.as_deref(), agent_requested).await,
+            BrowserCommand::Start { url } => self.start(url.as_deref(), agent_requested),
             BrowserCommand::Show { session_id } => self.show(&session_id, agent_requested),
             BrowserCommand::Hide { session_id } => self.hide(&session_id),
             BrowserCommand::Close { session_id } => self.close(&session_id),
@@ -100,12 +126,8 @@ impl BrowserHost {
         }
     }
 
-    pub async fn open_for_user(
-        &self,
-        initial_url: Option<&str>,
-    ) -> Result<GuiBrowserState, String> {
+    pub fn open_for_user(&self, initial_url: Option<&str>) -> Result<GuiBrowserState, String> {
         self.start(initial_url, false)
-            .await
             .map_err(|error| error.message)?;
         Ok(self.state())
     }
@@ -122,9 +144,10 @@ impl BrowserHost {
             })
     }
 
-    async fn start(&self, initial_url: Option<&str>, emit_show: bool) -> BrowserResult {
+    fn start(&self, initial_url: Option<&str>, emit_show: bool) -> BrowserResult {
         let parsed_url = initial_url.map(parse_browser_url).transpose()?;
-        let session_id = {
+        let _lifecycle = self.lifecycle_lock()?;
+        let (session_id, previous_selection) = {
             let mut inner = self.lock()?;
             if inner.browsers.len() >= MAX_BROWSER_SESSIONS {
                 return Err(browser_error(
@@ -132,6 +155,7 @@ impl BrowserHost {
                     format!("Ovim supports up to {MAX_BROWSER_SESSIONS} browser tabs"),
                 ));
             }
+            let previous_selection = BrowserSelection::capture(&inner);
             let id = inner.next_session_id;
             inner.next_session_id = inner.next_session_id.saturating_add(1);
             let session_id = format!("browser-{id}");
@@ -156,19 +180,23 @@ impl BrowserHost {
             if emit_show {
                 record_presentation_request(&mut inner, &session_id);
             }
-            session_id
+            (session_id, previous_selection)
         };
 
         if let Some(url) = parsed_url {
             if let Err(error) = self.materialize(&session_id, url) {
-                self.discard_session(&session_id);
+                let rollback = self.rollback_started_session(&session_id, previous_selection);
                 self.publish_state();
-                return Err(error);
+                return Err(attach_cleanup_failure(error, rollback));
             }
         }
 
-        self.sync_bounds()
-            .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
+        if let Err(message) = self.sync_bounds() {
+            let error = browser_error(BrowserErrorKind::Unavailable, message);
+            let rollback = self.rollback_started_session(&session_id, previous_selection);
+            self.publish_state();
+            return Err(attach_cleanup_failure(error, rollback));
+        }
         self.publish_state();
         Ok(BrowserResponse::Session(
             self.session_or_error(&session_id)?,
@@ -176,36 +204,51 @@ impl BrowserHost {
     }
 
     fn show(&self, session_id: &str, emit_show: bool) -> BrowserResult {
-        {
+        let _lifecycle = self.lifecycle_lock()?;
+        let previous_selection = {
             let mut inner = self.lock()?;
             session_ref(&inner, session_id)?;
+            let previous_selection = BrowserSelection::capture(&inner);
             inner.active_session_id = Some(session_id.to_string());
             if emit_show {
                 record_presentation_request(&mut inner, session_id);
             }
+            previous_selection
+        };
+        if let Err(message) = self.sync_bounds() {
+            let error = browser_error(BrowserErrorKind::Unavailable, message);
+            let rollback = self.restore_selection(previous_selection);
+            self.publish_state();
+            return Err(attach_cleanup_failure(error, rollback));
         }
-        self.sync_bounds()
-            .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
         self.publish_state();
         Ok(BrowserResponse::Session(self.session_or_error(session_id)?))
     }
 
     fn hide(&self, session_id: &str) -> BrowserResult {
-        {
+        let _lifecycle = self.lifecycle_lock()?;
+        let previous_selection = {
             let mut inner = self.lock()?;
             session_ref(&inner, session_id)?;
+            let previous_selection = BrowserSelection::capture(&inner);
             if inner.active_session_id.as_deref() == Some(session_id) {
                 inner.active_session_id = None;
             }
             clear_presentation_request(&mut inner, session_id);
+            previous_selection
+        };
+        if let Err(message) = self.sync_bounds() {
+            let error = browser_error(BrowserErrorKind::Unavailable, message);
+            let rollback = self.restore_selection(previous_selection);
+            self.publish_state();
+            return Err(attach_cleanup_failure(error, rollback));
         }
-        self.sync_bounds()
-            .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
         self.publish_state();
         Ok(BrowserResponse::Session(self.session_or_error(session_id)?))
     }
 
     fn close(&self, session_id: &str) -> BrowserResult {
+        let _lifecycle = self.lifecycle_lock()?;
         let mut browser = {
             let mut inner = self.lock()?;
             let position = inner
@@ -230,33 +273,31 @@ impl BrowserHost {
             browser
         };
         browser.session.visible = false;
-        let close_result = browser.webview.map_or(Ok(()), |webview| {
-            webview.close().map_err(|error| {
-                browser_error(
-                    BrowserErrorKind::Unavailable,
-                    format!("Could not close embedded browser: {error}"),
-                )
-            })
-        });
+        let close_result = Self::close_webview(browser.webview.as_ref());
         let bounds_result = self
             .sync_bounds()
-            .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message));
+            .map_err(|message| format!("Could not restore embedded browser bounds: {message}"));
         self.publish_state();
-        close_result?;
-        bounds_result?;
+        combine_results(close_result, bounds_result)
+            .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
         Ok(BrowserResponse::Session(browser.session))
     }
 
     fn navigate(&self, session_id: &str, raw_url: &str) -> BrowserResult {
         let url = parse_browser_url(raw_url)?;
+        let _lifecycle = self.lifecycle_lock()?;
         let webview = {
             let inner = self.lock()?;
             session_ref(&inner, session_id)?.webview.clone()
         };
         let Some(webview) = webview else {
             self.materialize(session_id, url)?;
-            self.sync_bounds()
-                .map_err(|message| browser_error(BrowserErrorKind::Unavailable, message))?;
+            if let Err(message) = self.sync_bounds() {
+                let error = browser_error(BrowserErrorKind::Unavailable, message);
+                let rollback = self.rollback_materialization(session_id);
+                self.publish_state();
+                return Err(attach_cleanup_failure(error, rollback));
+            }
             self.publish_state();
             return Ok(BrowserResponse::Session(self.session_or_error(session_id)?));
         };
@@ -286,6 +327,10 @@ impl BrowserHost {
     }
 
     pub fn acknowledge_presentation(&self, revision: u64) -> GuiBrowserState {
+        let _lifecycle = match self.lifecycle.lock() {
+            Ok(lifecycle) => lifecycle,
+            Err(_) => return self.state(),
+        };
         let state = match self.inner.lock() {
             Ok(mut inner) => {
                 if inner
@@ -350,22 +395,66 @@ impl BrowserHost {
         })
     }
 
-    fn discard_session(&self, session_id: &str) {
-        if let Ok(mut inner) = self.inner.lock()
-            && let Some(position) = inner
+    fn rollback_started_session(
+        &self,
+        session_id: &str,
+        previous_selection: BrowserSelection,
+    ) -> Result<(), String> {
+        let browser = {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser host lock failed".to_string())?;
+            let position = inner
                 .browsers
                 .iter()
                 .position(|browser| browser.session.session_id == session_id)
+                .ok_or_else(|| {
+                    format!("Browser session not found during rollback: {session_id}")
+                })?;
+            let browser = inner.browsers.remove(position);
+            previous_selection.restore(&mut inner);
+            browser
+        };
+        let close_result = Self::close_webview(browser.webview.as_ref());
+        let bounds_result = self
+            .sync_bounds()
+            .map_err(|error| format!("Could not restore embedded browser bounds: {error}"));
+        combine_results(close_result, bounds_result)
+    }
+
+    fn restore_selection(&self, previous_selection: BrowserSelection) -> Result<(), String> {
         {
-            inner.browsers.remove(position);
-            clear_presentation_request(&mut inner, session_id);
-            if inner.active_session_id.as_deref() == Some(session_id) {
-                inner.active_session_id = inner
-                    .browsers
-                    .last()
-                    .map(|browser| browser.session.session_id.clone());
-            }
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser host lock failed".to_string())?;
+            previous_selection.restore(&mut inner);
         }
+        self.sync_bounds()
+            .map_err(|error| format!("Could not restore embedded browser bounds: {error}"))
+    }
+
+    pub(super) fn close_webview(webview: Option<&tauri::Webview>) -> Result<(), String> {
+        let Some(webview) = webview else {
+            return Ok(());
+        };
+        let hide_error = webview.hide().err();
+        webview.close().map_err(|error| match hide_error {
+            Some(hide_error) => format!(
+                "Could not close embedded browser: {error}; hiding it also failed: {hide_error}"
+            ),
+            None => format!("Could not close embedded browser: {error}"),
+        })
+    }
+
+    pub(super) fn lifecycle_lock(&self) -> Result<std::sync::MutexGuard<'_, ()>, BrowserError> {
+        self.lifecycle.lock().map_err(|_| {
+            browser_error(
+                BrowserErrorKind::Unavailable,
+                "Browser lifecycle is unavailable",
+            )
+        })
     }
 
     pub(super) fn lock(&self) -> Result<std::sync::MutexGuard<'_, BrowserHostInner>, BrowserError> {
@@ -385,6 +474,27 @@ impl BrowserHost {
         if let Some(updates) = updates {
             let _ = updates.send(state);
         }
+    }
+}
+
+pub(super) fn attach_cleanup_failure(
+    mut error: BrowserError,
+    cleanup: Result<(), String>,
+) -> BrowserError {
+    if let Err(cleanup) = cleanup {
+        error.message = format!("{}; cleanup also failed: {cleanup}", error.message);
+    }
+    error
+}
+
+pub(super) fn combine_results(
+    first: Result<(), String>,
+    second: Result<(), String>,
+) -> Result<(), String> {
+    match (first, second) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(first), Err(second)) => Err(format!("{first}; {second}")),
     }
 }
 

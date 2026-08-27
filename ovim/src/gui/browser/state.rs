@@ -98,6 +98,21 @@ pub(super) struct HostedBrowser {
     pub(super) next_snapshot_id: u64,
 }
 
+impl HostedBrowser {
+    pub(super) fn reset_to_unloaded(&mut self) -> Option<Webview> {
+        self.materializing = false;
+        self.command_token = None;
+        self.key_mode = GuiBrowserKeyMode::Normal;
+        self.session.url.clear();
+        self.session.title.clear();
+        self.session.visible = false;
+        self.session.loading = false;
+        self.session.document_id = 0;
+        self.active_snapshot = None;
+        self.webview.take()
+    }
+}
+
 pub(super) struct BrowserHostInner {
     pub(super) parent: Option<Window>,
     pub(super) state_updates: Option<Channel<GuiBrowserState>>,

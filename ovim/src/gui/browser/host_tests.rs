@@ -183,7 +183,7 @@ async fn user_tabs_stay_unloaded_until_the_first_navigation() {
     let (_, requests) = ovim_core::browser::browser_channel();
     let host = BrowserHost::new(requests);
 
-    let state = host.open_for_user(None).await.unwrap();
+    let state = host.open_for_user(None).unwrap();
     assert_eq!(state.sessions.len(), 1);
     assert_eq!(state.active_session_id.as_deref(), Some("browser-1"));
     assert_eq!(state.sessions[0].url, "");
@@ -208,7 +208,7 @@ async fn user_tabs_stay_unloaded_until_the_first_navigation() {
 async fn geometry_only_updates_do_not_republish_browser_state() {
     let (_, requests) = ovim_core::browser::browser_channel();
     let host = BrowserHost::new(requests);
-    host.open_for_user(None).await.unwrap();
+    host.open_for_user(None).unwrap();
 
     let payloads = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
     let received = payloads.clone();
@@ -235,11 +235,30 @@ async fn atomic_start_discards_the_session_when_a_webview_cannot_be_created() {
     let (_, requests) = ovim_core::browser::browser_channel();
     let host = BrowserHost::new(requests);
 
-    let error = host
-        .start(Some("https://example.com/"), true)
-        .await
-        .unwrap_err();
+    let error = host.start(Some("https://example.com/"), true).unwrap_err();
     assert_eq!(error.kind, BrowserErrorKind::Unavailable);
     assert!(host.state().sessions.is_empty());
     assert!(host.state().presentation_request.is_none());
+}
+
+#[test]
+fn failed_start_restores_the_exact_active_tab_and_presentation_request() {
+    let (_, requests) = ovim_core::browser::browser_channel();
+    let host = BrowserHost::new(requests);
+
+    host.start(None, true).unwrap();
+    host.start(None, false).unwrap();
+    host.show("browser-1", true).unwrap();
+    let before = host.state();
+
+    let error = host.start(Some("https://example.com/"), true).unwrap_err();
+
+    assert_eq!(error.kind, BrowserErrorKind::Unavailable);
+    let after = host.state();
+    assert_eq!(after.sessions.len(), 2);
+    assert_eq!(after.active_session_id, before.active_session_id);
+    assert_eq!(after.presentation_request, before.presentation_request);
+
+    let opened = host.open_for_user(None).unwrap();
+    assert_eq!(opened.active_session_id.as_deref(), Some("browser-4"));
 }

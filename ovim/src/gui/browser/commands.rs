@@ -8,7 +8,7 @@ pub async fn gui_browser_open(
     host: tauri::State<'_, BrowserHost>,
     url: Option<String>,
 ) -> Result<GuiBrowserState, String> {
-    host.open_for_user(url.as_deref()).await
+    host.open_for_user(url.as_deref())
 }
 
 #[tauri::command]
