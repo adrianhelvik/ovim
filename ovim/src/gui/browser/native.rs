@@ -382,18 +382,21 @@ fn update_key_mode(
             return;
         };
         let updates = inner.state_updates.clone();
-        let Some(browser) = inner
-            .browsers
-            .iter_mut()
-            .find(|browser| browser.session.session_id == session_id)
-        else {
-            return;
-        };
-        if !browser.vim_keys_enabled || browser.key_mode == mode {
-            return;
+        {
+            let Some(browser) = inner
+                .browsers
+                .iter_mut()
+                .find(|browser| browser.session.session_id == session_id)
+            else {
+                return;
+            };
+            if !browser.vim_keys_enabled || browser.key_mode == mode {
+                return;
+            }
+            browser.key_mode = mode;
         }
-        browser.key_mode = mode;
-        (updates, super::state::state_from_inner(&inner))
+        let state = super::state::state_update_from_inner(&mut inner);
+        (updates, state)
     };
     if let Some(updates) = updates {
         let _ = updates.send(state);
@@ -442,29 +445,32 @@ fn update_page_load(
             return;
         };
         let updates = inner.state_updates.clone();
-        let Some(browser) = inner
-            .browsers
-            .iter_mut()
-            .find(|browser| browser.session.session_id == session_id)
-        else {
-            return;
-        };
-        match event {
-            PageLoadEvent::Started => {
-                if browser.session.url != url.as_str() || !browser.session.loading {
-                    browser.session.document_id = browser.session.document_id.saturating_add(1);
+        {
+            let Some(browser) = inner
+                .browsers
+                .iter_mut()
+                .find(|browser| browser.session.session_id == session_id)
+            else {
+                return;
+            };
+            match event {
+                PageLoadEvent::Started => {
+                    if browser.session.url != url.as_str() || !browser.session.loading {
+                        browser.session.document_id = browser.session.document_id.saturating_add(1);
+                    }
+                    browser.session.url = url.to_string();
+                    browser.session.loading = true;
+                    browser.key_mode = GuiBrowserKeyMode::Normal;
+                    browser.active_snapshot = None;
                 }
-                browser.session.url = url.to_string();
-                browser.session.loading = true;
-                browser.key_mode = GuiBrowserKeyMode::Normal;
-                browser.active_snapshot = None;
-            }
-            PageLoadEvent::Finished => {
-                browser.session.url = url.to_string();
-                browser.session.loading = false;
+                PageLoadEvent::Finished => {
+                    browser.session.url = url.to_string();
+                    browser.session.loading = false;
+                }
             }
         }
-        (updates, super::state::state_from_inner(&inner))
+        let state = super::state::state_update_from_inner(&mut inner);
+        (updates, state)
     };
     if let Some(updates) = updates {
         let _ = updates.send(state);
@@ -480,15 +486,18 @@ fn update_title(inner: &Weak<Mutex<BrowserHostInner>>, session_id: &str, title: 
             return;
         };
         let updates = inner.state_updates.clone();
-        let Some(browser) = inner
-            .browsers
-            .iter_mut()
-            .find(|browser| browser.session.session_id == session_id)
-        else {
-            return;
-        };
-        browser.session.title = title;
-        (updates, super::state::state_from_inner(&inner))
+        {
+            let Some(browser) = inner
+                .browsers
+                .iter_mut()
+                .find(|browser| browser.session.session_id == session_id)
+            else {
+                return;
+            };
+            browser.session.title = title;
+        }
+        let state = super::state::state_update_from_inner(&mut inner);
+        (updates, state)
     };
     if let Some(updates) = updates {
         let _ = updates.send(state);

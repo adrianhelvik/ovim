@@ -36,12 +36,15 @@ const MAX_CLOSED_BROWSER_TABS = 20;
 
 export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
     const [state, setState] = createSignal<BrowserState>({
+        revision: 0,
         sessions: [],
         maxSessions: 8,
     });
     const [opening, setOpening] = createSignal(false);
     const [closedTabs, setClosedTabs] = createSignal<ClosedBrowserTab[]>([]);
     let latestPresentationRevision = 0;
+    let latestStateRevision = -1;
+    let latestActivationRequest = 0;
     const closing = new Set<string>();
 
     const activeSessionId = () => {
@@ -77,6 +80,8 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
         );
     };
     const accept = (next: BrowserState, placement?: WorkbenchTabPlacement) => {
+        if (next.revision < latestStateRevision) return;
+        latestStateRevision = next.revision;
         const knownSessions = new Set(
             state().sessions.map((session) => session.sessionId),
         );
@@ -191,7 +196,7 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
                 url,
             }),
         );
-        await focus(sessionId);
+        if (activeSessionId() === sessionId) await focus(sessionId);
     };
     const toolbar = async (
         sessionId: string,
@@ -216,8 +221,15 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
             present(sessionId);
             return;
         }
+        const request = ++latestActivationRequest;
+        const origin = workbenchSelectionId(options.selection());
         void invoke<BrowserState>("gui_browser_activate", { sessionId })
             .then((next) => {
+                if (
+                    request !== latestActivationRequest ||
+                    workbenchSelectionId(options.selection()) !== origin
+                )
+                    return;
                 accept(next);
                 present(sessionId);
             })

@@ -30,7 +30,7 @@ const session = (overrides: Partial<BrowserSession> = {}): BrowserSession => ({
 const state = (
     sessions: BrowserSession[] = [session()],
     activeSessionId: string | undefined = sessions[0]?.sessionId,
-): BrowserState => ({ sessions, activeSessionId, maxSessions: 8 });
+): BrowserState => ({ revision: 0, sessions, activeSessionId, maxSessions: 8 });
 
 beforeEach(() => {
     let frame = 0;

@@ -197,6 +197,8 @@ fn browser_state_channel_publishes_initial_and_changed_state() {
 
     let payloads = payloads.lock().unwrap();
     assert_eq!(payloads.len(), 2);
+    assert_eq!(payloads[0]["revision"], 0);
+    assert_eq!(payloads[1]["revision"], 1);
     assert!(payloads[0]["presentationRequest"].is_null());
     assert_eq!(payloads[1]["presentationRequest"]["revision"], 1);
     assert_eq!(payloads[1]["presentationRequest"]["sessionId"], "browser-7");
@@ -208,6 +210,7 @@ async fn user_tabs_stay_unloaded_until_the_first_navigation() {
     let host = BrowserHost::new(requests);
 
     let state = host.open_for_user(None).unwrap();
+    assert_eq!(state.revision, 1);
     assert_eq!(state.sessions.len(), 1);
     assert_eq!(state.active_session_id.as_deref(), Some("browser-1"));
     assert_eq!(state.sessions[0].url, "");

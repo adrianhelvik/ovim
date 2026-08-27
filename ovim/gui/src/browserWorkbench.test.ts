@@ -1,5 +1,6 @@
 import { createRoot, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BrowserState } from "./browserProtocol";
 import { createBrowserWorkbench } from "./browserWorkbench";
 import type { GuiSnapshot } from "./types";
 import type { WorkbenchSelection } from "./workbench";
@@ -39,6 +40,113 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("browser workbench controller", () => {
+    it("ignores browser states older than the latest native revision", () =>
+        createRoot((dispose) => {
+            const [selection, setSelection] = createSignal<WorkbenchSelection>({
+                kind: "source",
+                tabId: 12,
+            });
+            const controller = createBrowserWorkbench({
+                native: true,
+                sourceTabs: () => sourceTabs,
+                includeVector: () => false,
+                selection,
+                setSelection,
+                setError: vi.fn(),
+            });
+            const current = {
+                sessionId: "browser-1",
+                url: "https://example.com/",
+                title: "Current title",
+                visible: true,
+                loading: false,
+                documentId: 2,
+                vimKeysEnabled: true,
+                keyMode: "normal" as const,
+            };
+
+            controller.accept({
+                revision: 4,
+                sessions: [current],
+                activeSessionId: current.sessionId,
+                maxSessions: 8,
+            });
+            controller.accept({
+                revision: 3,
+                sessions: [{ ...current, title: "Stale title", documentId: 1 }],
+                activeSessionId: current.sessionId,
+                maxSessions: 8,
+            });
+
+            expect(controller.state().revision).toBe(4);
+            expect(controller.state().sessions[0]?.title).toBe("Current title");
+            dispose();
+        }));
+
+    it("does not let a pending activation steal focus from a newer selection", async () => {
+        const target = {
+            sessionId: "browser-2",
+            url: "https://example.com/two",
+            title: "Two",
+            visible: false,
+            loading: false,
+            documentId: 1,
+            vimKeysEnabled: true,
+            keyMode: "normal" as const,
+        };
+        let resolveActivation!: (state: BrowserState) => void;
+        invoke.mockImplementation((command: string) =>
+            command === "gui_browser_activate"
+                ? new Promise<BrowserState>((resolve) => {
+                      resolveActivation = resolve;
+                  })
+                : Promise.resolve(),
+        );
+
+        await new Promise<void>((resolve) =>
+            createRoot((dispose) => {
+                const [selection, setSelection] =
+                    createSignal<WorkbenchSelection>({
+                        kind: "browser",
+                        sessionId: "browser-1",
+                    });
+                const controller = createBrowserWorkbench({
+                    native: true,
+                    sourceTabs: () => sourceTabs,
+                    includeVector: () => false,
+                    selection,
+                    setSelection,
+                    setError: vi.fn(),
+                });
+                const first = { ...target, sessionId: "browser-1" };
+                controller.accept({
+                    revision: 1,
+                    sessions: [first, target],
+                    activeSessionId: first.sessionId,
+                    maxSessions: 8,
+                });
+
+                controller.activate(target.sessionId);
+                setSelection({ kind: "source", tabId: 12 });
+                resolveActivation({
+                    revision: 2,
+                    sessions: [first, { ...target, visible: true }],
+                    activeSessionId: target.sessionId,
+                    maxSessions: 8,
+                });
+
+                queueMicrotask(() => {
+                    expect(selection()).toEqual({
+                        kind: "source",
+                        tabId: 12,
+                    });
+                    dispose();
+                    resolve();
+                });
+            }),
+        );
+    });
+
     it("owns the native browser state subscription", async () => {
         await new Promise<void>((resolve) =>
             createRoot((dispose) => {
@@ -62,6 +170,7 @@ describe("browser workbench controller", () => {
                         { onEvent: nativeChannels[0] },
                     );
                     nativeChannels[0]?.onmessage?.({
+                        revision: 1,
                         sessions: [],
                         maxSessions: 4,
                     });
@@ -91,15 +200,21 @@ describe("browser workbench controller", () => {
         };
         invoke.mockImplementation((command: string) => {
             if (command === "gui_browser_close")
-                return Promise.resolve({ sessions: [], maxSessions: 8 });
+                return Promise.resolve({
+                    revision: 2,
+                    sessions: [],
+                    maxSessions: 8,
+                });
             if (command === "gui_browser_open")
                 return Promise.resolve({
+                    revision: 3,
                     sessions: [restored],
                     activeSessionId: restored.sessionId,
                     maxSessions: 8,
                 });
             if (command === "gui_browser_set_vim_keys")
                 return Promise.resolve({
+                    revision: 4,
                     sessions: [{ ...restored, vimKeysEnabled: false }],
                     activeSessionId: restored.sessionId,
                     maxSessions: 8,
@@ -125,6 +240,7 @@ describe("browser workbench controller", () => {
             });
         });
         controller.accept({
+            revision: 1,
             sessions: [original],
             activeSessionId: original.sessionId,
             maxSessions: 8,
@@ -174,6 +290,7 @@ describe("browser workbench controller", () => {
                 keyMode: "normal" as const,
             };
             controller.accept({
+                revision: 1,
                 sessions: [session],
                 activeSessionId: session.sessionId,
                 maxSessions: 8,
@@ -191,7 +308,7 @@ describe("browser workbench controller", () => {
                 { revision: 9 },
             );
 
-            controller.accept({ sessions: [], maxSessions: 8 });
+            controller.accept({ revision: 2, sessions: [], maxSessions: 8 });
             expect(selection()).toEqual({ kind: "source", tabId: 12 });
             dispose();
         }));
@@ -208,6 +325,7 @@ describe("browser workbench controller", () => {
             keyMode: "normal" as const,
         };
         invoke.mockResolvedValue({
+            revision: 1,
             sessions: [session],
             activeSessionId: session.sessionId,
             maxSessions: 8,
@@ -262,10 +380,12 @@ describe("browser workbench controller", () => {
             documentId: 1,
         };
         let resolveClose!: (state: {
+            revision: number;
             sessions: (typeof original)[];
             maxSessions: number;
         }) => void;
         const closeReply = new Promise<{
+            revision: number;
             sessions: (typeof original)[];
             maxSessions: number;
         }>((resolve) => {
@@ -274,12 +394,14 @@ describe("browser workbench controller", () => {
         invoke.mockImplementation((command: string) => {
             if (command === "gui_browser_navigate")
                 return Promise.resolve({
+                    revision: 2,
                     sessions: [navigated],
                     activeSessionId: navigated.sessionId,
                     maxSessions: 8,
                 });
             if (command === "gui_browser_set_vim_keys")
                 return Promise.resolve({
+                    revision: 3,
                     sessions: [
                         {
                             ...navigated,
@@ -310,6 +432,7 @@ describe("browser workbench controller", () => {
                     setError: vi.fn(),
                 });
                 controller.accept({
+                    revision: 1,
                     sessions: [original],
                     activeSessionId: original.sessionId,
                     maxSessions: 8,
@@ -358,7 +481,11 @@ describe("browser workbench controller", () => {
                             ([command]) => command === "gui_browser_close",
                         ),
                     ).toHaveLength(1);
-                    resolveClose({ sessions: [], maxSessions: 8 });
+                    resolveClose({
+                        revision: 4,
+                        sessions: [],
+                        maxSessions: 8,
+                    });
                     await Promise.all([firstClose, duplicateClose]);
 
                     dispose();

@@ -10,6 +10,7 @@ export interface BrowserSession {
 }
 
 export interface BrowserState {
+    revision: number;
     sessions: BrowserSession[];
     activeSessionId?: string;
     maxSessions: number;

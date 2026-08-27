@@ -113,6 +113,7 @@ describe("Ovim Solid workbench", () => {
 
     it("replays a durable agent browser presentation request exactly once", () => {
         const state = {
+            revision: 1,
             sessions: [
                 {
                     sessionId: "browser-4",

@@ -10,8 +10,9 @@ use tauri::Window;
 
 use super::state::{
     browser_error, clear_presentation_request, parse_browser_url, record_presentation_request,
-    session_mut, session_ref, state_from_inner, BrowserHostInner, GuiBrowserKeyMode,
-    GuiBrowserPresentationRequest, GuiBrowserState, HostedBrowser, MAX_BROWSER_SESSIONS,
+    session_mut, session_ref, state_from_inner, state_update_from_inner, BrowserHostInner,
+    GuiBrowserKeyMode, GuiBrowserPresentationRequest, GuiBrowserState, HostedBrowser,
+    MAX_BROWSER_SESSIONS,
 };
 
 #[cfg(test)]
@@ -137,6 +138,7 @@ impl BrowserHost {
             .lock()
             .map(|inner| state_from_inner(&inner))
             .unwrap_or_else(|_| GuiBrowserState {
+                revision: 0,
                 sessions: Vec::new(),
                 active_session_id: None,
                 max_sessions: MAX_BROWSER_SESSIONS,
@@ -331,7 +333,7 @@ impl BrowserHost {
             Ok(lifecycle) => lifecycle,
             Err(_) => return self.state(),
         };
-        let state = match self.inner.lock() {
+        match self.inner.lock() {
             Ok(mut inner) => {
                 if inner
                     .presentation_request
@@ -340,12 +342,11 @@ impl BrowserHost {
                 {
                     inner.presentation_request = None;
                 }
-                state_from_inner(&inner)
             }
             Err(_) => return self.state(),
-        };
+        }
         self.publish_state();
-        state
+        self.state()
     }
 
     pub fn navigate_for_user(
@@ -468,7 +469,11 @@ impl BrowserHost {
 
     pub(super) fn publish_state(&self) {
         let (updates, state) = match self.inner.lock() {
-            Ok(inner) => (inner.state_updates.clone(), state_from_inner(&inner)),
+            Ok(mut inner) => {
+                let updates = inner.state_updates.clone();
+                let state = state_update_from_inner(&mut inner);
+                (updates, state)
+            }
             Err(_) => return,
         };
         if let Some(updates) = updates {

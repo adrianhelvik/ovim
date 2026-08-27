@@ -55,6 +55,7 @@ describe("browser navigation controller", () => {
         await new Promise<void>((resolve) =>
             createRoot((dispose) => {
                 const [state, setState] = createSignal<BrowserState>({
+                    revision: 1,
                     sessions: [session],
                     activeSessionId: session.sessionId,
                     maxSessions: 8,
@@ -118,6 +119,7 @@ describe("browser navigation controller", () => {
         await new Promise<void>((resolve) =>
             createRoot((dispose) => {
                 const [state, setState] = createSignal<BrowserState>({
+                    revision: 1,
                     sessions: [session],
                     activeSessionId: session.sessionId,
                     maxSessions: 8,

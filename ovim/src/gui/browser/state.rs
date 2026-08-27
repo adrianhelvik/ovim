@@ -39,6 +39,7 @@ impl GuiBrowserBounds {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiBrowserState {
+    pub revision: u64,
     pub sessions: Vec<GuiBrowserSession>,
     pub active_session_id: Option<String>,
     pub max_sessions: usize,
@@ -122,6 +123,7 @@ pub(super) struct BrowserHostInner {
     pub(super) next_session_id: u64,
     pub(super) next_presentation_revision: u64,
     pub(super) presentation_request: Option<GuiBrowserPresentationRequest>,
+    pub(super) state_revision: u64,
 }
 
 impl Default for BrowserHostInner {
@@ -135,6 +137,7 @@ impl Default for BrowserHostInner {
             next_session_id: 1,
             next_presentation_revision: 1,
             presentation_request: None,
+            state_revision: 0,
         }
     }
 }
@@ -199,6 +202,7 @@ pub(super) fn browser_error(kind: BrowserErrorKind, message: impl Into<String>) 
 
 pub(super) fn state_from_inner(inner: &BrowserHostInner) -> GuiBrowserState {
     GuiBrowserState {
+        revision: inner.state_revision,
         sessions: inner
             .browsers
             .iter()
@@ -212,6 +216,11 @@ pub(super) fn state_from_inner(inner: &BrowserHostInner) -> GuiBrowserState {
         max_sessions: MAX_BROWSER_SESSIONS,
         presentation_request: inner.presentation_request.clone(),
     }
+}
+
+pub(super) fn state_update_from_inner(inner: &mut BrowserHostInner) -> GuiBrowserState {
+    inner.state_revision = inner.state_revision.saturating_add(1);
+    state_from_inner(inner)
 }
 
 pub(super) fn record_presentation_request(inner: &mut BrowserHostInner, session_id: &str) {

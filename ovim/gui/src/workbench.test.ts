@@ -18,6 +18,7 @@ const browserState = (
     sessionIds: string[],
     activeSessionId?: string,
 ): BrowserState => ({
+    revision: 0,
     sessions: sessionIds.map((sessionId) => ({
         sessionId,
         url: `https://${sessionId}.example/`,
