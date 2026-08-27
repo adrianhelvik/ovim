@@ -1946,15 +1946,15 @@ impl Editor {
     // LSP Action Processing (process pending actions from event loop)
     // -------------------------------------------------------------------------
 
-    /// Process pending LSP actions
-    /// Called from the event loop to handle LSP requests asynchronously
-    /// Dispatches all pending LSP intents.
+    /// Process pending actions that require asynchronous frontend services.
+    /// Called from the event loop after synchronous input handling.
     ///
     /// Each intent is checked independently — multiple intents can fire in the
     /// same tick (unlike the old single-slot `pending_lsp_action` which lost
     /// actions when two were queued in the same frame). Each `_impl()` method
     /// fires into its own `Slot<T>` and returns immediately.
     pub async fn dispatch_pending_intents(&mut self) {
+        self.dispatch_pending_browser_start().await;
         if std::mem::take(&mut self.lsp.intents.goto_definition) {
             let _ = self.goto_definition_impl().await;
         }

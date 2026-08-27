@@ -61,6 +61,46 @@ fn test_enter_command_mode() {
     test.assert_mode(ovim::mode::Mode::Command);
 }
 
+#[tokio::test]
+async fn test_browser_command_from_normal_context_opens_a_browser_tab() {
+    let (browser, mut host) = ovim_core::browser::browser_channel();
+    let editor = ovim::editor::Editor::with_content("test\n")
+        .with_services(ovim::editor::EditorServices::default().with_browser(browser));
+    let mut test = EditorTest { editor };
+
+    test.keys(":browser<Enter>");
+
+    test.assert_mode(ovim::mode::Mode::Normal);
+    let host_task = tokio::spawn(async move {
+        let request = host.recv().await.expect("browser start request");
+        assert_eq!(
+            request.command(),
+            &ovim_core::browser::BrowserCommand::Start { url: None }
+        );
+        request.respond(Ok(ovim_core::browser::BrowserResponse::Session(
+            ovim_core::browser::BrowserSession {
+                session_id: "browser-1".into(),
+                url: String::new(),
+                title: String::new(),
+                visible: false,
+                loading: false,
+                document_id: 0,
+            },
+        )));
+    });
+    test.editor.dispatch_pending_intents().await;
+    host_task.await.unwrap();
+}
+
+#[test]
+fn test_browser_command_name_completes_in_normal_context() {
+    let mut test = EditorTest::new("test\n");
+
+    test.keys(":bro<Tab>");
+
+    assert_eq!(test.editor.command_line(), "browser");
+}
+
 /// Test :q command
 #[test]
 fn test_command_quit() {

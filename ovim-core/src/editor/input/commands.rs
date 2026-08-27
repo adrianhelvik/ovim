@@ -145,6 +145,7 @@ fn update_path_completion(editor: &mut Editor) {
 const COMMAND_NAMES: &[&str] = &[
     "bd",
     "bdelete",
+    "browser",
     "buffer",
     "buffers",
     "cd",

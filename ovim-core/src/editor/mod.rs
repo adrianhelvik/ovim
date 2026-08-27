@@ -404,6 +404,8 @@ pub struct Editor {
     pub ai_state: Box<ai_state::AiState>,
     /// Optional capabilities supplied by the active frontend.
     services: EditorServices,
+    /// Deferred browser session request consumed by the async intent dispatcher.
+    browser_start_pending: bool,
     /// API server port (set during startup, used by :session start/stop)
     api_port: Option<u16>,
     /// Active session name (set by :session start, cleared by :session stop)
@@ -585,6 +587,7 @@ impl Editor {
             dap_manager: crate::dap::DapManager::new(),
             ai_state: Box::new(ai_state::AiState::default()),
             services: EditorServices::default(),
+            browser_start_pending: false,
             api_port: None,
             active_session: None,
             git_branch: None,
@@ -636,6 +639,7 @@ impl Editor {
             dap_manager: crate::dap::DapManager::new(),
             ai_state: Box::new(ai_state::AiState::default()),
             services: EditorServices::default(),
+            browser_start_pending: false,
             api_port: None,
             active_session: None,
             git_branch: None,

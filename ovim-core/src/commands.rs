@@ -237,6 +237,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             editor.redo();
             ok_silent()
         }
+        "browser" => match editor.request_browser_start() {
+            Ok(()) => ok("Opening browser"),
+            Err(error) => err(format!("Could not open embedded browser: {error}")),
+        },
         "q" | "quit" => {
             if !editor.tab_page_manager().is_single_tab() {
                 editor.close_current_tab();
@@ -2091,7 +2095,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> CommandResult {
 mod tests {
     use super::execute_command;
     use crate::command_result::CommandResult;
-    use crate::editor::Editor;
+    use crate::editor::{Editor, EditorServices};
     use crate::unicode::CharCol;
 
     #[test]
@@ -2147,6 +2151,75 @@ mod tests {
 
         assert!(matches!(result, CommandResult::Success(_)));
         assert!(editor.pending_intents().format_document);
+    }
+
+    #[tokio::test]
+    async fn browser_command_opens_a_new_frontend_session() {
+        let (browser, mut host) = crate::browser::browser_channel();
+        let mut editor =
+            Editor::new().with_services(EditorServices::default().with_browser(browser));
+
+        let result = execute_command(&mut editor, "browser");
+        assert!(matches!(result, CommandResult::Success(_)));
+
+        let host_task = tokio::spawn(async move {
+            let request = host.recv().await.expect("browser start request");
+            assert_eq!(
+                request.command(),
+                &crate::browser::BrowserCommand::Start { url: None }
+            );
+            request.respond(Ok(crate::browser::BrowserResponse::Session(
+                crate::browser::BrowserSession {
+                    session_id: "browser-1".into(),
+                    url: String::new(),
+                    title: String::new(),
+                    visible: false,
+                    loading: false,
+                    document_id: 0,
+                },
+            )));
+        });
+        editor.dispatch_pending_intents().await;
+        host_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn browser_command_surfaces_a_host_rejection() {
+        let (browser, mut host) = crate::browser::browser_channel();
+        let mut editor =
+            Editor::new().with_services(EditorServices::default().with_browser(browser));
+        assert!(matches!(
+            execute_command(&mut editor, "browser"),
+            CommandResult::Success(_)
+        ));
+
+        let host_task = tokio::spawn(async move {
+            let request = host.recv().await.expect("browser start request");
+            request.respond(Err(crate::browser::BrowserError::new(
+                crate::browser::BrowserErrorKind::InvalidRequest,
+                "Browser tab limit reached",
+            )));
+        });
+        editor.dispatch_pending_intents().await;
+        host_task.await.unwrap();
+
+        assert_eq!(
+            editor.status_message(),
+            "Could not open embedded browser: Browser tab limit reached"
+        );
+    }
+
+    #[test]
+    fn browser_command_reports_an_unavailable_frontend() {
+        let mut editor = Editor::new();
+
+        let result = execute_command(&mut editor, "browser");
+
+        assert!(matches!(
+            result,
+            CommandResult::Error(ref error)
+                if error.error == "Could not open embedded browser: The embedded browser is unavailable in this frontend"
+        ));
     }
 
     /// OV-00331: `:qa` used to check only the CURRENT buffer, silently

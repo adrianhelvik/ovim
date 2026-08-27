@@ -54,6 +54,10 @@ describe("browser commands", () => {
             ok: true,
             command: { kind: "close" },
         });
+        expect(parseBrowserCommand("browser")).toEqual({
+            ok: true,
+            command: { kind: "open_tab" },
+        });
     });
 
     it("rejects editor-only, ambiguous, and out-of-range commands clearly", () => {
@@ -68,5 +72,9 @@ describe("browser commands", () => {
         });
         expect(parseBrowserCommand("back 0").ok).toBe(false);
         expect(parseBrowserCommand("tabgoto nope").ok).toBe(false);
+        expect(parseBrowserCommand("browser example.com")).toEqual({
+            ok: false,
+            message: ":browser does not take arguments",
+        });
     });
 });

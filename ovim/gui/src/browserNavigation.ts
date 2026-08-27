@@ -134,6 +134,27 @@ export const createBrowserNavigation = (options: BrowserNavigationOptions) => {
                     commandRefocusSession = undefined;
                     await closeTab(request.sessionId);
                     break;
+                case "open_tab": {
+                    const state = options.workbench.state();
+                    if (options.workbench.opening())
+                        return {
+                            ok: false,
+                            message: "A browser tab is already opening",
+                        };
+                    if (state.sessions.length >= state.maxSessions)
+                        return {
+                            ok: false,
+                            message: `Browser tab limit (${state.maxSessions}) reached`,
+                        };
+                    const sessionId = await options.workbench.open();
+                    if (!sessionId)
+                        return {
+                            ok: false,
+                            message: "Could not open a new browser tab",
+                        };
+                    commandRefocusSession = undefined;
+                    break;
+                }
                 case "navigate":
                     await options.workbench.navigate(
                         request.sessionId,

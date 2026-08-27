@@ -62,13 +62,15 @@ the tab destroys both. The web development view cannot create browser tabs
 because it has no native child-webview primitive.
 
 Colon commands use the reusable `SurfaceCommandLine` with a browser-specific
-grammar (`:goto`, `:back`, `:forward`, `:reload`, `:stop`, `:q`, and workbench
-tab navigation). The address field and `:goto` accept either a network address
-or a DuckDuckGo search. Browser shortcuts, page key requests, and colon
-commands all reach the same typed `browserWorkbench` controller; the toolbar
-does not own a parallel mutation path. A tokenized initialization script in the
-remote child webview can send only a small set of typed intents after trusted
-keypresses. It cannot invoke Tauri commands or control Ovim directly.
+grammar (`:browser`, `:goto`, `:back`, `:forward`, `:reload`, `:stop`, `:q`, and
+workbench tab navigation). `:browser` opens a fresh Browser tab from either a
+source or Browser context. The address field and `:goto` accept either a
+network address or a DuckDuckGo search. Browser shortcuts, page key requests,
+and colon commands all reach the same typed `browserWorkbench` controller; the
+toolbar does not own a parallel mutation path. A tokenized initialization
+script in the remote child webview can send only a small set of typed intents
+after trusted keypresses. It cannot invoke Tauri commands or control Ovim
+directly.
 
 The injected key bridge is split by concern under `browser/key_bridge/` and is
 initialized in every frame. It synchronizes only the per-tab enabled and

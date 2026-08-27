@@ -173,4 +173,92 @@ describe("browser navigation controller", () => {
             }),
         );
     });
+
+    it("opens a fresh browser tab from the browser command context", async () => {
+        await new Promise<void>((resolve) =>
+            createRoot((dispose) => {
+                const [state, setState] = createSignal<BrowserState>({
+                    revision: 1,
+                    sessions: [session],
+                    activeSessionId: session.sessionId,
+                    maxSessions: 8,
+                });
+                const workbench = fakeWorkbench(state, setState);
+                vi.mocked(workbench.open).mockResolvedValue("browser-2");
+                const [selection] = createSignal<WorkbenchSelection>({
+                    kind: "browser",
+                    sessionId: session.sessionId,
+                });
+                const navigation = createBrowserNavigation({
+                    workbench,
+                    tabs: () => [
+                        {
+                            id: "browser:browser-1",
+                            kind: "browser",
+                            sessionId: session.sessionId,
+                        },
+                    ],
+                    selection,
+                    selectTab: vi.fn(() => true),
+                    selectReference: vi.fn(),
+                    focusSource: vi.fn(),
+                    setError: vi.fn(),
+                });
+
+                navigation.openCommand(session.sessionId);
+                void navigation.executeCommand("browser").then((result) => {
+                    expect(result).toEqual({ ok: true });
+                    expect(workbench.open).toHaveBeenCalledWith();
+                    navigation.dismissCommand();
+                    expect(workbench.focus).not.toHaveBeenCalled();
+                    dispose();
+                    resolve();
+                });
+            }),
+        );
+    });
+
+    it("reports the browser tab limit without attempting another open", async () => {
+        await new Promise<void>((resolve) =>
+            createRoot((dispose) => {
+                const [state, setState] = createSignal<BrowserState>({
+                    revision: 1,
+                    sessions: [session],
+                    activeSessionId: session.sessionId,
+                    maxSessions: 1,
+                });
+                const workbench = fakeWorkbench(state, setState);
+                const [selection] = createSignal<WorkbenchSelection>({
+                    kind: "browser",
+                    sessionId: session.sessionId,
+                });
+                const navigation = createBrowserNavigation({
+                    workbench,
+                    tabs: () => [
+                        {
+                            id: "browser:browser-1",
+                            kind: "browser",
+                            sessionId: session.sessionId,
+                        },
+                    ],
+                    selection,
+                    selectTab: vi.fn(() => true),
+                    selectReference: vi.fn(),
+                    focusSource: vi.fn(),
+                    setError: vi.fn(),
+                });
+
+                navigation.openCommand(session.sessionId);
+                void navigation.executeCommand("browser").then((result) => {
+                    expect(result).toEqual({
+                        ok: false,
+                        message: "Browser tab limit (1) reached",
+                    });
+                    expect(workbench.open).not.toHaveBeenCalled();
+                    dispose();
+                    resolve();
+                });
+            }),
+        );
+    });
 });

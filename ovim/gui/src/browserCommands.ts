@@ -1,5 +1,6 @@
 export type BrowserCommand =
     | { kind: "close" }
+    | { kind: "open_tab" }
     | { kind: "navigate"; url: string }
     | { kind: "history"; direction: "back" | "forward"; count: number }
     | { kind: "reload" }
@@ -12,6 +13,7 @@ export type BrowserCommandParseResult =
 
 export const BROWSER_COMMAND_NAMES = [
     "back",
+    "browser",
     "forward",
     "goto",
     "q",
@@ -70,6 +72,14 @@ export const parseBrowserCommand = (
                 message: `:${rawName} does not take arguments`,
             };
         return { ok: true, command: { kind: "close" } };
+    }
+    if (name === "browser") {
+        if (args.length)
+            return {
+                ok: false,
+                message: ":browser does not take arguments",
+            };
+        return { ok: true, command: { kind: "open_tab" } };
     }
     if (["goto", "go", "open"].includes(name)) {
         const url = normalizeBrowserAddress(args.join(" "));
