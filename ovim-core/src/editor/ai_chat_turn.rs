@@ -1043,7 +1043,12 @@ impl Editor {
         let task = tokio::task::spawn_blocking(move || {
             let temp_probe =
                 super::ai_session_temp::TempPathProbe::for_shell_command(&task_command);
-            let observation = match crate::run_log::capture_workspace(&task_workdir, &artifact_store) {
+            let capture_policy = super::ai_base_manifest::DefaultEditorCapturePolicy;
+            let observation = match crate::run_log::capture_workspace(
+                &task_workdir,
+                &artifact_store,
+                &capture_policy,
+            ) {
                 Ok(before) => {
                     let result = super::ai_tool_execution::run_bash_program(
                         &task_command,
@@ -1053,7 +1058,11 @@ impl Editor {
                     );
                     let _ = progress_tx
                         .send(super::ai_chat_state::ShellProgressEvent::CapturingChanges);
-                    match crate::run_log::capture_workspace(&task_workdir, &artifact_store) {
+                    match crate::run_log::capture_workspace(
+                        &task_workdir,
+                        &artifact_store,
+                        &capture_policy,
+                    ) {
                         Ok(after) => super::ai_chat_state::ShellExecutionObservation {
                             result,
                             delta: Some(before.diff(after)),

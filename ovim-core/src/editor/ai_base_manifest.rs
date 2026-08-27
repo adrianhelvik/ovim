@@ -43,7 +43,7 @@ impl SnapshotContentReader for EditorManifestReader {
     }
 }
 
-struct DefaultEditorCapturePolicy;
+pub(super) struct DefaultEditorCapturePolicy;
 
 impl CapturePolicy for DefaultEditorCapturePolicy {
     fn decide(&self, subject: &CaptureSubject<'_>) -> CaptureDecision {

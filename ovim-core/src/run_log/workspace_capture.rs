@@ -1,7 +1,8 @@
 use super::{
     ArtifactExportPolicy, ArtifactId, ArtifactRecord, ArtifactRetention, ArtifactSource,
-    ArtifactState, ArtifactStore, BlobId, ContentRepresentation, FileKind, FileMutationEvent,
-    FileMutationState, WorkspaceSurface,
+    ArtifactState, ArtifactStore, BlobId, CaptureDecision, CaptureKind, CapturePolicy,
+    CaptureSubject, ContentRepresentation, FileKind, FileMutationEvent, FileMutationState,
+    RepoPath, WorkspaceSurface,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -32,7 +33,11 @@ pub struct WorkspaceDelta {
 
 /// Captures the disk surface without following symlinks. `.git` is excluded:
 /// replay records the working tree, not Git's internal object database.
-pub fn capture_workspace(root: &Path, store: &ArtifactStore) -> Result<WorkspaceSnapshot, String> {
+pub fn capture_workspace(
+    root: &Path,
+    store: &ArtifactStore,
+    policy: &dyn CapturePolicy,
+) -> Result<WorkspaceSnapshot, String> {
     let root = root
         .canonicalize()
         .map_err(|error| format!("resolve workspace {}: {error}", root.display()))?;
@@ -44,10 +49,17 @@ pub fn capture_workspace(root: &Path, store: &ArtifactStore) -> Result<Workspace
     let mut remaining = MAX_CAPTURE_BYTES;
     if let Some(paths) = git_workspace_paths(&root, &mut snapshot.issues) {
         for relative in paths {
-            capture_path(&root, &relative, store, &mut remaining, &mut snapshot)?;
+            capture_path(
+                &root,
+                &relative,
+                store,
+                policy,
+                &mut remaining,
+                &mut snapshot,
+            )?;
         }
     } else {
-        capture_directory(&root, &root, store, &mut remaining, &mut snapshot)?;
+        capture_directory(&root, &root, store, policy, &mut remaining, &mut snapshot)?;
     }
     Ok(snapshot)
 }
@@ -87,6 +99,7 @@ fn capture_directory(
     root: &Path,
     directory: &Path,
     store: &ArtifactStore,
+    policy: &dyn CapturePolicy,
     remaining: &mut u64,
     snapshot: &mut WorkspaceSnapshot,
 ) -> Result<(), String> {
@@ -125,7 +138,7 @@ fn capture_directory(
             }
         };
         if metadata.is_dir() {
-            if let Err(error) = capture_directory(root, &path, store, remaining, snapshot) {
+            if let Err(error) = capture_directory(root, &path, store, policy, remaining, snapshot) {
                 snapshot.issues.push(error);
             }
             continue;
@@ -134,7 +147,7 @@ fn capture_directory(
             Ok(path) => path,
             Err(_) => continue,
         };
-        capture_path(root, relative_path, store, remaining, snapshot)?;
+        capture_path(root, relative_path, store, policy, remaining, snapshot)?;
     }
     Ok(())
 }
@@ -143,6 +156,7 @@ fn capture_path(
     root: &Path,
     relative_path: &Path,
     store: &ArtifactStore,
+    policy: &dyn CapturePolicy,
     remaining: &mut u64,
     snapshot: &mut WorkspaceSnapshot,
 ) -> Result<(), String> {
@@ -171,12 +185,45 @@ fn capture_path(
             return Ok(());
         }
     };
-    let (kind, bytes) = if metadata.file_type().is_symlink() {
+    let kind = if metadata.file_type().is_symlink() {
+        FileKind::Symlink
+    } else if metadata.is_file() {
+        FileKind::Regular
+    } else {
+        snapshot
+            .issues
+            .push(format!("unsupported special file: {relative}"));
+        return Ok(());
+    };
+    let repo_path = match RepoPath::parse(relative.clone()) {
+        Ok(path) => path,
+        Err(error) => {
+            snapshot.issues.push(error.to_string());
+            return Ok(());
+        }
+    };
+    let subject = CaptureSubject {
+        path: Some(&repo_path),
+        ephemeral_buffer_id: None,
+        kind: CaptureKind::Disk,
+        locator: &relative,
+        declared_bytes: Some(metadata.len()),
+    };
+    if let CaptureDecision::Exclude { reason } = policy.decide(&subject) {
+        snapshot.issues.push(format!("{relative}: {reason}"));
+        snapshot.files.insert(
+            relative.clone(),
+            CapturedFile {
+                kind,
+                artifact: unavailable_record(&relative, reason),
+            },
+        );
+        return Ok(());
+    }
+
+    let bytes = if metadata.file_type().is_symlink() {
         match fs::read_link(&path) {
-            Ok(target) => (
-                FileKind::Symlink,
-                target.as_os_str().as_encoded_bytes().to_vec(),
-            ),
+            Ok(target) => target.as_os_str().as_encoded_bytes().to_vec(),
             Err(error) => {
                 snapshot.issues.push(format!(
                     "could not read symlink {}: {error}",
@@ -185,7 +232,7 @@ fn capture_path(
                 return Ok(());
             }
         }
-    } else if metadata.is_file() {
+    } else {
         if metadata.len() > MAX_FILE_BYTES || metadata.len() > *remaining {
             let reason = if metadata.len() > MAX_FILE_BYTES {
                 format!("file exceeds capture limit of {MAX_FILE_BYTES} bytes")
@@ -203,7 +250,7 @@ fn capture_path(
             return Ok(());
         }
         match fs::read(&path) {
-            Ok(bytes) => (FileKind::Regular, bytes),
+            Ok(bytes) => bytes,
             Err(error) => {
                 snapshot
                     .issues
@@ -218,11 +265,6 @@ fn capture_path(
                 return Ok(());
             }
         }
-    } else {
-        snapshot
-            .issues
-            .push(format!("unsupported special file: {relative}"));
-        return Ok(());
     };
     *remaining = remaining.saturating_sub(bytes.len() as u64);
     let stored = store
@@ -366,6 +408,8 @@ impl WorkspaceSnapshot {
         delta
             .mutations
             .sort_by(|left, right| left.path.cmp(&right.path));
+        delta.issues.sort();
+        delta.issues.dedup();
         delta
     }
 }
@@ -396,6 +440,14 @@ fn mutation(
 mod tests {
     use super::*;
 
+    struct Allow;
+
+    impl CapturePolicy for Allow {
+        fn decide(&self, _subject: &CaptureSubject<'_>) -> CaptureDecision {
+            CaptureDecision::Include
+        }
+    }
+
     #[test]
     fn captures_create_modify_delete_and_unique_rename() {
         let workspace = tempfile::tempdir().unwrap();
@@ -404,13 +456,13 @@ mod tests {
         fs::write(workspace.path().join("modified"), b"before").unwrap();
         fs::write(workspace.path().join("deleted"), b"gone").unwrap();
         fs::write(workspace.path().join("old"), b"move-me").unwrap();
-        let before = capture_workspace(workspace.path(), &store).unwrap();
+        let before = capture_workspace(workspace.path(), &store, &Allow).unwrap();
 
         fs::write(workspace.path().join("modified"), b"after").unwrap();
         fs::remove_file(workspace.path().join("deleted")).unwrap();
         fs::rename(workspace.path().join("old"), workspace.path().join("new")).unwrap();
         fs::write(workspace.path().join("created"), b"new").unwrap();
-        let delta = before.diff(capture_workspace(workspace.path(), &store).unwrap());
+        let delta = before.diff(capture_workspace(workspace.path(), &store, &Allow).unwrap());
 
         assert_eq!(delta.mutations.len(), 4);
         assert!(delta
@@ -451,14 +503,53 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        let before = capture_workspace(workspace.path(), &store).unwrap();
+        let before = capture_workspace(workspace.path(), &store, &Allow).unwrap();
 
         fs::create_dir(workspace.path().join("target")).unwrap();
         fs::write(workspace.path().join("target/output"), "generated").unwrap();
         fs::write(workspace.path().join("tracked.txt"), "after").unwrap();
-        let delta = before.diff(capture_workspace(workspace.path(), &store).unwrap());
+        let delta = before.diff(capture_workspace(workspace.path(), &store, &Allow).unwrap());
 
         assert_eq!(delta.mutations.len(), 1);
         assert_eq!(delta.mutations[0].path, "tracked.txt");
+    }
+
+    #[test]
+    fn policy_excludes_bytes_before_the_artifact_store_reads_them() {
+        struct ExcludeEnv;
+
+        impl CapturePolicy for ExcludeEnv {
+            fn decide(&self, subject: &CaptureSubject<'_>) -> CaptureDecision {
+                if subject.path.is_some_and(|path| path.as_str() == ".env") {
+                    CaptureDecision::Exclude {
+                        reason: "environment files may contain secrets".into(),
+                    }
+                } else {
+                    CaptureDecision::Include
+                }
+            }
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::open(artifacts.path()).unwrap();
+        let secret = b"TOKEN=do-not-store";
+        fs::write(workspace.path().join(".env"), secret).unwrap();
+        fs::write(workspace.path().join("public.txt"), b"captured").unwrap();
+
+        let before = capture_workspace(workspace.path(), &store, &ExcludeEnv).unwrap();
+        let excluded = &before.files[".env"].artifact;
+        assert!(matches!(&excluded.state, ArtifactState::Excluded { .. }));
+        assert!(!store.contains(BlobId::digest(secret)).unwrap());
+        assert!(store.contains(BlobId::digest(b"captured")).unwrap());
+
+        fs::write(workspace.path().join(".env"), b"TOKEN=still-private").unwrap();
+        let delta = before.diff(capture_workspace(workspace.path(), &store, &ExcludeEnv).unwrap());
+        assert!(delta.mutations.is_empty());
+        assert_eq!(
+            delta.issues.len(),
+            1,
+            "before/after issues are deduplicated"
+        );
     }
 }
