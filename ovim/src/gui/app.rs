@@ -464,6 +464,9 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
 
     let (browser_client, browser_requests) = ovim_core::browser::browser_channel();
     let browser_host = BrowserHost::new(browser_requests);
+    #[cfg(debug_assertions)]
+    let browser_smoke_client =
+        std::env::var_os("OVIM_BROWSER_SMOKE").map(|_| browser_client.clone());
     let services = ovim_core::editor::EditorServices::default().with_browser(browser_client);
     let bridge = GuiBridge::spawn(file, resume, services)?;
     let shutdown_bridge = bridge.clone();
@@ -523,9 +526,27 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             let menu = super::menu::install(app)?;
             app.manage(menu);
             if let Some(window) = app.get_webview_window("main") {
-                app.state::<BrowserHost>()
+                let browser_host = app.state::<BrowserHost>().inner().clone();
+                browser_host
                     .attach(window.as_ref().window())
                     .map_err(anyhow::Error::msg)?;
+                #[cfg(debug_assertions)]
+                if let Some(browser_client) = browser_smoke_client.clone() {
+                    let app_handle = app.handle().clone();
+                    let smoke_exit_gate = setup_exit_gate.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let result =
+                            super::browser::run_native_browser_smoke(browser_client, browser_host)
+                                .await;
+                        let (exit_code, message) = match result {
+                            Ok(()) => (0, "OVIM_BROWSER_SMOKE_OK\n".to_string()),
+                            Err(error) => (1, format!("OVIM_BROWSER_SMOKE_FAILED: {error}\n")),
+                        };
+                        let _ = std::io::stderr().write_all(message.as_bytes());
+                        smoke_exit_gate.0.store(true, Ordering::SeqCst);
+                        app_handle.exit(exit_code);
+                    });
+                }
                 window
                     .set_title("Ovim")
                     .context("Failed to set the GUI window title")?;

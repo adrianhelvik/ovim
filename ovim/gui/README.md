@@ -25,6 +25,22 @@ target/debug/ovim gui README.md
 `dist/` is intentionally checked in because Cargo embeds it in the native
 binary without requiring Node during a Rust build.
 
+### Native browser smoke test
+
+The debug GUI includes an opt-in end-to-end smoke test for the embedded
+browser. It opens two real loopback-backed child webviews, types into a form,
+scrolls the page, switches tabs, and verifies that the form value, scroll
+position, and editable-focus key mode survive the round trip:
+
+```sh
+OVIM_BROWSER_SMOKE=1 cargo run -p ovim --bin ovim-gui
+```
+
+A successful run prints `OVIM_BROWSER_SMOKE_OK` and exits with status 0. The
+harness is compiled only in debug builds and does not make external network
+requests. Operating-system delivery of trusted physical keyboard events still
+needs a manual check because macOS automation requires Accessibility access.
+
 ## Current boundary
 
 The GUI renders the focused editor pane, tabs, file tree, diagnostics, Git
