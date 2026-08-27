@@ -3,6 +3,7 @@ use super::{
     WorkspaceId,
 };
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
+use std::collections::HashSet;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -655,6 +656,46 @@ impl RunCatalog {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(owners)
+    }
+
+    /// Run IDs that remain discoverable as named conversations. Retention
+    /// must never remove these implicitly, regardless of age.
+    pub fn bound_run_ids(&self) -> Result<HashSet<RunId>, CatalogError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare("SELECT run_id FROM conversation_bindings ORDER BY run_id")
+            .map_err(|error| storage("prepare bound run read", error))?;
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| storage("read bound runs", error))?
+            .map(|row| {
+                row.map_err(|error| storage("decode bound run", error))
+                    .and_then(|value| RunId::parse(value).map_err(corrupt_id))
+            })
+            .collect()
+    }
+
+    pub(crate) fn delete_run_owner_records(&self, run_id: &RunId) -> Result<(), CatalogError> {
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| storage("begin run owner cleanup", error))?;
+        transaction
+            .execute(
+                "DELETE FROM run_owners WHERE run_id = ?1",
+                [run_id.as_str()],
+            )
+            .map_err(|error| storage("delete run owners", error))?;
+        transaction
+            .execute(
+                "DELETE FROM run_leases WHERE run_id = ?1",
+                [run_id.as_str()],
+            )
+            .map_err(|error| storage("delete legacy run lease", error))?;
+        transaction
+            .commit()
+            .map_err(|error| storage("commit run owner cleanup", error))?;
+        Ok(())
     }
 
     pub fn update_selected_branch(

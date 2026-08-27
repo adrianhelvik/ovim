@@ -36,6 +36,7 @@ impl SqliteRunEventSink {
         id_generator: Arc<dyn EventIdGenerator>,
         clock: Arc<dyn EventClock>,
     ) -> Result<Self, RunLogError> {
+        let path = path.as_ref();
         let connection = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -43,7 +44,9 @@ impl SqliteRunEventSink {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|error| storage("open database", error))?;
-        Self::from_connection(connection, id_generator, clock)
+        let sink = Self::from_connection(connection, id_generator, clock)?;
+        set_owner_only(path)?;
+        Ok(sink)
     }
 
     pub fn open_in_memory() -> Result<Self, RunLogError> {
@@ -230,6 +233,23 @@ impl SqliteRunEventSink {
             .map_err(|error| storage("commit append transaction", error))?;
         Ok(envelope)
     }
+}
+
+fn set_owner_only(path: &Path) -> Result<(), RunLogError> {
+    #[cfg(unix)]
+    {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|error| {
+            RunLogError::Storage {
+                operation: "set private run database permissions".into(),
+                detail: format!("{}: {error}", path.display()),
+            }
+        })?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 impl RunEventSink for SqliteRunEventSink {
@@ -694,6 +714,21 @@ mod tests {
         assert_eq!(reopened.runs().unwrap(), vec![run.clone()]);
         assert_eq!(reopened.events(&run).unwrap(), vec![event]);
         assert_eq!(reopened.last_sequence(&run).unwrap(), Some(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_event_database_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("runs.sqlite");
+        SqliteRunEventSink::open(&path).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     // The indexed SQLite override and the filter-based default in the trait must

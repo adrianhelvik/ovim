@@ -5,7 +5,7 @@ use crate::cli::FileArg;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use crate::cli::{Command, LspCommand, SessionCommand};
+use crate::cli::{Command, HistoryCommand, LspCommand, SessionCommand};
 use crate::client::OvimClient;
 use crate::session::SessionInfo;
 
@@ -221,6 +221,9 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
         // Session management (nested)
         Command::Session { command } => execute_session_command(command),
 
+        // Local AI history and privacy controls
+        Command::History { command } => execute_history_command(command),
+
         // Integration
         Command::Install {
             editor,
@@ -352,6 +355,74 @@ fn execute_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Kill { session } => cmd_kill(&session),
         SessionCommand::Health { session } => cmd_health(&session),
         SessionCommand::Cleanup { max_age, dry_run } => cmd_cleanup(max_age, dry_run),
+    }
+}
+
+fn execute_history_command(command: HistoryCommand) -> Result<()> {
+    match command {
+        HistoryCommand::Status { max_age } => cmd_history(max_age, true, false),
+        HistoryCommand::Cleanup { max_age, dry_run } => cmd_history(max_age, dry_run, true),
+    }
+}
+
+fn cmd_history(max_age_days: u64, dry_run: bool, cleanup_requested: bool) -> Result<()> {
+    use ovim_core::run_log::{cleanup_run_history, RunHistoryCleanupOptions, RunStorageLayout};
+    use std::time::Duration;
+
+    let layout = RunStorageLayout::discover().context("Failed to locate AI run history")?;
+    let max_age = Duration::from_secs(max_age_days.saturating_mul(24 * 60 * 60));
+    let report = cleanup_run_history(&layout, &RunHistoryCleanupOptions { max_age, dry_run })
+        .context("Failed to inspect AI run history")?;
+
+    println!("AI history: {}", layout.root().display());
+    println!(
+        "Stored: {} across {} run directories",
+        human_bytes(report.scanned_bytes),
+        report.scanned_runs
+    );
+    println!(
+        "Protected: {} bound, {} active, {} newer than {} days",
+        report.bound_runs, report.live_runs, report.recent_runs, max_age_days
+    );
+    println!(
+        "Eligible: {} ({})",
+        report.candidates.len(),
+        human_bytes(report.candidates.iter().map(|run| run.bytes).sum())
+    );
+
+    if !dry_run {
+        println!(
+            "Removed: {} ({})",
+            report.removed_runs,
+            human_bytes(report.removed_bytes)
+        );
+    } else if cleanup_requested {
+        println!("Dry run only; remove --dry-run to delete eligible history.");
+    }
+    if report.preserved_runs > 0 {
+        println!(
+            "Preserved for manual inspection: {} run(s)",
+            report.preserved_runs
+        );
+    }
+    for issue in report.issues {
+        println!("  warning: {issue}");
+    }
+    Ok(())
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 

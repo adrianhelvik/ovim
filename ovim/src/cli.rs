@@ -301,6 +301,13 @@ pub enum Command {
         command: SessionCommand,
     },
 
+    /// Inspect and clean up local AI conversation history
+    #[command(next_help_heading = "Privacy")]
+    History {
+        #[command(subcommand)]
+        command: HistoryCommand,
+    },
+
     // ── Integration ──────────────────────────────────────────────────
     /// Start ovim as a long-running MCP server
     #[command(next_help_heading = "Integration")]
@@ -501,6 +508,28 @@ pub enum SessionCommand {
     },
 }
 
+/// Local AI run-history commands
+#[derive(Subcommand, Debug)]
+pub enum HistoryCommand {
+    /// Show storage use and runs eligible under the retention policy
+    Status {
+        /// Consider unbound runs older than this many days eligible
+        #[arg(long, default_value_t = 30)]
+        max_age: u64,
+    },
+
+    /// Remove old, unbound runs that have no live owner
+    Cleanup {
+        /// Remove eligible runs older than this many days
+        #[arg(long, default_value_t = 30)]
+        max_age: u64,
+
+        /// Show what would be removed without changing storage
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 /// Parse dimension string like "80x24" into (width, height)
 fn parse_dimensions(s: &str) -> Result<(u16, u16), String> {
     let parts: Vec<&str> = s.split('x').collect();
@@ -628,5 +657,19 @@ mod tests {
         ]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn history_cleanup_is_conservative_by_default_and_supports_preview() {
+        let cli = Cli::try_parse_from(["ovim", "history", "cleanup", "--dry-run"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::History {
+                command: HistoryCommand::Cleanup {
+                    max_age: 30,
+                    dry_run: true,
+                },
+            })
+        ));
     }
 }

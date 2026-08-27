@@ -82,6 +82,30 @@ pub(crate) fn encoded_run_component(run_id: &RunId) -> String {
     encoded
 }
 
+pub(crate) fn decoded_run_component(component: &std::ffi::OsStr) -> Option<RunId> {
+    let encoded = component.to_str()?.strip_prefix("run-")?;
+    if encoded.is_empty() || encoded.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(encoded.len() / 2);
+    for pair in encoded.as_bytes().chunks_exact(2) {
+        let high = hex_digit(pair[0])?;
+        let low = hex_digit(pair[1])?;
+        bytes.push((high << 4) | low);
+    }
+    let value = String::from_utf8(bytes).ok()?;
+    let run_id = RunId::parse(value).ok()?;
+    (encoded_run_component(&run_id) == component.to_str()?).then_some(run_id)
+}
+
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    }
+}
+
 fn ensure_private_directory(path: &Path, operation: &str) -> Result<(), RunLogError> {
     fs::create_dir_all(path).map_err(|error| io_error(operation, path, error))?;
     let metadata = fs::metadata(path).map_err(|error| io_error(operation, path, error))?;
@@ -139,6 +163,18 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .contains('/'));
+    }
+
+    #[test]
+    fn encoded_run_components_roundtrip_but_malformed_names_do_not() {
+        let run_id = RunId::parse("run_value/with:opaque-data").unwrap();
+        let encoded = encoded_run_component(&run_id);
+        assert_eq!(decoded_run_component(encoded.as_ref()), Some(run_id));
+        assert_eq!(decoded_run_component("run-xyz".as_ref()), None);
+        assert_eq!(
+            decoded_run_component("unresolved-workspaces".as_ref()),
+            None
+        );
     }
 
     #[cfg(unix)]

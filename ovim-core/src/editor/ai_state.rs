@@ -234,19 +234,63 @@ impl AiState {
     fn with_discovered_run_storage(
         discovered: Result<crate::run_log::RunStorageLayout, crate::run_log::RunLogError>,
     ) -> Self {
-        match discovered.and_then(Self::with_run_storage_layout) {
-            Ok(state) => state,
-            Err(error) => Self::with_agent_runtime(
-                crate::agent_runtime::AgentRuntime::new(),
-                Some(
-                    format!(
-                        "durable agent run storage is unavailable; history is in-memory only: {error}"
-                    )
-                    .into_boxed_str(),
-                ),
-                None,
-            ),
+        match discovered {
+            Ok(layout) => match Self::with_run_storage_layout(layout.clone()) {
+                Ok(state) => {
+                    schedule_expired_run_cleanup(layout);
+                    state
+                }
+                Err(error) => Self::in_memory_after_storage_error(error),
+            },
+            Err(error) => Self::in_memory_after_storage_error(error),
         }
+    }
+
+    fn in_memory_after_storage_error(error: crate::run_log::RunLogError) -> Self {
+        Self::with_agent_runtime(
+            crate::agent_runtime::AgentRuntime::new(),
+            Some(
+                format!(
+                    "durable agent run storage is unavailable; history is in-memory only: {error}"
+                )
+                .into_boxed_str(),
+            ),
+            None,
+        )
+    }
+}
+
+fn schedule_expired_run_cleanup(layout: crate::run_log::RunStorageLayout) {
+    let spawn = std::thread::Builder::new()
+        .name("ovim-run-retention".into())
+        .spawn(move || {
+            match crate::run_log::cleanup_run_history(
+                &layout,
+                &crate::run_log::RunHistoryCleanupOptions::default(),
+            ) {
+                Ok(report) => {
+                    if report.removed_runs > 0 {
+                        crate::log_info!(
+                            "run_history",
+                            "removed {} expired unbound AI run(s), reclaiming {} bytes",
+                            report.removed_runs,
+                            report.removed_bytes
+                        );
+                    }
+                    for issue in report.issues {
+                        crate::log_warn!("run_history", "{issue}");
+                    }
+                }
+                Err(error) => {
+                    crate::log_warn!("run_history", "automatic cleanup failed: {error}");
+                }
+            }
+        });
+    if let Err(error) = spawn {
+        crate::log_warn!(
+            "run_history",
+            "could not start automatic history cleanup: {error}"
+        );
     }
 }
 
