@@ -6,9 +6,11 @@
 //! without making Tauri (or another browser runtime) a core dependency.
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 const BROWSER_CHANNEL_CAPACITY: usize = 32;
+const BROWSER_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -179,14 +181,32 @@ impl BrowserClient {
     }
 
     pub async fn execute(&self, command: BrowserCommand) -> BrowserResult {
-        let (reply, response) = oneshot::channel();
-        self.requests
-            .send(BrowserRequest { command, reply })
+        self.execute_with_timeout(command, BROWSER_REQUEST_TIMEOUT)
             .await
-            .map_err(|_| BrowserError::unavailable("The browser host is not running"))?;
-        response
-            .await
-            .map_err(|_| BrowserError::unavailable("The browser host dropped the request"))?
+    }
+
+    async fn execute_with_timeout(
+        &self,
+        command: BrowserCommand,
+        timeout: Duration,
+    ) -> BrowserResult {
+        tokio::time::timeout(timeout, async {
+            let (reply, response) = oneshot::channel();
+            self.requests
+                .send(BrowserRequest { command, reply })
+                .await
+                .map_err(|_| BrowserError::unavailable("The browser host is not running"))?;
+            response
+                .await
+                .map_err(|_| BrowserError::unavailable("The browser host dropped the request"))?
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(BrowserError::new(
+                BrowserErrorKind::TimedOut,
+                "The browser host did not respond in time",
+            ))
+        })
     }
 }
 
@@ -242,6 +262,19 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.kind, BrowserErrorKind::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn client_times_out_when_a_live_host_stalls() {
+        let (client, _host) = browser_channel();
+
+        let error = client
+            .execute_with_timeout(BrowserCommand::List, Duration::from_millis(10))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, BrowserErrorKind::TimedOut);
+        assert_eq!(error.message, "The browser host did not respond in time");
     }
 
     #[tokio::test]
