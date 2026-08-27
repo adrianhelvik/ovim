@@ -134,6 +134,23 @@ impl NucleoMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    fn wait_until(
+        matcher: &mut NucleoMatcher,
+        description: &str,
+        condition: impl Fn(&NucleoMatcher) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !condition(matcher) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for Nucleo to {description}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+            matcher.tick();
+        }
+    }
 
     #[test]
     fn test_basic_matching() {
@@ -143,10 +160,9 @@ mod tests {
         matcher.inject(1, "src/lib.rs");
         matcher.inject(2, "Cargo.toml");
 
-        // Tick until items are processed
-        for _ in 0..50 {
-            matcher.tick();
-        }
+        wait_until(&mut matcher, "process injected items", |matcher| {
+            matcher.total_count() == 3 && matcher.matched_count() == 3
+        });
 
         // Empty query matches all
         assert_eq!(matcher.matched_count(), 3);
@@ -161,21 +177,17 @@ mod tests {
         matcher.inject(1, "src/lib.rs");
         matcher.inject(2, "Cargo.toml");
 
-        // Process injections
-        for _ in 0..50 {
-            matcher.tick();
-        }
+        wait_until(&mut matcher, "process injected items", |matcher| {
+            matcher.total_count() == 3 && matcher.matched_count() == 3
+        });
 
         matcher.update_query("main");
 
-        // Tick until matching completes
-        for _ in 0..50 {
-            matcher.tick();
-        }
+        wait_until(&mut matcher, "apply the query", |matcher| {
+            matcher.matched_count() == 1
+        });
 
-        assert!(matcher.matched_count() >= 1);
-        let indices = matcher.matched_indices(10);
-        assert!(indices.contains(&0)); // "src/main.rs" should match
+        assert_eq!(matcher.matched_indices(10), vec![0]);
     }
 
     #[test]
