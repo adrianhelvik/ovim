@@ -15,13 +15,26 @@ import { marked } from "marked";
 import { mockSnapshot } from "./mock";
 import ChatModelPicker from "./ChatModelPicker";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
+import BrowserPanel, { browserTabTitle } from "./BrowserPanel";
+import type { BrowserState } from "./browserProtocol";
+import { createBrowserWorkbench } from "./browserWorkbench";
+import {
+    browserShortcutAction,
+    createBrowserKeyRouter,
+    type BrowserKeyEvent,
+} from "./browserKeys";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 import NativeDiffPanel from "./DiffPanel";
+import SurfaceCommandLine, {
+    type CommandExecutionResult,
+} from "./SurfaceCommandLine";
+import WorkbenchTabStrip from "./WorkbenchTabStrip";
+import { BROWSER_COMMAND_NAMES, parseBrowserCommand } from "./browserCommands";
 import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
-import { trapDialogFocus } from "./focus";
+import { isGuiNativeControl, trapDialogFocus } from "./focus";
 import { anchoredOverlayPosition } from "./overlayPosition";
 import { retainProjection, shouldAcceptRevision } from "./stateProjection";
 import {
@@ -29,6 +42,14 @@ import {
     workspaceLayoutIdentity,
     writeWorkbenchLayout,
 } from "./layoutPersistence";
+import {
+    activeSourceSelection,
+    createWorkbenchTabOrder,
+    reconcileWorkbenchTabs,
+    workbenchSelectionId,
+    type WorkbenchSelection,
+    type WorkbenchTabReference,
+} from "./workbench";
 import type {
     GuiAiChat,
     GuiCodeExplanation,
@@ -41,6 +62,10 @@ import type {
 
 export { default as ChatComposer } from "./ChatComposer";
 export { guiKeyInput } from "./guiInput";
+export {
+    reconcileWorkbenchTabs,
+    requestedBrowserPresentation,
+} from "./workbench";
 
 const LINE_HEIGHT = 22;
 const FALLBACK_CELL_WIDTH = 8.15;
@@ -595,6 +620,7 @@ const sameChatMessage = (left: GuiChatMessage, right: GuiChatMessage) =>
     left.model === right.model &&
     left.toolName === right.toolName &&
     sameStrings(left.tools, right.tools) &&
+    sameStrings(left.images ?? [], right.images ?? []) &&
     (left as ChatActivityEntry).live === (right as ChatActivityEntry).live;
 
 export const retainTranscriptItems = (
@@ -760,6 +786,21 @@ export const ChatMessageView = (props: {
                     </Show>
                 </details>
             </Show>
+            <Show when={props.message.images?.length}>
+                <footer
+                    class="chat-message-attachments"
+                    aria-label="Attached images"
+                >
+                    <For each={props.message.images}>
+                        {(name) => (
+                            <span title={name}>
+                                <Icon name="attach" size={16} />
+                                <span>{name}</span>
+                            </span>
+                        )}
+                    </For>
+                </footer>
+            </Show>
         </article>
     );
 };
@@ -911,181 +952,198 @@ export const ChatPanel = (props: {
                     </button>
                 </div>
             </header>
-            <Show when={props.chat.agents.length}>
-                <section class="chat-agents" aria-label="Agent navigation">
-                    <button
-                        type="button"
-                        aria-current={
-                            !props.chat.selectedAgentId ? "true" : undefined
+            <div class="chat-body">
+                <Show when={props.chat.agents.length}>
+                    <section class="chat-agents" aria-label="Agent navigation">
+                        <button
+                            type="button"
+                            aria-current={
+                                !props.chat.selectedAgentId ? "true" : undefined
+                            }
+                            classList={{
+                                selected: !props.chat.selectedAgentId,
+                                cursor:
+                                    props.chat.focus === "treePanel" &&
+                                    props.chat.agentCursor === 0,
+                            }}
+                            onClick={() => {
+                                props.onAgent?.();
+                                queueMicrotask(props.focusInput);
+                            }}
+                        >
+                            <span>
+                                <b>Primary conversation</b>
+                                <small>{props.chat.profile}</small>
+                            </span>
+                            <em>root</em>
+                        </button>
+                        <For each={props.chat.agents}>
+                            {(agent, index) => (
+                                <button
+                                    type="button"
+                                    aria-current={
+                                        props.chat.selectedAgentId === agent.id
+                                            ? "true"
+                                            : undefined
+                                    }
+                                    classList={{
+                                        selected:
+                                            props.chat.selectedAgentId ===
+                                            agent.id,
+                                        followed:
+                                            props.chat.followedAgentId ===
+                                            agent.id,
+                                        cursor:
+                                            props.chat.focus === "treePanel" &&
+                                            props.chat.agentCursor ===
+                                                index() + 1,
+                                    }}
+                                    style={{
+                                        "padding-left": `${9 + agent.depth * 12}px`,
+                                    }}
+                                    onClick={() => {
+                                        props.onAgent?.(agent.id);
+                                        queueMicrotask(props.focusInput);
+                                    }}
+                                >
+                                    <Show
+                                        when={
+                                            props.chat.followedAgentId ===
+                                            agent.id
+                                        }
+                                    >
+                                        <Icon name="status-success" size={16} />
+                                    </Show>
+                                    <span>
+                                        <b>{agent.taskName}</b>
+                                        <small>{agent.model}</small>
+                                    </span>
+                                    <em>
+                                        {props.chat.followedAgentId === agent.id
+                                            ? "following · "
+                                            : ""}
+                                        {agent.lifecycle.replaceAll("_", " ")}
+                                    </em>
+                                </button>
+                            )}
+                        </For>
+                    </section>
+                </Show>
+                <div class="chat-transcript">
+                    <div
+                        class="chat-messages"
+                        ref={transcript}
+                        onScroll={() =>
+                            setFollowing(isNearChatBottom(transcript))
                         }
-                        classList={{
-                            selected: !props.chat.selectedAgentId,
-                            cursor:
-                                props.chat.focus === "treePanel" &&
-                                props.chat.agentCursor === 0,
-                        }}
-                        onClick={() => {
-                            props.onAgent?.();
-                            queueMicrotask(props.focusInput);
-                        }}
                     >
-                        <span>
-                            <b>Primary conversation</b>
-                            <small>{props.chat.profile}</small>
-                        </span>
-                        <em>root</em>
-                    </button>
-                    <For each={props.chat.agents}>
-                        {(agent, index) => (
-                            <button
-                                type="button"
-                                aria-current={
-                                    props.chat.selectedAgentId === agent.id
-                                        ? "true"
-                                        : undefined
-                                }
-                                classList={{
-                                    selected:
-                                        props.chat.selectedAgentId === agent.id,
-                                    followed:
-                                        props.chat.followedAgentId === agent.id,
-                                    cursor:
-                                        props.chat.focus === "treePanel" &&
-                                        props.chat.agentCursor === index() + 1,
-                                }}
-                                style={{
-                                    "padding-left": `${9 + agent.depth * 12}px`,
-                                }}
-                                onClick={() => {
-                                    props.onAgent?.(agent.id);
-                                    queueMicrotask(props.focusInput);
-                                }}
-                            >
+                        <Show when={transcriptEmpty()}>
+                            <div class="panel-empty chat-empty">
+                                <Icon name="ai-spark" size={20} tone="accent" />
+                                <b>Start a conversation</b>
+                                <span>
+                                    Ask about the current file, selection, or
+                                    workspace.
+                                </span>
+                            </div>
+                        </Show>
+                        <Index each={transcriptItems()}>
+                            {(item) => (
                                 <Show
                                     when={
-                                        props.chat.followedAgentId === agent.id
+                                        item().kind === "activity"
+                                            ? (item() as Extract<
+                                                  ChatTranscriptItem,
+                                                  { kind: "activity" }
+                                              >)
+                                            : undefined
+                                    }
+                                    fallback={
+                                        <ChatMessageView
+                                            message={
+                                                (
+                                                    item() as Extract<
+                                                        ChatTranscriptItem,
+                                                        { kind: "message" }
+                                                    >
+                                                ).message
+                                            }
+                                            onSelect={props.onMessage}
+                                        />
                                     }
                                 >
-                                    <Icon name="status-success" size={16} />
+                                    {(activity) => (
+                                        <ChatActivityGroup
+                                            item={activity()}
+                                            onSelect={props.onMessage}
+                                        />
+                                    )}
                                 </Show>
-                                <span>
-                                    <b>{agent.taskName}</b>
-                                    <small>{agent.model}</small>
-                                </span>
-                                <em>
-                                    {props.chat.followedAgentId === agent.id
-                                        ? "following · "
-                                        : ""}
-                                    {agent.lifecycle.replaceAll("_", " ")}
-                                </em>
-                            </button>
-                        )}
-                    </For>
-                </section>
-            </Show>
-            <div class="chat-transcript">
-                <div
-                    class="chat-messages"
-                    ref={transcript}
-                    onScroll={() => setFollowing(isNearChatBottom(transcript))}
-                >
-                    <Show when={transcriptEmpty()}>
-                        <div class="panel-empty chat-empty">
-                            <Icon name="ai-spark" size={20} tone="accent" />
-                            <b>Start a conversation</b>
-                            <span>
-                                Ask about the current file, selection, or
-                                workspace.
-                            </span>
-                        </div>
+                            )}
+                        </Index>
+                        <Show when={props.chat.streaming}>
+                            {(content) => (
+                                <article class="chat-message assistant streaming">
+                                    <header>
+                                        <b>assistant</b>
+                                        <small>streaming</small>
+                                    </header>
+                                    <Markdown text={content()} />
+                                </article>
+                            )}
+                        </Show>
+                        <For each={props.chat.queuedInputs}>
+                            {(item) => (
+                                <QueuedChatMessage
+                                    item={item}
+                                    onAction={(id, action) => {
+                                        props.onQueuedAction?.(id, action);
+                                        queueMicrotask(props.focusInput);
+                                    }}
+                                />
+                            )}
+                        </For>
+                    </div>
+                    <Show when={!following()}>
+                        <button
+                            type="button"
+                            class="chat-jump"
+                            onClick={() => {
+                                jumpToLatest();
+                                props.focusInput();
+                            }}
+                        >
+                            {props.chat.activity !== "idle"
+                                ? "New activity"
+                                : "New messages"}
+                            <Icon name="chevron-down" size={16} />
+                        </button>
                     </Show>
-                    <Index each={transcriptItems()}>
-                        {(item) => (
-                            <Show
-                                when={
-                                    item().kind === "activity"
-                                        ? (item() as Extract<
-                                              ChatTranscriptItem,
-                                              { kind: "activity" }
-                                          >)
-                                        : undefined
-                                }
-                                fallback={
-                                    <ChatMessageView
-                                        message={
-                                            (
-                                                item() as Extract<
-                                                    ChatTranscriptItem,
-                                                    { kind: "message" }
-                                                >
-                                            ).message
-                                        }
-                                        onSelect={props.onMessage}
-                                    />
-                                }
-                            >
-                                {(activity) => (
-                                    <ChatActivityGroup
-                                        item={activity()}
-                                        onSelect={props.onMessage}
-                                    />
-                                )}
-                            </Show>
-                        )}
-                    </Index>
-                    <Show when={props.chat.streaming}>
-                        {(content) => (
-                            <article class="chat-message assistant streaming">
-                                <header>
-                                    <b>assistant</b>
-                                    <small>streaming</small>
-                                </header>
-                                <Markdown text={content()} />
-                            </article>
-                        )}
-                    </Show>
-                    <For each={props.chat.queuedInputs}>
-                        {(item) => (
-                            <QueuedChatMessage
-                                item={item}
-                                onAction={(id, action) => {
-                                    props.onQueuedAction?.(id, action);
-                                    queueMicrotask(props.focusInput);
-                                }}
-                            />
-                        )}
-                    </For>
                 </div>
-                <Show when={!following()}>
-                    <button
-                        type="button"
-                        class="chat-jump"
-                        onClick={() => {
-                            jumpToLatest();
-                            props.focusInput();
-                        }}
-                    >
-                        {props.chat.activity !== "idle"
-                            ? "New activity"
-                            : "New messages"}
-                        <Icon name="chevron-down" size={16} />
-                    </button>
+                <Show when={props.chat.approval}>
+                    {(approval) => (
+                        <div
+                            class="approval-card"
+                            role="status"
+                            aria-live="polite"
+                        >
+                            <b>Approval required</b>
+                            <span>{approval()}</span>
+                            <small>
+                                Use the keyboard choices shown by Ovim.
+                            </small>
+                        </div>
+                    )}
+                </Show>
+                <Show when={props.chat.setup}>
+                    {(setup) => (
+                        <ChatSetupCard
+                            setup={setup()}
+                            onKey={props.onSetupKey}
+                        />
+                    )}
                 </Show>
             </div>
-            <Show when={props.chat.approval}>
-                {(approval) => (
-                    <div class="approval-card" role="status" aria-live="polite">
-                        <b>Approval required</b>
-                        <span>{approval()}</span>
-                        <small>Use the keyboard choices shown by Ovim.</small>
-                    </div>
-                )}
-            </Show>
-            <Show when={props.chat.setup}>
-                {(setup) => (
-                    <ChatSetupCard setup={setup()} onKey={props.onSetupKey} />
-                )}
-            </Show>
             <Show when={!props.hideComposer}>
                 <ChatComposer
                     chat={props.chat}
@@ -1102,6 +1160,7 @@ export const ChatPanel = (props: {
 
 function App() {
     const native = isTauri();
+    const macos = /Mac|iPhone|iPad/.test(navigator.platform);
     const compactDockQuery = window.matchMedia?.("(max-width: 1439px)");
     const [view, setView] = createSignal<GuiSnapshot>(mockSnapshot);
     const [error, setError] = createSignal("");
@@ -1110,9 +1169,17 @@ function App() {
     const [pendingExit, setPendingExit] = createSignal<
         "close" | "quit" | undefined
     >();
-    const [vectorView, setVectorView] = createSignal<"source" | "vector">(
-        "source",
-    );
+    const [workbenchSelection, setWorkbenchSelection] =
+        createSignal<WorkbenchSelection>(
+            activeSourceSelection(mockSnapshot.tabs),
+        );
+    const workbenchView = () => workbenchSelection().kind;
+    const [browserCommandRequest, setBrowserCommandRequest] = createSignal<{
+        serial: number;
+        sessionId: string;
+    }>();
+    const [browserAddressFocusRequest, setBrowserAddressFocusRequest] =
+        createSignal<{ serial: number; sessionId: string }>();
     const [vectorPreview, setVectorPreview] = createSignal<VectorPreview>();
     const [vectorPreviewError, setVectorPreviewError] = createSignal("");
     const [vectorPreviewLoading, setVectorPreviewLoading] = createSignal(false);
@@ -1142,6 +1209,9 @@ function App() {
     let wheelRemainder = 0;
     let lastDimensions = { columns: 0, rows: 0 };
     let latestSnapshotRevision: number | undefined;
+    let nextBrowserCommandSerial = 1;
+    let nextBrowserAddressFocusSerial = 1;
+    let browserCommandRefocusSession: string | undefined;
     const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
     const hasContextDock = createMemo(() =>
         Boolean(
@@ -1168,7 +1238,69 @@ function App() {
             : undefined;
     });
     const activeStrok = createMemo(() => Boolean(activeStrokPath()));
+    const workbenchTabOrder = createWorkbenchTabOrder();
+    const browserWorkbench = createBrowserWorkbench({
+        native,
+        sourceTabs: () => view().tabs,
+        includeVector: activeStrok,
+        selection: workbenchSelection,
+        setSelection: setWorkbenchSelection,
+        setError,
+        onSessionCreated: (sessionId, placement) =>
+            workbenchTabOrder.placeBrowser(sessionId, placement),
+        onSessionsChanged: (next) => {
+            if (
+                browserCommandRequest() &&
+                !next.sessions.some(
+                    (session) =>
+                        session.sessionId ===
+                        browserCommandRequest()?.sessionId,
+                )
+            )
+                setBrowserCommandRequest(undefined);
+        },
+    });
+    const browserState = browserWorkbench.state;
+    const browserOpening = browserWorkbench.opening;
+    const activeBrowserId = browserWorkbench.activeSessionId;
+    const activeBrowser = browserWorkbench.activeSession;
+    const workbenchTabs = createMemo<WorkbenchTabReference[]>(
+        (previous = []) =>
+            workbenchTabOrder.reconcile(
+                previous,
+                view().tabs,
+                activeStrok(),
+                browserState().sessions,
+                workbenchSelection(),
+            ),
+        [],
+    );
     const activeBufferRevision = createMemo(() => view().bufferRevision);
+
+    createEffect(() => {
+        if (!native) return;
+        const surface = workbenchView() === "browser" ? "browser" : "source";
+        void invoke("gui_set_menu_surface", {
+            surface,
+            canRestoreBrowser: browserWorkbench.canRestore(),
+        }).catch((reason) => setError(String(reason)));
+    });
+
+    createEffect(() => {
+        const activeSource = activeSourceSelection(view().tabs);
+        const selection = workbenchSelection();
+        if (
+            selection.kind === "source" &&
+            selection.tabId !== activeSource.tabId
+        ) {
+            setWorkbenchSelection(activeSource);
+        } else if (
+            selection.kind === "vector" &&
+            selection.sourceTabId !== activeSource.tabId
+        ) {
+            setWorkbenchSelection(activeSource);
+        }
+    });
 
     createEffect(() => {
         const filePath = view().filePath;
@@ -1181,12 +1313,13 @@ function App() {
             setVectorFeedbackStatus("");
         }
         if (!filePath?.toLowerCase().endsWith(".strok")) {
-            setVectorView("source");
+            if (workbenchView() === "vector")
+                setWorkbenchSelection(activeSourceSelection(view().tabs));
         }
     });
 
     createEffect(() => {
-        if (!native || !activeStrok() || vectorView() !== "vector") return;
+        if (!native || !activeStrok() || workbenchView() !== "vector") return;
         void activeStrokPath();
         void activeBufferRevision();
         void vectorRefresh();
@@ -1352,7 +1485,77 @@ function App() {
         if (chatInput?.isConnected) chatInput.focus({ preventScroll: true });
         else focusEditorInput();
     };
+    const focusBrowser = browserWorkbench.focus;
+    const presentBrowserSession = browserWorkbench.present;
+    const acceptBrowserState = browserWorkbench.accept;
+    const openBrowserSession = browserWorkbench.open;
+    const closeBrowser = browserWorkbench.close;
+    const restoreBrowserSession = browserWorkbench.restore;
+    const closeBrowserSession = async (sessionId: string) => {
+        const tabs = workbenchTabs();
+        const position = tabs.findIndex(
+            (tab) => tab.kind === "browser" && tab.sessionId === sessionId,
+        );
+        const closingSelected =
+            workbenchSelection().kind === "browser" &&
+            activeBrowserId() === sessionId;
+        const fallback =
+            position >= 0
+                ? (tabs[position + 1] ?? tabs[position - 1])
+                : undefined;
+        await closeBrowser(sessionId, position >= 0 ? position : tabs.length);
+        if (closingSelected && fallback) selectWorkbenchReference(fallback);
+    };
+    const navigateBrowserSession = browserWorkbench.navigate;
+    const runBrowserToolbar = browserWorkbench.toolbar;
+    const setBrowserVimKeys = browserWorkbench.setVimKeys;
+    const activateBrowserSession = browserWorkbench.activate;
+    const openBrowserCommand = (sessionId = activeBrowserId()) => {
+        if (
+            !sessionId ||
+            !browserState().sessions.some(
+                (session) => session.sessionId === sessionId,
+            )
+        )
+            return;
+        presentBrowserSession(sessionId);
+        browserCommandRefocusSession = sessionId;
+        setBrowserCommandRequest({
+            serial: nextBrowserCommandSerial++,
+            sessionId,
+        });
+    };
+    const focusBrowserAddress = (sessionId = activeBrowserId()) => {
+        if (
+            !sessionId ||
+            !browserState().sessions.some(
+                (session) => session.sessionId === sessionId,
+            )
+        )
+            return;
+        presentBrowserSession(sessionId);
+        setBrowserAddressFocusRequest({
+            serial: nextBrowserAddressFocusSerial++,
+            sessionId,
+        });
+    };
+    const dismissBrowserCommand = () => {
+        const sessionId = browserCommandRefocusSession;
+        browserCommandRefocusSession = undefined;
+        setBrowserCommandRequest(undefined);
+        if (sessionId)
+            requestAnimationFrame(() => {
+                void focusBrowser(sessionId).catch(() => {});
+            });
+        else if (workbenchView() === "source")
+            requestAnimationFrame(focusEditorInput);
+    };
     const focusPrimaryInput = () => {
+        if (browserCommandRequest()) return;
+        if (workbenchView() === "browser") {
+            void focusBrowser().catch(() => {});
+            return;
+        }
         if (
             activeDock() === "context" &&
             activeContextPanel() === "ai" &&
@@ -1421,6 +1624,27 @@ function App() {
         await sendLiteral("ggVG");
     };
 
+    const routeBrowserKey = createBrowserKeyRouter({
+        tabs: workbenchTabs,
+        selection: workbenchSelection,
+        hasSession: (sessionId) =>
+            browserState().sessions.some(
+                (session) => session.sessionId === sessionId,
+            ),
+        openTab: async (url) => {
+            await openBrowserSession(url);
+        },
+        restoreTab: restoreBrowserSession,
+        closeTab: closeBrowserSession,
+        focusAddress: focusBrowserAddress,
+        openCommand: openBrowserCommand,
+        runToolbar: runBrowserToolbar,
+        selectTab: (position) => selectWorkbenchTab(position),
+    });
+    const performBrowserKey = (event: BrowserKeyEvent) => {
+        void routeBrowserKey(event).catch((reason) => setError(String(reason)));
+    };
+
     const performMenuAction = (action: string) => {
         const active = document.activeElement;
         const nativeEditor =
@@ -1433,7 +1657,43 @@ function App() {
                 void editorCommand("wa");
                 break;
             case "file.close":
-                requestExit("close");
+                if (activeBrowserId())
+                    performBrowserKey({
+                        sessionId: activeBrowserId(),
+                        intent: "close_tab",
+                    });
+                else requestExit("close");
+                break;
+            case "browser.new-tab":
+                performBrowserKey({ intent: "new_tab" });
+                break;
+            case "browser.restore-tab":
+                performBrowserKey({ intent: "restore_tab" });
+                break;
+            case "browser.focus-address":
+                performBrowserKey({
+                    sessionId: activeBrowserId(),
+                    intent: "focus_address",
+                });
+                break;
+            case "browser.back":
+            case "browser.forward":
+            case "browser.reload":
+                performBrowserKey({
+                    sessionId: activeBrowserId(),
+                    intent: action.slice("browser.".length) as
+                        "back" | "forward" | "reload",
+                });
+                break;
+            case "browser.previous-tab":
+            case "browser.next-tab":
+                performBrowserKey({
+                    sessionId: activeBrowserId(),
+                    intent:
+                        action === "browser.previous-tab"
+                            ? "previous_tab"
+                            : "next_tab",
+                });
                 break;
             case "app.quit":
                 requestExit("quit");
@@ -1455,14 +1715,21 @@ function App() {
                 else void selectAllEditorText();
                 break;
             case "edit.find":
-                focusEditorInput();
-                void sendKey({
-                    key: "/",
-                    shift: false,
-                    control: false,
-                    alt: false,
-                    meta: false,
-                });
+                if (activeBrowserId())
+                    performBrowserKey({
+                        sessionId: activeBrowserId(),
+                        intent: "find",
+                    });
+                else {
+                    focusEditorInput();
+                    void sendKey({
+                        key: "/",
+                        shift: false,
+                        control: false,
+                        alt: false,
+                        meta: false,
+                    });
+                }
                 break;
         }
     };
@@ -1483,7 +1750,7 @@ function App() {
         void sendLiteral("-");
     };
 
-    const toggleAiChat = () => {
+    const activateAiChat = () => {
         setActiveContextPanel("ai");
         if (compactDocks() && view().aiChat && activeDock() === "explorer") {
             setActiveDock("context");
@@ -1492,7 +1759,7 @@ function App() {
         }
         setActiveDock("context");
         focusChatInput();
-        void sendLiteral("  ");
+        void mutate("gui_open_ai_chat", {});
     };
 
     const toggleDiff = () => {
@@ -1532,21 +1799,103 @@ function App() {
         }
     };
 
-    const selectWorkbenchTab = (position: number) => {
-        const tabs = view().tabs;
-        if (position === tabs.length && activeStrok()) {
-            setVectorView("vector");
-            return;
+    const selectWorkbenchReference = (tab: WorkbenchTabReference) => {
+        switch (tab.kind) {
+            case "source":
+                setWorkbenchSelection({ kind: "source", tabId: tab.tabId });
+                void mutate("gui_select_tab", { index: tab.index });
+                break;
+            case "vector":
+                setWorkbenchSelection({
+                    kind: "vector",
+                    sourceTabId: tab.sourceTabId,
+                });
+                break;
+            case "browser":
+                activateBrowserSession(tab.sessionId);
+                break;
         }
-        const tab = tabs[position];
-        if (!tab) return;
-        setVectorView("source");
-        void mutate("gui_select_tab", { index: tab.index });
+    };
+
+    const selectWorkbenchTab = (position: number) => {
+        const tab = workbenchTabs()[position];
+        if (!tab) return false;
+        selectWorkbenchReference(tab);
+        return true;
+    };
+
+    const executeBrowserCommand = async (
+        input: string,
+    ): Promise<CommandExecutionResult> => {
+        const request = browserCommandRequest();
+        if (!request)
+            return { ok: false, message: "No browser tab is selected" };
+        const parsed = parseBrowserCommand(input);
+        if (!parsed.ok) return parsed;
+        try {
+            switch (parsed.command.kind) {
+                case "close":
+                    browserCommandRefocusSession = undefined;
+                    await closeBrowserSession(request.sessionId);
+                    break;
+                case "navigate":
+                    await navigateBrowserSession(
+                        request.sessionId,
+                        parsed.command.url,
+                    );
+                    break;
+                case "history":
+                    await runBrowserToolbar(
+                        request.sessionId,
+                        parsed.command.direction,
+                        parsed.command.count,
+                    );
+                    break;
+                case "reload":
+                case "stop":
+                    await runBrowserToolbar(
+                        request.sessionId,
+                        parsed.command.kind,
+                    );
+                    break;
+                case "select_relative_tab": {
+                    const tabs = workbenchTabs();
+                    const current = tabs.findIndex(
+                        (tab) =>
+                            tab.id ===
+                            workbenchSelectionId(workbenchSelection()),
+                    );
+                    if (!tabs.length || current < 0)
+                        return {
+                            ok: false,
+                            message: "No workbench tab is selected",
+                        };
+                    const position =
+                        (current +
+                            (parsed.command.delta % tabs.length) +
+                            tabs.length) %
+                        tabs.length;
+                    browserCommandRefocusSession = undefined;
+                    selectWorkbenchTab(position);
+                    break;
+                }
+                case "select_tab":
+                    if (!selectWorkbenchTab(parsed.command.position - 1))
+                        return {
+                            ok: false,
+                            message: `Workbench tab ${parsed.command.position} does not exist`,
+                        };
+                    browserCommandRefocusSession = undefined;
+                    break;
+            }
+            return { ok: true };
+        } catch (reason) {
+            return { ok: false, message: String(reason) };
+        }
     };
 
     const handleTabNavigation = (event: KeyboardEvent, position: number) => {
-        const tabs = view().tabs;
-        const tabCount = tabs.length + (activeStrok() ? 1 : 0);
+        const tabCount = workbenchTabs().length;
         if (tabCount < 2) return;
         let next = position;
         if (event.key === "ArrowRight") next = (position + 1) % tabCount;
@@ -1585,17 +1934,10 @@ function App() {
         )
             return;
         const target = event.target as Element | null;
-        const primaryModifier = /Mac|iPhone|iPad/.test(navigator.platform)
-            ? event.metaKey
-            : event.ctrlKey;
+        const primaryModifier = macos ? event.metaKey : event.ctrlKey;
         if (primaryModifier && event.key.toLowerCase() === "s") {
             event.preventDefault();
             performMenuAction(event.altKey ? "file.save-all" : "file.save");
-            return;
-        }
-        if (primaryModifier && event.key.toLowerCase() === "w") {
-            event.preventDefault();
-            requestExit("close");
             return;
         }
         if (primaryModifier && event.key.toLowerCase() === "q") {
@@ -1603,13 +1945,27 @@ function App() {
             requestExit("quit");
             return;
         }
-        const nativeControl =
-            target !== inputSink &&
-            Boolean(
-                target?.closest?.(
-                    "a[href], button, input, select, textarea, [contenteditable='true'], [data-gui-native-control]",
-                ),
-            );
+        const browserShortcut = primaryModifier
+            ? browserShortcutAction(event, workbenchView() === "browser", macos)
+            : undefined;
+        if (browserShortcut) {
+            event.preventDefault();
+            performMenuAction(browserShortcut);
+            return;
+        }
+        const nativeControl = isGuiNativeControl(target, inputSink);
+        if (
+            workbenchView() === "browser" &&
+            event.key === ":" &&
+            !nativeControl &&
+            !event.metaKey &&
+            !event.ctrlKey &&
+            !event.altKey
+        ) {
+            event.preventDefault();
+            openBrowserCommand();
+            return;
+        }
         if (primaryModifier && !nativeControl) {
             const key = event.key.toLowerCase();
             if (key === "z" || key === "a" || key === "f") {
@@ -1629,7 +1985,7 @@ function App() {
         if (event.key === "Tab" && target?.closest?.("[data-gui-core-dialog]"))
             return;
         if (nativeControl) return;
-        const clipboardModifier = /Mac|iPhone|iPad/.test(navigator.platform)
+        const clipboardModifier = macos
             ? event.metaKey
             : event.ctrlKey && event.shiftKey;
         if (
@@ -2771,7 +3127,16 @@ function App() {
         window.addEventListener("copy", handleCopy);
         window.addEventListener("cut", handleCut);
         const restoreInputFocus = () => {
-            if (!pendingExit()) focusPrimaryInput();
+            // Switching from the child webview to its toolbar focuses the main
+            // webview before WebKit assigns focus to the clicked control. Wait
+            // for that transition so we do not immediately steal focus back.
+            queueMicrotask(() => {
+                if (
+                    !pendingExit() &&
+                    !isGuiNativeControl(document.activeElement, inputSink)
+                )
+                    focusPrimaryInput();
+            });
         };
         window.addEventListener("focus", restoreInputFocus);
         const updateCompactDocks = (event: MediaQueryListEvent) =>
@@ -2782,6 +3147,7 @@ function App() {
         observer.observe(editorBody);
         let unlistenMenu: (() => void) | undefined;
         let unlistenClose: (() => void) | undefined;
+        let unlistenBrowserKey: (() => void) | undefined;
         if (native) {
             void listen<string>("ovim://menu-action", (event) =>
                 performMenuAction(event.payload),
@@ -2793,6 +3159,16 @@ function App() {
             ).then((unlisten) => {
                 unlistenClose = unlisten;
             });
+            void listen<BrowserKeyEvent>("ovim://browser-key", (event) =>
+                performBrowserKey(event.payload),
+            ).then((unlisten) => {
+                unlistenBrowserKey = unlisten;
+            });
+            const browserStates = new Channel<BrowserState>();
+            browserStates.onmessage = acceptBrowserState;
+            void invoke("gui_browser_subscribe", {
+                onEvent: browserStates,
+            }).catch((reason) => setError(String(reason)));
             const snapshots = new Channel<GuiSnapshot>();
             snapshots.onmessage = accept;
             lastDimensions = dimensions();
@@ -2815,6 +3191,7 @@ function App() {
             observer.disconnect();
             unlistenMenu?.();
             unlistenClose?.();
+            unlistenBrowserKey?.();
         });
     });
 
@@ -2908,7 +3285,7 @@ function App() {
                                 Boolean(view().aiChat) &&
                                 activeDock() === "context"
                             }
-                            onClick={toggleAiChat}
+                            onClick={activateAiChat}
                         />
                     </div>
                     <IconButton
@@ -3039,119 +3416,56 @@ function App() {
                 </Show>
 
                 <section class="editor-stack">
-                    <div class="tabs" role="tablist" aria-label="Open files">
-                        <Index each={view().tabs}>
-                            {(tab, position) => (
-                                <button
-                                    type="button"
-                                    role="tab"
-                                    aria-selected={
-                                        tab().active &&
-                                        (!activeStrok() ||
-                                            vectorView() === "source")
-                                    }
-                                    aria-controls="editor-surface"
-                                    tabIndex={
-                                        tab().active &&
-                                        (!activeStrok() ||
-                                            vectorView() === "source")
-                                            ? 0
-                                            : -1
-                                    }
-                                    data-tab-index={tab().index}
-                                    data-workbench-tab-index={position}
-                                    class="tab"
-                                    classList={{
-                                        active:
-                                            tab().active &&
-                                            (!activeStrok() ||
-                                                vectorView() === "source"),
-                                    }}
-                                    aria-label={
-                                        tab().title +
-                                        (tab().modified ? ", modified" : "")
-                                    }
-                                    title={
-                                        tab().title +
-                                        (tab().modified ? " · modified" : "")
-                                    }
-                                    onClick={() => {
-                                        selectWorkbenchTab(position);
-                                        queueMicrotask(focusEditorInput);
-                                    }}
-                                    onKeyDown={(event) =>
-                                        handleTabNavigation(event, position)
-                                    }
-                                >
-                                    <Icon
-                                        name="file"
-                                        size={16}
-                                        tone={tab().active ? "accent" : "muted"}
-                                    />
-                                    <span>{tab().title}</span>
-                                    <Show when={tab().modified}>
-                                        <span class="modified-dot" />
-                                    </Show>
-                                </button>
-                            )}
-                        </Index>
-                        <Show when={activeStrok()}>
-                            <button
-                                type="button"
-                                role="tab"
-                                aria-selected={vectorView() === "vector"}
-                                aria-controls="editor-surface"
-                                tabIndex={vectorView() === "vector" ? 0 : -1}
-                                data-workbench-tab-index={view().tabs.length}
-                                class="tab vector-tab"
-                                classList={{
-                                    active: vectorView() === "vector",
-                                }}
-                                title="Live Strøk render and review"
-                                onClick={() => setVectorView("vector")}
-                                onKeyDown={(event) =>
-                                    handleTabNavigation(
-                                        event,
-                                        view().tabs.length,
-                                    )
-                                }
-                            >
-                                <Icon
-                                    name="ai-spark"
-                                    size={16}
-                                    tone={
-                                        vectorView() === "vector"
-                                            ? "accent"
-                                            : "muted"
-                                    }
-                                />
-                                <span>Vector</span>
-                            </button>
-                        </Show>
-                        <span class="tabs-fill" role="presentation" />
-                    </div>
+                    <WorkbenchTabStrip
+                        native={native}
+                        sourceTabs={view().tabs}
+                        tabs={workbenchTabs()}
+                        selection={workbenchSelection()}
+                        browserState={browserState()}
+                        browserOpening={browserOpening()}
+                        onSelect={selectWorkbenchTab}
+                        onSourceFocus={() => queueMicrotask(focusEditorInput)}
+                        onNewBrowser={() => void openBrowserSession()}
+                        onNavigate={handleTabNavigation}
+                    />
 
                     <div class="breadcrumbs">
-                        <For each={breadcrumbs()}>
-                            {(part, index) => (
+                        <Show
+                            when={workbenchView() === "browser"}
+                            fallback={
                                 <>
-                                    <span>{part}</span>
-                                    <Show
-                                        when={
-                                            index() < breadcrumbs().length - 1
-                                        }
-                                    >
-                                        <Icon
-                                            name="chevron-right"
-                                            size={16}
-                                            tone="muted"
-                                        />
+                                    <For each={breadcrumbs()}>
+                                        {(part, index) => (
+                                            <>
+                                                <span>{part}</span>
+                                                <Show
+                                                    when={
+                                                        index() <
+                                                        breadcrumbs().length - 1
+                                                    }
+                                                >
+                                                    <Icon
+                                                        name="chevron-right"
+                                                        size={16}
+                                                        tone="muted"
+                                                    />
+                                                </Show>
+                                            </>
+                                        )}
+                                    </For>
+                                    <Show when={view().readOnly}>
+                                        <span class="readonly">read only</span>
                                     </Show>
                                 </>
-                            )}
-                        </For>
-                        <Show when={view().readOnly}>
-                            <span class="readonly">read only</span>
+                            }
+                        >
+                            <span>Ovim</span>
+                            <Icon name="chevron-right" size={16} tone="muted" />
+                            <span>
+                                {activeBrowser()
+                                    ? browserTabTitle(activeBrowser()!)
+                                    : "Browser"}
+                            </span>
                         </Show>
                     </div>
 
@@ -3160,11 +3474,15 @@ function App() {
                         class="editor-body"
                         classList={{
                             "vector-view-active":
-                                activeStrok() && vectorView() === "vector",
+                                activeStrok() && workbenchView() === "vector",
+                            "browser-view-active":
+                                workbenchView() === "browser",
                         }}
                         ref={editorBody!}
                     >
-                        <Show when={activeStrok() && vectorView() === "vector"}>
+                        <Show
+                            when={activeStrok() && workbenchView() === "vector"}
+                        >
                             <section
                                 class="vector-workbench"
                                 aria-label="Strøk vector preview"
@@ -3259,6 +3577,30 @@ function App() {
                                 </form>
                             </section>
                         </Show>
+                        <BrowserPanel
+                            native={native}
+                            active={workbenchView() === "browser"}
+                            session={activeBrowser()}
+                            addressFocusRequest={browserAddressFocusRequest()}
+                            obscured={Boolean(
+                                pendingExit() ||
+                                browserCommandRequest() ||
+                                view().picker ||
+                                view().lspManager,
+                            )}
+                            onNavigate={navigateBrowserSession}
+                            onToolbar={runBrowserToolbar}
+                            onClose={closeBrowserSession}
+                            onVimKeysChange={setBrowserVimKeys}
+                        />
+                        <SurfaceCommandLine
+                            active={Boolean(browserCommandRequest())}
+                            requestSerial={browserCommandRequest()?.serial ?? 0}
+                            surface="browser"
+                            completions={BROWSER_COMMAND_NAMES}
+                            onExecute={executeBrowserCommand}
+                            onDismiss={dismissBrowserCommand}
+                        />
                         <textarea
                             ref={inputSink!}
                             class="input-sink"
@@ -3567,7 +3909,11 @@ function App() {
 
                     <div class="message-line">
                         <Show
-                            when={view().prompt}
+                            when={
+                                workbenchView() === "source"
+                                    ? view().prompt
+                                    : undefined
+                            }
                             fallback={
                                 <span
                                     class="message"
@@ -3601,7 +3947,15 @@ function App() {
                     </div>
 
                     <footer class="statusbar">
-                        <div class="mode-chip">{view().mode}</div>
+                        <div class="mode-chip">
+                            {browserCommandRequest()
+                                ? "COMMAND · BROWSER"
+                                : workbenchView() === "browser"
+                                  ? "BROWSER"
+                                  : workbenchView() === "vector"
+                                    ? "VECTOR"
+                                    : view().mode}
+                        </div>
                         <div class="status-left">
                             <Show when={view().gitBranch}>
                                 <span>

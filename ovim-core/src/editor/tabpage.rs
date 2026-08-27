@@ -1,8 +1,13 @@
 use crate::buffer::BufferId;
 use crate::editor::WindowManager;
 
+pub type TabPageId = u64;
+
 /// Represents a single tab page
 pub struct TabPage {
+    /// Stable identity for GUI/workbench projections. Unlike a tab index,
+    /// this survives insertions and closures elsewhere in the tab strip.
+    id: TabPageId,
     /// Window manager for this tab (handles split windows)
     window_manager: Option<WindowManager>,
     /// Stable id of the buffer this tab is displaying. `None` only for a
@@ -15,10 +20,19 @@ pub struct TabPage {
 impl TabPage {
     /// Creates a new tab page
     pub fn new() -> Self {
+        Self::with_id(0)
+    }
+
+    fn with_id(id: TabPageId) -> Self {
         Self {
+            id,
             window_manager: None,
             buffer_id: None,
         }
+    }
+
+    pub fn id(&self) -> TabPageId {
+        self.id
     }
 
     /// Gets the window manager
@@ -59,14 +73,18 @@ pub struct TabPageManager {
     tabs: Vec<TabPage>,
     /// Index of the currently active tab
     current_tab_index: usize,
+    /// Next monotonically increasing identity. IDs are local to this editor
+    /// instance and are never reused.
+    next_tab_id: TabPageId,
 }
 
 impl TabPageManager {
     /// Creates a new tab page manager with one default tab
     pub fn new() -> Self {
         Self {
-            tabs: vec![TabPage::new()],
+            tabs: vec![TabPage::with_id(1)],
             current_tab_index: 0,
+            next_tab_id: 2,
         }
     }
 
@@ -110,7 +128,9 @@ impl TabPageManager {
     /// verified in `nvim --clean`).
     pub fn new_tab(&mut self) {
         let insert_at = (self.current_tab_index + 1).min(self.tabs.len());
-        self.tabs.insert(insert_at, TabPage::new());
+        let id = self.next_tab_id;
+        self.next_tab_id = self.next_tab_id.saturating_add(1);
+        self.tabs.insert(insert_at, TabPage::with_id(id));
         self.current_tab_index = insert_at;
     }
 
@@ -201,5 +221,30 @@ impl TabPageManager {
 impl Default for TabPageManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_page_ids_survive_reindexing_and_are_never_reused() {
+        let mut tabs = TabPageManager::new();
+        assert_eq!(tabs.tabs().iter().map(TabPage::id).collect::<Vec<_>>(), [1]);
+
+        tabs.new_tab();
+        tabs.new_tab();
+        assert_eq!(
+            tabs.tabs().iter().map(TabPage::id).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+
+        tabs.close_tab(1);
+        tabs.new_tab();
+        assert_eq!(
+            tabs.tabs().iter().map(TabPage::id).collect::<Vec<_>>(),
+            [1, 3, 4]
+        );
     }
 }

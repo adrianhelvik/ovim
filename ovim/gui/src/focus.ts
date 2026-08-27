@@ -7,6 +7,21 @@ const FOCUSABLE = [
     "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
+const GUI_NATIVE_CONTROL = [
+    "a[href]",
+    "button",
+    "input",
+    "select",
+    "textarea",
+    "[contenteditable='true']",
+    "[data-gui-native-control]",
+].join(",");
+
+export const isGuiNativeControl = (
+    target: Element | null,
+    inputSink?: Element,
+) => target !== inputSink && Boolean(target?.closest(GUI_NATIVE_CONTROL));
+
 export const trapDialogFocus = (
     event: KeyboardEvent,
     container: HTMLElement,

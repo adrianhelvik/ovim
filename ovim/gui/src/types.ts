@@ -106,6 +106,7 @@ export interface GuiAiChat {
         model?: string;
         toolName?: string;
         tools: string[];
+        images?: string[];
     }>;
     streaming?: string;
     streamingThinking?: string;
@@ -277,6 +278,7 @@ export interface GuiSnapshot {
     layout: GuiLayoutNode;
     panes: GuiPane[];
     tabs: Array<{
+        id: number;
         index: number;
         title: string;
         active: boolean;

@@ -8,10 +8,14 @@
 
 #[cfg(feature = "gui")]
 pub mod app;
+#[cfg(feature = "gui")]
+pub mod browser;
+#[cfg(feature = "gui")]
+mod menu;
 
 use crate::cli::FileArg;
 use crate::color::Color;
-use crate::editor::{Editor, InputHandler};
+use crate::editor::{Editor, EditorServices, InputHandler};
 use crate::frontend::{
     handle_viewport_resize, process_editor_tick, process_external_file_change,
     process_picker_results, refresh_after_input, FrontendChannels,
@@ -387,6 +391,7 @@ pub struct GuiSegment {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiTab {
+    pub id: u64,
     pub index: usize,
     pub title: String,
     pub active: bool,
@@ -594,6 +599,7 @@ pub struct GuiChatMessage {
     pub model: Option<String>,
     pub tool_name: Option<String>,
     pub tools: Vec<String>,
+    pub images: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -720,6 +726,9 @@ enum GuiRequest {
         input: GuiKeyInput,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    OpenAiChat {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     UpdateChatInput {
         expected_input: String,
         expected_cursor: usize,
@@ -842,7 +851,7 @@ pub struct GuiBridge {
 }
 
 impl GuiBridge {
-    pub fn spawn(file: Option<FileArg>, resume: bool) -> Result<Self> {
+    pub fn spawn(file: Option<FileArg>, resume: bool, services: EditorServices) -> Result<Self> {
         let (request_tx, request_rx) = mpsc::unbounded_channel();
         let (update_tx, _) = watch::channel(None);
         let (ready_tx, ready_rx) = std_mpsc::sync_channel(1);
@@ -862,6 +871,7 @@ impl GuiBridge {
                 runtime.block_on(run_editor(
                     file,
                     resume,
+                    services,
                     request_rx,
                     editor_updates,
                     ready_tx,
@@ -937,6 +947,10 @@ impl GuiBridge {
 
     pub async fn key(&self, input: GuiKeyInput) -> Result<(), String> {
         self.request(|reply| GuiRequest::Key { input, reply }).await
+    }
+
+    pub async fn open_ai_chat(&self) -> Result<(), String> {
+        self.request(|reply| GuiRequest::OpenAiChat { reply }).await
     }
 
     pub async fn paste(&self, text: String) -> Result<(), String> {
@@ -1121,11 +1135,12 @@ impl GuiBridge {
 async fn run_editor(
     file: Option<FileArg>,
     resume: bool,
+    services: EditorServices,
     mut requests: mpsc::UnboundedReceiver<GuiRequest>,
     updates: watch::Sender<Option<GuiSnapshot>>,
     ready: std_mpsc::SyncSender<Result<(), String>>,
 ) {
-    let mut editor = Editor::new();
+    let mut editor = Editor::new().with_services(services);
     if let Err(error) = editor.enable_lua() {
         editor.set_status_message(format!("Lua configuration: {error}"));
     }
@@ -1134,20 +1149,22 @@ async fn run_editor(
     if let Some(file) = file {
         let path = Path::new(&file.path);
         let result = if path.is_dir() {
-            editor.open_directory(path)
+            editor.set_workspace_root(path)
         } else {
             editor.load_file_async(path).await
         };
         if let Err(error) = result {
             editor.set_file_path(file.path.clone());
             editor.set_status_message(format!("Could not open {}: {error}", file.path));
-        } else if !path.is_dir() {
-            if let Some(line) = file.line {
-                editor.buffer_mut().cursor_mut().set_position(
-                    line.saturating_sub(1),
-                    GraphemeCol(file.col.unwrap_or(1).saturating_sub(1)),
-                );
-                editor.buffer_mut().validate_cursor_position();
+        } else {
+            if !path.is_dir() {
+                if let Some(line) = file.line {
+                    editor.buffer_mut().cursor_mut().set_position(
+                        line.saturating_sub(1),
+                        GraphemeCol(file.col.unwrap_or(1).saturating_sub(1)),
+                    );
+                    editor.buffer_mut().validate_cursor_position();
+                }
             }
             editor.set_mode(Mode::Normal);
         }
@@ -1245,6 +1262,31 @@ fn set_gui_chat_input_cursor(editor: &mut Editor, offset: usize) -> Result<()> {
     chat.input_cursor = offset;
     chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
     Ok(())
+}
+
+fn activate_gui_ai_chat(editor: &mut Editor) -> Result<()> {
+    if editor.mode() == Mode::AiChat {
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
+        }
+        return Ok(());
+    }
+
+    // A workbench navigation action supersedes a transient picker. Otherwise
+    // the picker would remain latent and reclaim focus when chat closes.
+    if editor.picker().is_some() {
+        editor.close_picker();
+        if editor.mode() == Mode::Picker {
+            editor.set_mode(Mode::Normal);
+        }
+    }
+
+    editor.open_ai_chat(ovim_core::ai::chat_types::ChatOpts {
+        name: "chat".into(),
+        profile: editor.ai_chat_context_profile("chat"),
+        allow_edits: true,
+        ..Default::default()
+    })
 }
 
 fn draft_vector_feedback(editor: &mut Editor, feedback: &str) -> Result<()> {
@@ -1386,6 +1428,14 @@ async fn handle_request(
             let result = input
                 .into_core()
                 .and_then(|event| InputHandler::handle_key_event_no_dirty(editor, event));
+            if result.is_ok() {
+                refresh_after_input(editor);
+                editor.dispatch_pending_intents().await;
+            }
+            (reply, result)
+        }
+        GuiRequest::OpenAiChat { reply } => {
+            let result = activate_gui_ai_chat(editor);
             if result.is_ok() {
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
@@ -1861,6 +1911,10 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
                         .is_some_and(|buffer| buffer.is_modified())
                 };
                 GuiTab {
+                    id: editor
+                        .tab_page_manager()
+                        .tab(index)
+                        .map_or(0, ovim_core::editor::TabPage::id),
                     index,
                     title: editor.get_tab_title(index),
                     active,
@@ -2585,23 +2639,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             waiting: editor.ai_chat_waiting(),
             input: editor.ai_chat_input().to_string(),
             input_cursor: editor.ai_chat_input_cursor(),
-            pending_images: editor
-                .ai_chat_pending_images()
-                .iter()
-                .enumerate()
-                .map(|(index, image)| {
-                    let name = image
-                        .path
-                        .file_name()
-                        .unwrap_or(image.path.as_os_str())
-                        .to_string_lossy();
-                    if name.starts_with("clipboard-") {
-                        format!("Pasted image {}", index + 1)
-                    } else {
-                        name.to_string()
-                    }
-                })
-                .collect(),
+            pending_images: projected_image_names(editor.ai_chat_pending_images()),
             queued_inputs: editor
                 .ai_chat_queued_inputs()
                 .map(|item| GuiQueuedChatInput {
@@ -2658,6 +2696,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                             .take(24)
                             .map(|tool| tool.name.clone())
                             .collect(),
+                        images: projected_image_names(&message.images),
                     }
                 })
                 .collect(),
@@ -2704,6 +2743,25 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             code_explanation: code_explanation(editor),
         }
     })
+}
+
+fn projected_image_names(images: &[ovim_core::ai::chat_types::ImageAttachment]) -> Vec<String> {
+    images
+        .iter()
+        .enumerate()
+        .map(|(index, image)| {
+            let name = image
+                .path
+                .file_name()
+                .unwrap_or(image.path.as_os_str())
+                .to_string_lossy();
+            if name.starts_with("clipboard-") {
+                format!("Pasted image {}", index + 1)
+            } else {
+                name.to_string()
+            }
+        })
+        .collect()
 }
 
 fn code_explanation(editor: &Editor) -> Option<GuiCodeExplanation> {
@@ -3077,6 +3135,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gui_chat_activation_dismisses_a_transient_picker() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut editor = Editor::new();
+        editor.set_picker(crate::editor::Picker::new_file_finder(
+            workspace.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+        ));
+        editor.set_mode(Mode::Picker);
+
+        activate_gui_ai_chat(&mut editor).unwrap();
+
+        assert_eq!(editor.mode(), Mode::AiChat);
+        assert!(editor.picker().is_none());
+        editor.close_ai_chat();
+        assert_eq!(editor.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn gui_chat_activation_is_idempotent_and_preserves_the_draft() {
+        let mut editor = Editor::new();
+        let mode = editor.mode();
+        activate_gui_ai_chat(&mut editor).unwrap();
+        editor.ai_state.chat.as_mut().unwrap().input = "keep this draft".into();
+
+        activate_gui_ai_chat(&mut editor).unwrap();
+
+        assert_eq!(editor.mode(), Mode::AiChat);
+        assert_eq!(editor.ai_chat_input(), "keep this draft");
+        editor.close_ai_chat();
+        assert_eq!(editor.mode(), mode);
+    }
+
+    #[test]
     fn overlay_columns_use_rendered_tab_and_wide_character_widths() {
         let editor = Editor::with_content("\t界x\n");
 
@@ -3314,6 +3405,28 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn submitted_image_remains_visible_in_the_transcript_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layout.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        let mut editor = Editor::new();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        attach_chat_images(&mut editor, std::slice::from_ref(&path)).unwrap();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "Inspect this layout".into();
+        chat.input_cursor = chat.input.len();
+
+        editor.submit_ai_chat_message().unwrap();
+
+        let view = snapshot(&editor, 1).ai_chat.unwrap();
+        assert!(view.pending_images.is_empty());
+        assert_eq!(view.messages[0].images, vec!["layout.png"]);
+        editor.cancel_ai_chat_generation();
     }
 
     #[test]

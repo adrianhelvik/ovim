@@ -303,6 +303,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn builtin_chat_profile_enables_embedded_browser_scope() {
+        let context = LuaContext::new().unwrap();
+        let bridge = EditorBridge::new();
+        setup_vim_api(context.lua(), bridge.clone()).unwrap();
+        context.load_builtin().unwrap();
+
+        let snapshot = bridge
+            .take_ai_config_if_dirty()
+            .expect("built-in AI config");
+        let chat_profile = snapshot.0.get("chat").expect("chat context profile");
+        let profile = snapshot.2.get(chat_profile).expect("chat profile");
+        assert_eq!(chat_profile, "codex_sol");
+        assert!(
+            profile.scope_network,
+            "the built-in GUI chat profile should expose hosted browser tools"
+        );
+
+        let profile = profile.clone().into_profile_config(chat_profile.clone());
+        let capabilities = crate::ai::Capabilities {
+            file_scope: profile.scope.files,
+            shell: false,
+            network: profile.scope.network,
+            allow_mutations: false,
+        };
+        let registry = crate::ai::ToolRegistry::new();
+        let tool_names = registry
+            .tools_for_profile_with_services(
+                &profile,
+                &capabilities,
+                crate::ai::tools::RuntimeServices { browser: true },
+            )
+            .into_iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        for expected in [
+            crate::ai::tools::browser::BROWSER_SESSION_TOOL,
+            crate::ai::tools::browser::BROWSER_NAVIGATE_TOOL,
+            crate::ai::tools::browser::BROWSER_SNAPSHOT_TOOL,
+        ] {
+            assert!(tool_names.contains(&expected), "tools: {tool_names:?}");
+        }
+        assert!(!tool_names.contains(&crate::ai::tools::browser::BROWSER_ACT_TOOL));
+    }
+
+    #[test]
     #[cfg(unix)]
     fn symlinked_plugin_dirs_load_and_broken_plugins_are_reported_not_fatal() {
         let temp = tempfile::tempdir().unwrap();

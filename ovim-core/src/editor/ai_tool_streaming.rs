@@ -18,7 +18,11 @@ impl Editor {
             || !self
                 .ai_state
                 .tool_registry
-                .tools_for_profile(profile, &self.build_chat_capabilities())
+                .tools_for_profile_with_services(
+                    profile,
+                    &self.build_chat_capabilities(),
+                    self.build_chat_runtime_services(),
+                )
                 .iter()
                 .any(|tool| tool.name == ACTIVATE_SKILL_TOOL)
         {
@@ -55,7 +59,7 @@ impl Editor {
         let mut tools = self
             .ai_state
             .tool_registry
-            .tools_for_profile(profile, &caps)
+            .tools_for_profile_with_services(profile, &caps, self.build_chat_runtime_services())
             .into_iter()
             .filter(|tool| {
                 !crate::ai::tools::subagents::is_parent_control_tool(&tool.name)
@@ -426,7 +430,7 @@ impl Editor {
                     super::ai_chat_state::ShellTranscriptPhase::Interrupted,
                 );
             }
-            if let Some(pending) = chat.pending_web_execution.take() {
+            if let Some(pending) = chat.pending_background_tool.take() {
                 pending.task.abort();
             }
             if let Some(pending) = chat.pending_subagent_control.take() {
@@ -581,7 +585,7 @@ impl Editor {
                     super::ai_chat_state::ShellTranscriptPhase::Interrupted,
                 );
             }
-            if let Some(pending) = chat.pending_web_execution.take() {
+            if let Some(pending) = chat.pending_background_tool.take() {
                 pending.task.abort();
             }
             chat.streaming_content = None;
@@ -942,8 +946,8 @@ mod tests {
     async fn clearing_streaming_state_retires_an_in_flight_shell_transcript() {
         use crate::ai::chat_types::ToolCallInfo;
         use crate::editor::ai_chat_state::{
-            PendingShellExecution, ShellExecutionContinuation, ShellKillHandle, ShellTranscript,
-            ShellTranscriptPhase,
+            PendingShellExecution, ShellKillHandle, ShellTranscript, ShellTranscriptPhase,
+            ToolExecutionContinuation,
         };
         use std::sync::Arc;
 
@@ -971,7 +975,7 @@ mod tests {
             chat.shell_transcripts.insert(call.id.clone(), transcript);
             chat.pending_shell_execution = Some(PendingShellExecution {
                 tool_call: call.clone(),
-                continuation: ShellExecutionContinuation::Batch {
+                continuation: ToolExecutionContinuation::Batch {
                     runtime_tool: None,
                     runtime_turn: None,
                     remaining_tool_calls: Vec::new(),

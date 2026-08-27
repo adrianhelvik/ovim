@@ -250,16 +250,24 @@ impl Editor {
         &mut self.ui_panels.file_tree
     }
 
-    /// Open a directory as an explorer workspace without assigning the
-    /// directory path to the current text buffer.
-    pub fn open_directory(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
+    /// Establish a directory as the workspace root without opening or focusing
+    /// the explorer. This keeps workspace discovery separate from panel state.
+    pub fn set_workspace_root(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
         let root = path
             .canonicalize()
             .map_err(|error| anyhow::anyhow!("Could not open directory: {error}"))?;
         if !root.is_dir() {
             anyhow::bail!("Not a directory: {}", path.display());
         }
-        self.ui_panels.file_tree.open(&root);
+        self.ui_panels.file_tree.set_root(&root);
+        Ok(())
+    }
+
+    /// Open a directory as a focused explorer workspace without assigning the
+    /// directory path to the current text buffer.
+    pub fn open_directory(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
+        self.set_workspace_root(path)?;
+        self.ui_panels.file_tree.toggle();
         self.set_mode(Mode::FileTree);
         Ok(())
     }
@@ -863,6 +871,24 @@ impl Editor {
 #[cfg(test)]
 mod file_tree_tests {
     use super::*;
+
+    #[test]
+    fn setting_a_workspace_root_preserves_the_active_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("main.rs"), "fn main() {}").unwrap();
+        let mut editor = Editor::new();
+        let mode = editor.mode();
+
+        editor.set_workspace_root(directory.path()).unwrap();
+
+        assert_eq!(editor.mode(), mode);
+        assert!(!editor.file_tree().is_visible());
+        assert_eq!(
+            editor.file_tree().root_path(),
+            Some(directory.path().canonicalize().unwrap().as_path())
+        );
+        assert_eq!(editor.buffer().file_path(), None);
+    }
 
     #[test]
     fn opening_a_directory_focuses_the_tree_without_naming_the_buffer() {

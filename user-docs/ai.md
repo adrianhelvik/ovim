@@ -65,6 +65,82 @@ temporary rate limits and server failures receive one bounded retry. Web tools
 are read-only Ovim operations: they do not invoke a shell and do not require a
 Codex sandbox or Terra approval.
 
+### Shared embedded browser (`ovim-gui`)
+
+The native GUI can add **Browser** tabs backed by Tauri child webviews. Click
+the `+` control in the editor tab strip to create one; each tab is an
+independent ephemeral session shared by you and the primary AI chat. Either
+side can create, select, navigate, inspect, or close a session by its ID. Ovim
+keeps at most eight browser tabs and destroys a child webview when its tab is
+closed, so no browser session is kept open by default. The terminal frontend
+does not attach a browser host, so these tools are omitted there.
+
+A manually created tab starts empty and focuses its address field; Ovim creates
+the child webview only after the first navigation. In a loaded page, press `:`
+outside an editable page field to open the Browser command line. It supports
+`:goto <address>`, `:back [count]`, `:forward [count]`, `:reload`, `:stop`,
+`:q`, `:tabnext [count]`, `:tabprev [count]`, and `:tabgoto <number>`. Browser
+commands are contextual: `:w` reports that writing is unavailable instead of
+saving a hidden editor buffer.
+
+Browser tabs also have a Vimium-inspired Normal mode. These keys never capture
+ordinary typing in an input, textarea, select, contenteditable region, ARIA
+textbox, or conservatively detected custom-element editor. Press `i` to pass
+all page keys through explicitly; `Esc` returns to Normal mode. The **Vim
+keys** control in the browser toolbar disables or reenables unmodified page
+bindings for that tab. Native application shortcuts remain available while
+page bindings are off.
+
+| Keys | Browser action |
+| --- | --- |
+| `h` `j` `k` `l`, `d` `u`, `gg` `G` | Scroll; half-page; top or bottom |
+| `f`, `F` | Follow a visible control; open a visible link in a new tab |
+| `H`, `L`, `r` | Back, forward, reload |
+| `o`, `:` | Focus the address field; open the Browser command line |
+| `t`, `x` | Open or close a Browser tab |
+| `J` `K`, `gt` `gT`, `g0` `g$` | Move through the integrated workbench tabs |
+| `gi`, `/`, `n` `N`, `yy` | Focus an input; find; repeat find; copy the address |
+| `i`, `Esc`, `?` | Insert mode; Normal mode; key reference |
+
+A numeric prefix repeats supported actions, up to 100. The usual desktop
+shortcuts are contextual too: `Cmd/Ctrl+T` opens an unloaded Browser tab,
+`Cmd/Ctrl+W` closes the selected Browser tab, `Cmd/Ctrl+L` focuses its address,
+`Cmd/Ctrl+R` reloads, `Cmd/Ctrl+F` finds in the page, `Cmd/Ctrl+[` and
+`Cmd/Ctrl+]` move through history, and adding `Shift` to the bracket shortcuts
+moves through workbench tabs. Outside a Browser tab, existing editor/window
+behavior is preserved.
+
+The built-in `codex_sol` chat profile enables browser access by default. Custom
+or overridden profiles remain opt-in: add `scope_network = true` to the profile
+used for `chat`; if that profile has a non-empty `tools` allowlist, add
+`browser_session`, `browser_navigate`, `browser_snapshot`, and `browser_act` as
+well. The Codex configuration example below shows the network setting. Manual
+browsing in the Browser tab does not depend on the AI profile.
+
+The initial implementation deliberately keeps agent control narrower than
+manual control:
+
+- Browser sessions use an ephemeral data store. Only credential-free HTTP and
+  HTTPS navigation is accepted; popups and downloads are denied.
+- `browser_session` can list the live tabs. Its `start` action always creates a
+  new session and accepts an optional initial `url`, allowing an agent to open
+  the intended page atomically; `show`, `hide`, and `close` affect only the
+  named session.
+- Snapshots contain at most 48 KiB of visible text and 200 interactive
+  elements. Password and file-input values are never returned.
+- Every action must cite the exact document and snapshot generation. A page
+  change or one completed action makes prior element references stale.
+- The agent can scroll, use safe navigation keys, fill ordinary text/select
+  fields, expand summaries, and follow validated links. It cannot activate
+  buttons, submit forms, press Enter, fill passwords, or choose files; take
+  manual control for those steps.
+- Page content is labeled untrusted in every tool result. It is evidence for
+  the task, never an instruction source.
+
+`browser_act` is an external-effect tool and is withheld from read-only chats.
+The lifecycle, navigation, and snapshot tools remain available when the live
+GUI host and the profile's network scope are both present.
+
 Auto mode is the default. Read-only local inspection and tests run immediately;
 context-dependent commands are reviewed by subscription-backed Terra at low
 effort. Terra treats routine project-local formatting, building, linting, and
@@ -333,6 +409,7 @@ vim.ai.setup({
       provider = "codex",
       model = "gpt-5.6-sol",
       reasoning_effort = "medium",
+      scope_network = true,
     },
     codex_luna = {
       provider = "codex",

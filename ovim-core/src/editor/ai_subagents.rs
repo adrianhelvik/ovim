@@ -2172,12 +2172,12 @@ impl Editor {
     pub(crate) fn begin_pending_ai_subagent_control(
         &mut self,
         call: ToolCallInfo,
-        continuation: super::ai_chat_state::SubagentControlContinuation,
+        continuation: super::ai_chat_state::ToolExecutionContinuation,
     ) -> Result<
         (),
         (
             ToolResult,
-            Box<super::ai_chat_state::SubagentControlContinuation>,
+            Box<super::ai_chat_state::ToolExecutionContinuation>,
         ),
     > {
         if self.ai_state.chat.is_none() {
@@ -2257,7 +2257,7 @@ impl Editor {
             result = ToolResult::Error(error);
         }
         match pending.continuation {
-            super::ai_chat_state::SubagentControlContinuation::Dynamic {
+            super::ai_chat_state::ToolExecutionContinuation::Dynamic {
                 runtime_tool,
                 runtime_turn,
                 response,
@@ -2275,7 +2275,7 @@ impl Editor {
                 }
                 true
             }
-            super::ai_chat_state::SubagentControlContinuation::Batch {
+            super::ai_chat_state::ToolExecutionContinuation::Batch {
                 runtime_tool,
                 runtime_turn,
                 remaining_tool_calls,

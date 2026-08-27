@@ -77,7 +77,7 @@ impl AiTurnBlocker {
             Self::ToolApproval => AiChatActivity::WaitingToolApproval,
             Self::AutoModeClassification => AiChatActivity::ClassifyingTool,
             Self::ShellExecution => AiChatActivity::RunningShell,
-            Self::WebExecution => AiChatActivity::RunningWeb,
+            Self::BackgroundToolExecution => AiChatActivity::RunningExternalTool,
             Self::CodeExplanation => AiChatActivity::WaitingCodeExplanation,
         }
     }
@@ -92,7 +92,7 @@ pub(crate) enum AiTurnBlocker {
     ToolApproval,
     AutoModeClassification,
     ShellExecution,
-    WebExecution,
+    BackgroundToolExecution,
     CodeExplanation,
 }
 
@@ -119,8 +119,8 @@ pub struct PendingAutoModeClassification {
         tokio::sync::oneshot::Receiver<Result<crate::ai::auto_mode::ClassifierVerdict, String>>,
 }
 
-/// How an authorized shell effect resumes once its background task finishes.
-pub enum ShellExecutionContinuation {
+/// How a provider turn resumes once a parked tool finishes.
+pub enum ToolExecutionContinuation {
     /// A provider-owned dynamic tool call waiting on its response channel.
     Dynamic {
         runtime_tool: crate::agent_runtime::PendingToolRef,
@@ -139,7 +139,7 @@ pub enum ShellExecutionContinuation {
 /// An authorized shell effect running off the editor/event-loop thread.
 pub struct PendingShellExecution {
     pub tool_call: ToolCallInfo,
-    pub continuation: ShellExecutionContinuation,
+    pub continuation: ToolExecutionContinuation,
     pub receiver: tokio::sync::oneshot::Receiver<ShellExecutionObservation>,
     pub progress: tokio::sync::mpsc::UnboundedReceiver<ShellProgressEvent>,
     pub task: tokio::task::JoinHandle<()>,
@@ -393,35 +393,41 @@ impl ShellTranscript {
     }
 }
 
-/// An Exa request running off the editor/event-loop thread.
-pub struct PendingWebExecution {
-    pub tool_call: ToolCallInfo,
-    pub runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
-    pub runtime_turn: Option<crate::agent_runtime::PendingTurnRef>,
-    pub remaining_tool_calls: Vec<ToolCallInfo>,
-    pub model_name: String,
-    pub receiver: tokio::sync::oneshot::Receiver<crate::ai::exa::WebToolOutcome>,
-    pub task: tokio::task::JoinHandle<()>,
+pub enum BackgroundToolAftermath {
+    None,
+    Exa {
+        credential_rejected: bool,
+        environment_override: bool,
+        setup_error: Option<String>,
+    },
 }
 
-pub enum SubagentControlContinuation {
-    Dynamic {
-        runtime_tool: crate::agent_runtime::PendingToolRef,
-        runtime_turn: crate::agent_runtime::PendingTurnRef,
-        response: tokio::sync::oneshot::Sender<Result<String, String>>,
-    },
-    Batch {
-        runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
-        runtime_turn: Option<crate::agent_runtime::PendingTurnRef>,
-        remaining_tool_calls: Vec<ToolCallInfo>,
-        model_name: String,
-    },
+pub struct BackgroundToolOutcome {
+    pub result: crate::ai::tools::ToolResult,
+    pub aftermath: BackgroundToolAftermath,
+}
+
+impl BackgroundToolOutcome {
+    pub fn plain(result: crate::ai::tools::ToolResult) -> Self {
+        Self {
+            result,
+            aftermath: BackgroundToolAftermath::None,
+        }
+    }
+}
+
+/// A browser or web request running off the editor/event-loop thread.
+pub struct PendingBackgroundTool {
+    pub tool_call: ToolCallInfo,
+    pub continuation: ToolExecutionContinuation,
+    pub receiver: tokio::sync::oneshot::Receiver<BackgroundToolOutcome>,
+    pub task: tokio::task::JoinHandle<()>,
 }
 
 /// A mailbox wait or hierarchy interruption parked away from the editor loop.
 pub struct PendingSubagentControl {
     pub tool_call: ToolCallInfo,
-    pub continuation: SubagentControlContinuation,
+    pub continuation: ToolExecutionContinuation,
     pub receiver: tokio::sync::oneshot::Receiver<crate::ai::tools::ToolResult>,
     pub task: tokio::task::JoinHandle<()>,
 }
@@ -610,7 +616,7 @@ pub enum AiChatActivity {
     Inference,
     ClassifyingTool,
     RunningShell,
-    RunningWeb,
+    RunningExternalTool,
     WaitingToolApproval,
     WaitingFolderApproval,
     WaitingCodeExplanation,
@@ -623,7 +629,7 @@ impl AiChatActivity {
             Self::Inference => "inference",
             Self::ClassifyingTool => "classifying_tool",
             Self::RunningShell => "running_shell",
-            Self::RunningWeb => "running_web",
+            Self::RunningExternalTool => "running_external_tool",
             Self::WaitingToolApproval => "waiting_tool_approval",
             Self::WaitingFolderApproval => "waiting_folder_approval",
             Self::WaitingCodeExplanation => "waiting_code_explanation",
@@ -749,7 +755,7 @@ pub struct AiChatState {
     pub shell_transcript_lru: VecDeque<String>,
     /// Process Inspector overlay, if one shell transcript is being viewed.
     pub shell_inspector: Option<ShellInspectorState>,
-    pub pending_web_execution: Option<PendingWebExecution>,
+    pub pending_background_tool: Option<PendingBackgroundTool>,
     pub pending_subagent_control: Option<PendingSubagentControl>,
     /// Interactive code walkthrough currently blocking the invoking tool.
     pub pending_code_explanation: Option<PendingCodeExplanation>,
@@ -850,9 +856,9 @@ impl AiChatState {
             self.pending_shell_execution
                 .as_ref()
                 .map(|_| AiTurnBlocker::ShellExecution),
-            self.pending_web_execution
+            self.pending_background_tool
                 .as_ref()
-                .map(|_| AiTurnBlocker::WebExecution),
+                .map(|_| AiTurnBlocker::BackgroundToolExecution),
             self.pending_code_explanation
                 .as_ref()
                 .and_then(|pending| pending.continuation.as_ref())
@@ -950,7 +956,7 @@ impl AiChatState {
             shell_transcripts: HashMap::new(),
             shell_transcript_lru: VecDeque::new(),
             shell_inspector: None,
-            pending_web_execution: None,
+            pending_background_tool: None,
             pending_subagent_control: None,
             pending_code_explanation: None,
             code_explanation_cache: VecDeque::new(),

@@ -1,5 +1,6 @@
 //! Tauri application shell shared by `ovim gui` and the `ovim-gui` desktop entry.
 
+use super::browser::BrowserHost;
 use super::{GuiBridge, GuiKeyInput, GuiSnapshot, GuiVectorSource};
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
@@ -13,8 +14,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, InvokeBody, Request};
-use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
-use tauri::{DragDropEvent, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
+use tauri::{DragDropEvent, Emitter, EventTarget, Manager, RunEvent, State, Window, WindowEvent};
 
 #[derive(Clone, Default)]
 struct GuiExitGate(Arc<AtomicBool>);
@@ -272,6 +272,11 @@ async fn gui_set_chat_input_cursor(
 }
 
 #[tauri::command]
+async fn gui_open_ai_chat(bridge: State<'_, GuiBridge>) -> Result<(), String> {
+    bridge.open_ai_chat().await
+}
+
+#[tauri::command]
 async fn gui_update_chat_input(
     bridge: State<'_, GuiBridge>,
     expected_input: String,
@@ -405,7 +410,7 @@ async fn gui_select_debug_frame(bridge: State<'_, GuiBridge>, index: usize) -> R
 
 #[tauri::command]
 fn gui_window_action(
-    window: WebviewWindow,
+    window: Window,
     exit_gate: State<'_, GuiExitGate>,
     action: String,
 ) -> Result<(), String> {
@@ -450,68 +455,6 @@ fn gui_open_external(url: String) -> Result<(), String> {
 }
 
 /// Run the native application on the calling thread until its last window closes.
-fn install_menu(app: &tauri::App) -> Result<()> {
-    let save = MenuItem::with_id(app, "file.save", "Save", true, Some("CmdOrCtrl+S"))?;
-    let save_all = MenuItem::with_id(
-        app,
-        "file.save-all",
-        "Save All",
-        true,
-        Some("CmdOrCtrl+Alt+S"),
-    )?;
-    let close = MenuItem::with_id(app, "file.close", "Close Window", true, Some("CmdOrCtrl+W"))?;
-    let quit = MenuItem::with_id(app, "app.quit", "Quit Ovim", true, Some("CmdOrCtrl+Q"))?;
-    let undo = MenuItem::with_id(app, "edit.undo", "Undo", true, Some("CmdOrCtrl+Z"))?;
-    let redo = MenuItem::with_id(app, "edit.redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?;
-    let select_all = MenuItem::with_id(
-        app,
-        "edit.select-all",
-        "Select All",
-        true,
-        Some("CmdOrCtrl+A"),
-    )?;
-    let find = MenuItem::with_id(app, "edit.find", "Find", true, Some("CmdOrCtrl+F"))?;
-
-    let app_menu = SubmenuBuilder::new(app, "Ovim")
-        .about(None)
-        .separator()
-        .hide()
-        .hide_others()
-        .show_all()
-        .separator()
-        .item(&quit)
-        .build()?;
-    let file_menu = SubmenuBuilder::new(app, "File")
-        .item(&save)
-        .item(&save_all)
-        .separator()
-        .item(&close)
-        .build()?;
-    let edit_menu = SubmenuBuilder::new(app, "Edit")
-        .item(&undo)
-        .item(&redo)
-        .separator()
-        .cut()
-        .copy()
-        .paste()
-        .item(&select_all)
-        .separator()
-        .item(&find)
-        .build()?;
-    let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
-    let window_menu = SubmenuBuilder::new(app, "Window")
-        .minimize()
-        .maximize()
-        .separator()
-        .bring_all_to_front()
-        .build()?;
-    let menu = MenuBuilder::new(app)
-        .items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu])
-        .build()?;
-    app.set_menu(menu)?;
-    Ok(())
-}
-
 pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
     // Keep Tauri's patchable bundle marker linked even without the updater
     // plugin. The bundler uses it to distinguish deb/AppImage/MSI installs.
@@ -519,13 +462,17 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
     crate::lsp_init::set_headless_mode(false);
     let _ = crate::lsp::init_lsp_logging();
 
-    let bridge = GuiBridge::spawn(file, resume)?;
+    let (browser_client, browser_requests) = ovim_core::browser::browser_channel();
+    let browser_host = BrowserHost::new(browser_requests);
+    let services = ovim_core::editor::EditorServices::default().with_browser(browser_client);
+    let bridge = GuiBridge::spawn(file, resume, services)?;
     let shutdown_bridge = bridge.clone();
     let exit_gate = GuiExitGate::default();
     let setup_exit_gate = exit_gate.clone();
     let run_exit_gate = exit_gate.clone();
     let application = tauri::Builder::default()
         .manage(bridge)
+        .manage(browser_host)
         .manage(exit_gate)
         .invoke_handler(tauri::generate_handler![
             gui_snapshot,
@@ -536,6 +483,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_paste,
             gui_attach_image,
             gui_set_cursor,
+            gui_open_ai_chat,
             gui_set_chat_input_cursor,
             gui_update_chat_input,
             gui_set_chat_input_width,
@@ -559,10 +507,25 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_open_external,
             gui_diff_state,
             gui_diff_open_file,
+            super::menu::gui_set_menu_surface,
+            super::browser::gui_browser_open,
+            super::browser::gui_browser_state,
+            super::browser::gui_browser_subscribe,
+            super::browser::gui_browser_set_bounds,
+            super::browser::gui_browser_activate,
+            super::browser::gui_browser_ack_presentation,
+            super::browser::gui_browser_navigate,
+            super::browser::gui_browser_toolbar,
+            super::browser::gui_browser_close,
+            super::browser::gui_browser_set_vim_keys,
         ])
         .setup(move |app| {
-            install_menu(app)?;
+            let menu = super::menu::install(app)?;
+            app.manage(menu);
             if let Some(window) = app.get_webview_window("main") {
+                app.state::<BrowserHost>()
+                    .attach(window.as_ref().window())
+                    .map_err(anyhow::Error::msg)?;
                 window
                     .set_title("Ovim")
                     .context("Failed to set the GUI window title")?;
@@ -589,7 +552,11 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             Ok(())
         })
         .on_menu_event(|app, event| {
-            let _ = app.emit("ovim://menu-action", event.id().as_ref());
+            let _ = app.emit_to(
+                EventTarget::webview("main"),
+                "ovim://menu-action",
+                event.id().as_ref(),
+            );
         })
         .build(tauri::generate_context!())
         .context("Failed to build the Ovim GUI")?;

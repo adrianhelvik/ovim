@@ -220,8 +220,7 @@ impl FileTree {
         }
     }
 
-    /// Opens a file tree rooted at the given path
-    pub fn open(&mut self, root_path: &Path) {
+    fn load_root(&mut self, root_path: &Path, visible: bool) {
         let root_path = root_path
             .canonicalize()
             .unwrap_or_else(|_| root_path.to_path_buf());
@@ -238,11 +237,21 @@ impl FileTree {
             // Always expand the root directory
             root.toggle_expand(self.show_hidden, self.show_ignored);
             self.root = Some(root);
-            self.visible = true;
+            self.visible = visible;
             self.rebuild_flattened();
             self.selected_index = 0;
             self.scroll_offset = 0;
         }
+    }
+
+    /// Establishes the tree root without showing the explorer.
+    pub fn set_root(&mut self, root_path: &Path) {
+        self.load_root(root_path, false);
+    }
+
+    /// Opens a file tree rooted at the given path.
+    pub fn open(&mut self, root_path: &Path) {
+        self.load_root(root_path, true);
     }
 
     /// Closes the file tree

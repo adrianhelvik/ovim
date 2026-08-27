@@ -1,4 +1,6 @@
+mod ai_background_tools;
 mod ai_base_manifest;
+mod ai_browser;
 mod ai_chat;
 mod ai_chat_code_attachment;
 mod ai_chat_commands;
@@ -74,6 +76,7 @@ mod register;
 mod render_cache;
 mod search_context;
 mod search_manager;
+mod services;
 mod single_line_input;
 mod tab_manager;
 mod tabpage;
@@ -145,8 +148,9 @@ pub use register::{RegisterManager, RegisterType};
 pub use render_cache::RenderCache;
 pub use search::Search;
 pub use search_context::{SearchContext, VisualSearchState};
+pub use services::EditorServices;
 pub use single_line_input::SingleLineInput;
-pub use tabpage::{TabPage, TabPageManager};
+pub use tabpage::{TabPage, TabPageId, TabPageManager};
 pub use test_panel::{format_duration, TestPanelState, TestRun, TestRunStatus};
 pub use textobjects::{TextObjectRange, TextObjects};
 pub use theme_state::ThemeState;
@@ -398,6 +402,8 @@ pub struct Editor {
     dap_manager: crate::dap::DapManager,
     /// AI chat, selection, and in-buffer agent state
     pub ai_state: Box<ai_state::AiState>,
+    /// Optional capabilities supplied by the active frontend.
+    services: EditorServices,
     /// API server port (set during startup, used by :session start/stop)
     api_port: Option<u16>,
     /// Active session name (set by :session start, cleared by :session stop)
@@ -578,6 +584,7 @@ impl Editor {
             ui_panels: UiPanels::default(),
             dap_manager: crate::dap::DapManager::new(),
             ai_state: Box::new(ai_state::AiState::default()),
+            services: EditorServices::default(),
             api_port: None,
             active_session: None,
             git_branch: None,
@@ -628,6 +635,7 @@ impl Editor {
             ui_panels: UiPanels::default(),
             dap_manager: crate::dap::DapManager::new(),
             ai_state: Box::new(ai_state::AiState::default()),
+            services: EditorServices::default(),
             api_port: None,
             active_session: None,
             git_branch: None,
@@ -636,6 +644,16 @@ impl Editor {
             git_refresh_rx: git_rx,
             git_refresh_tx: git_tx,
         }
+    }
+
+    /// Install optional services supplied by the active frontend.
+    pub fn with_services(mut self, services: EditorServices) -> Self {
+        self.services = services;
+        self
+    }
+
+    pub fn services(&self) -> &EditorServices {
+        &self.services
     }
 
     // ==================== Rename Input ====================

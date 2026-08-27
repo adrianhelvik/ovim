@@ -141,6 +141,7 @@ vim.ai.setup({
     profiles = {
         codex_sol = {
             scope = "project",
+            scope_network = true,
             provider = "codex",
             model = "gpt-5.6-sol",
             max_tokens = 4096,

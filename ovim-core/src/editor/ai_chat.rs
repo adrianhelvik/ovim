@@ -131,7 +131,7 @@ impl Editor {
                 || chat.pending_tool_approval.is_some()
                 || chat.pending_auto_mode_classification.is_some()
                 || chat.pending_shell_execution.is_some()
-                || chat.pending_web_execution.is_some()
+                || chat.pending_background_tool.is_some()
                 || chat.pending_subagent_control.is_some()
                 || chat.pending_code_explanation.is_some()
         });
@@ -144,7 +144,7 @@ impl Editor {
             pending_approval,
             pending_classification,
             pending_shell,
-            pending_web,
+            pending_background,
             pending_subagent,
             pending_explanation,
         ) = {
@@ -154,7 +154,7 @@ impl Editor {
                 chat.pending_tool_approval.take(),
                 chat.pending_auto_mode_classification.take(),
                 chat.pending_shell_execution.take(),
-                chat.pending_web_execution.take(),
+                chat.pending_background_tool.take(),
                 chat.pending_subagent_control.take(),
                 chat.pending_code_explanation.take(),
             )
@@ -224,7 +224,7 @@ impl Editor {
                 );
             }
             let (runtime_turn, runtime_tool, response, unresolved) = match pending.continuation {
-                super::ai_chat_state::ShellExecutionContinuation::Dynamic {
+                super::ai_chat_state::ToolExecutionContinuation::Dynamic {
                     runtime_turn,
                     runtime_tool,
                     response,
@@ -234,7 +234,7 @@ impl Editor {
                     Some(response),
                     Vec::new(),
                 ),
-                super::ai_chat_state::ShellExecutionContinuation::Batch {
+                super::ai_chat_state::ToolExecutionContinuation::Batch {
                     runtime_turn,
                     runtime_tool,
                     remaining_tool_calls,
@@ -262,30 +262,53 @@ impl Editor {
             }
             self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
         }
-        if let Some(pending) = pending_web {
+        if let Some(pending) = pending_background {
             pending.task.abort();
-            if let (Some(turn), Some(tool)) =
-                (pending.runtime_turn.as_ref(), pending.runtime_tool.as_ref())
-            {
-                if let Err(error) =
-                    self.ai_state
-                        .agent_runtime
-                        .fail_tool(turn, tool, "cancelled by user")
-                {
-                    crate::log_warn!("agent_runtime", "failed to cancel web tool: {error}");
+            match pending.continuation {
+                super::ai_chat_state::ToolExecutionContinuation::Dynamic {
+                    runtime_tool,
+                    runtime_turn,
+                    response,
+                } => {
+                    if let Err(error) = self.ai_state.agent_runtime.fail_tool(
+                        &runtime_turn,
+                        &runtime_tool,
+                        "cancelled by user",
+                    ) {
+                        crate::log_warn!(
+                            "agent_runtime",
+                            "failed to cancel background tool: {error}"
+                        );
+                    }
+                    let _ = response.send(Err("cancelled by user".into()));
+                }
+                super::ai_chat_state::ToolExecutionContinuation::Batch {
+                    runtime_tool,
+                    runtime_turn,
+                    remaining_tool_calls,
+                    ..
+                } => {
+                    if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
+                        && let Err(error) =
+                            self.ai_state
+                                .agent_runtime
+                                .fail_tool(turn, tool, "cancelled by user")
+                    {
+                        crate::log_warn!(
+                            "agent_runtime",
+                            "failed to cancel background tool: {error}"
+                        );
+                    }
+                    let mut unresolved = vec![pending.tool_call];
+                    unresolved.extend(remaining_tool_calls);
+                    self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
                 }
             }
-            // Web execution only parks from the batch path, so this call and
-            // the remainder of the batch are already committed as tool_use
-            // blocks; close them out.
-            let mut unresolved = vec![pending.tool_call.clone()];
-            unresolved.extend(pending.remaining_tool_calls);
-            self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
         }
         if let Some(pending) = pending_subagent {
             pending.task.abort();
             match pending.continuation {
-                super::ai_chat_state::SubagentControlContinuation::Dynamic {
+                super::ai_chat_state::ToolExecutionContinuation::Dynamic {
                     runtime_tool,
                     runtime_turn,
                     response,
@@ -302,7 +325,7 @@ impl Editor {
                     }
                     let _ = response.send(Err("cancelled by user".into()));
                 }
-                super::ai_chat_state::SubagentControlContinuation::Batch {
+                super::ai_chat_state::ToolExecutionContinuation::Batch {
                     runtime_tool,
                     runtime_turn,
                     remaining_tool_calls,
@@ -454,13 +477,13 @@ impl Editor {
         {
             job.task.abort();
         }
-        if let Some(web) = self
+        if let Some(background) = self
             .ai_state
             .chat
             .as_ref()
-            .and_then(|chat| chat.pending_web_execution.as_ref())
+            .and_then(|chat| chat.pending_background_tool.as_ref())
         {
-            web.task.abort();
+            background.task.abort();
         }
         if let Some(shell) = self
             .ai_state
@@ -714,22 +737,24 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn cancelling_web_execution_closes_committed_tool_calls() {
+    async fn cancelling_background_execution_closes_committed_tool_calls() {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
         let (first, follow_up) = committed_tool_batch(&mut editor);
         let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async {});
-        editor.ai_state.chat.as_mut().unwrap().pending_web_execution =
-            Some(super::super::ai_chat_state::PendingWebExecution {
-                tool_call: first,
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.pending_background_tool = Some(super::super::ai_chat_state::PendingBackgroundTool {
+            tool_call: first,
+            continuation: super::super::ai_chat_state::ToolExecutionContinuation::Batch {
                 runtime_tool: None,
                 runtime_turn: None,
                 remaining_tool_calls: vec![follow_up],
                 model_name: "test".into(),
-                receiver: result_rx,
-                task,
-            });
+            },
+            receiver: result_rx,
+            task,
+        });
 
         assert!(editor.cancel_ai_chat_generation());
 

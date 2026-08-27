@@ -79,7 +79,13 @@ export default function ContextDock(props: {
     return (
         <Show when={activePanel()}>
             {(active) => (
-                <aside class="side-dock" aria-label="Context">
+                <aside
+                    class="side-dock"
+                    classList={{
+                        "has-context-tabs": props.panels.length > 1,
+                    }}
+                    aria-label="Context"
+                >
                     <Show when={props.panels.length > 1}>
                         <div
                             class="context-tabs"

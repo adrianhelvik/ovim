@@ -154,8 +154,14 @@ export const mockSnapshot: GuiSnapshot = {
     layout: { kind: "pane", pane: 0 },
     panes: [],
     tabs: [
-        { index: 0, title: "mod.rs", active: true, modified: true },
-        { index: 1, title: "FRONTEND_API.md", active: false, modified: false },
+        { id: 1, index: 0, title: "mod.rs", active: true, modified: true },
+        {
+            id: 2,
+            index: 1,
+            title: "FRONTEND_API.md",
+            active: false,
+            modified: false,
+        },
     ],
     gitBranch: "gui/tauri-entry",
     gitChanges: { added: 86, modified: 12, removed: 3 },

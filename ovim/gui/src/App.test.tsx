@@ -18,6 +18,8 @@ import App, {
     imageExtension,
     isNearChatBottom,
     retainTranscriptItems,
+    reconcileWorkbenchTabs,
+    requestedBrowserPresentation,
     toolResultSummary,
 } from "./App";
 import { mockSnapshot } from "./mock";
@@ -60,6 +62,90 @@ afterEach(() => {
 });
 
 describe("Ovim Solid workbench", () => {
+    it("composes browser sessions into one navigable workbench tab model", () => {
+        const browserSessions = [
+            {
+                sessionId: "browser-1",
+                url: "https://nrk.no/",
+                title: "NRK",
+                visible: false,
+                loading: false,
+                documentId: 1,
+                vimKeysEnabled: true,
+                keyMode: "normal" as const,
+            },
+            {
+                sessionId: "browser-2",
+                url: "https://example.com/",
+                title: "Example",
+                visible: false,
+                loading: false,
+                documentId: 1,
+                vimKeysEnabled: true,
+                keyMode: "normal" as const,
+            },
+        ];
+
+        expect(
+            reconcileWorkbenchTabs(
+                [],
+                mockSnapshot.tabs,
+                true,
+                browserSessions,
+                { kind: "source", tabId: 1 },
+            ),
+        ).toEqual([
+            { id: "source:1", kind: "source", index: 0, tabId: 1 },
+            {
+                id: "browser:browser-1",
+                kind: "browser",
+                sessionId: "browser-1",
+            },
+            {
+                id: "browser:browser-2",
+                kind: "browser",
+                sessionId: "browser-2",
+            },
+            { id: "vector:1", kind: "vector", sourceTabId: 1 },
+            { id: "source:2", kind: "source", index: 1, tabId: 2 },
+        ]);
+    });
+
+    it("replays a durable agent browser presentation request exactly once", () => {
+        const state = {
+            sessions: [
+                {
+                    sessionId: "browser-4",
+                    url: "https://nrk.no/",
+                    title: "NRK",
+                    visible: false,
+                    loading: false,
+                    documentId: 2,
+                    vimKeysEnabled: true,
+                    keyMode: "normal" as const,
+                },
+            ],
+            activeSessionId: "browser-4",
+            maxSessions: 8,
+            presentationRequest: {
+                revision: 7,
+                sessionId: "browser-4",
+            },
+        };
+
+        expect(requestedBrowserPresentation(0, state)).toEqual({
+            revision: 7,
+            sessionId: "browser-4",
+        });
+        expect(requestedBrowserPresentation(7, state)).toBeUndefined();
+        expect(
+            requestedBrowserPresentation(0, {
+                ...state,
+                sessions: [],
+            }),
+        ).toEqual({ revision: 7, sessionId: undefined });
+    });
+
     it("renders an interactive concept walkthrough from projected core state", () => {
         const onKey = vi.fn();
         const walkthrough: GuiCodeExplanation = {
@@ -134,9 +220,7 @@ describe("Ovim Solid workbench", () => {
         ).toBeTruthy();
         expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
         expect(screen.getByLabelText("Ovim editor input")).toBeTruthy();
-        expect(
-            screen.getByRole("tablist", { name: "Open files" }),
-        ).toBeTruthy();
+        expect(screen.getByRole("tablist", { name: "Open tabs" })).toBeTruthy();
         expect(
             screen.getByRole("tree", { name: "Project files" }),
         ).toBeTruthy();
@@ -232,7 +316,7 @@ describe("Ovim Solid workbench", () => {
         expect(screen.getByText("Changes")).toBeTruthy();
     });
 
-    it("treats the Vector preview as one keyboard-navigable editor tab", async () => {
+    it("keeps Vector in tab navigation without a perpetual browser tab", async () => {
         const previousPath = mockSnapshot.filePath;
         const previousName = mockSnapshot.fileName;
         mockSnapshot.filePath = "/workspace/ovim/icons/sample.strok";
@@ -244,11 +328,17 @@ describe("Ovim Solid workbench", () => {
             const vector = screen.getByRole("tab", { name: "Vector" });
             expect(source.getAttribute("aria-selected")).toBe("true");
             expect(vector.getAttribute("aria-selected")).toBe("false");
+            expect(screen.queryByRole("tab", { name: /Browser:/ })).toBeNull();
+            expect(
+                screen
+                    .getByRole("button", { name: "New browser tab" })
+                    .hasAttribute("disabled"),
+            ).toBe(true);
             expect(
                 screen.getAllByRole("tab").filter((tab) => tab.tabIndex === 0),
             ).toHaveLength(1);
 
-            fireEvent.keyDown(source, { key: "End" });
+            fireEvent.click(vector);
             await Promise.resolve();
             expect(source.getAttribute("aria-selected")).toBe("false");
             expect(vector.getAttribute("aria-selected")).toBe("true");
@@ -389,6 +479,26 @@ describe("Ovim Solid workbench", () => {
             result.container.querySelector("img")?.hasAttribute("onerror"),
         ).toBe(false);
         expect(result.container.querySelector("script")).toBeNull();
+    });
+
+    it("shows sent image attachments in the chat transcript", () => {
+        render(() => (
+            <ChatMessageView
+                message={{
+                    id: "1:1",
+                    index: 0,
+                    selected: false,
+                    role: "user",
+                    content: "Please inspect this screenshot",
+                    tools: [],
+                    images: ["layout.png", "Pasted image 2"],
+                }}
+            />
+        ));
+
+        expect(screen.getByLabelText("Attached images")).toBeTruthy();
+        expect(screen.getByText("layout.png")).toBeTruthy();
+        expect(screen.getByText("Pasted image 2")).toBeTruthy();
     });
 
     it("hands safe markdown links to the desktop opener without navigating the editor", () => {

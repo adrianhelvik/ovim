@@ -1400,6 +1400,78 @@ fn editable_codex_chat_advertises_shell_and_mutation_dynamic_tools() {
 }
 
 #[test]
+fn browser_tools_require_an_authorized_live_frontend_service() {
+    fn schema_names(editor: &Editor) -> Vec<String> {
+        let profile = editor
+            .ai_state
+            .config
+            .resolve_profile(&editor.ai_state.active_profile)
+            .expect("active profile");
+        editor
+            .build_tool_schemas_for_chat(profile)
+            .into_iter()
+            .filter_map(|schema| {
+                schema
+                    .pointer("/function/name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    let mut unavailable = Editor::default();
+    let active = unavailable.ai_state.active_profile.clone();
+    unavailable
+        .ai_state
+        .config
+        .profiles
+        .get_mut(&active)
+        .expect("active profile")
+        .scope
+        .network = true;
+    unavailable
+        .open_ai_chat(ChatOpts {
+            allow_edits: true,
+            ..ChatOpts::default()
+        })
+        .unwrap();
+    assert!(!schema_names(&unavailable)
+        .iter()
+        .any(|name| crate::ai::tools::browser::is_browser_tool(name)));
+
+    let (browser, _host) = crate::browser::browser_channel();
+    let mut available = Editor::default()
+        .with_services(crate::editor::EditorServices::default().with_browser(browser));
+    let active = available.ai_state.active_profile.clone();
+    available
+        .ai_state
+        .config
+        .profiles
+        .get_mut(&active)
+        .expect("active profile")
+        .scope
+        .network = true;
+    available
+        .open_ai_chat(ChatOpts {
+            allow_edits: true,
+            ..ChatOpts::default()
+        })
+        .unwrap();
+    let names = schema_names(&available);
+    for expected in [
+        crate::ai::tools::browser::BROWSER_SESSION_TOOL,
+        crate::ai::tools::browser::BROWSER_NAVIGATE_TOOL,
+        crate::ai::tools::browser::BROWSER_SNAPSHOT_TOOL,
+        crate::ai::tools::browser::BROWSER_ACT_TOOL,
+    ] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "schemas: {names:?}"
+        );
+    }
+}
+
+#[test]
 fn compact_is_advertised_even_with_an_explicit_tool_allowlist() {
     let mut editor = Editor::default();
     editor.open_ai_chat(ChatOpts::default()).expect("open chat");
@@ -1916,7 +1988,7 @@ async fn batch_shell_unknown_outcome_clears_waiting_and_closes_tool_calls() {
     if let Some(chat) = editor.ai_state.chat.as_mut() {
         chat.pending_shell_execution = Some(super::super::ai_chat_state::PendingShellExecution {
             tool_call: shell_call,
-            continuation: super::super::ai_chat_state::ShellExecutionContinuation::Batch {
+            continuation: super::super::ai_chat_state::ToolExecutionContinuation::Batch {
                 runtime_tool: None,
                 runtime_turn: None,
                 remaining_tool_calls: vec![follow_up],
