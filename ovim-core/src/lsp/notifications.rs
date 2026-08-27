@@ -27,27 +27,18 @@ use tokio::sync::{mpsc, Mutex};
 /// per-server timeout in `flush_pending_changes_broadcast`.
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A failed didChange delivery is either worth retrying (the server is still
-/// starting or temporarily wedged) or terminal for this server instance. A
-/// closed outgoing channel cannot recover; treating it as transient used to
-/// create a 150 ms retry loop that could grow `lsp.log` without bound.
+/// A terminal didChange delivery failure for one server instance. Temporary
+/// backpressure is represented by the caller's timeout instead. A closed
+/// outgoing channel cannot recover; treating it as transient used to create a
+/// 150 ms retry loop that could grow `lsp.log` without bound.
 struct DidChangeFailure {
     error: anyhow::Error,
-    retryable: bool,
 }
 
 impl DidChangeFailure {
-    fn retryable(error: impl Into<anyhow::Error>) -> Self {
-        Self {
-            error: error.into(),
-            retryable: true,
-        }
-    }
-
     fn terminal(error: impl Into<anyhow::Error>) -> Self {
         Self {
             error: error.into(),
-            retryable: false,
         }
     }
 }
@@ -229,14 +220,12 @@ impl LspManager {
             })?;
 
         match server.state().await {
-            super::server::ServerState::Ready { .. } => {}
-            super::server::ServerState::Spawning
-            | super::server::ServerState::Initializing { .. } => {
-                return Err(DidChangeFailure::retryable(anyhow::anyhow!(
-                    "LSP server {} is not ready yet",
-                    server_id
-                )));
-            }
+            // The outgoing queue preserves ordering while a process is being
+            // initialized. A healthy queue can accept the notification now;
+            // backpressure is classified by the caller's timeout.
+            super::server::ServerState::Ready { .. }
+            | super::server::ServerState::Spawning
+            | super::server::ServerState::Initializing { .. } => {}
             super::server::ServerState::Failed { error, .. } => {
                 return Err(DidChangeFailure::terminal(anyhow::anyhow!(
                     "LSP server {} failed: {}",
@@ -677,17 +666,10 @@ impl LspManager {
                     // (OV-00211).
                 }
                 Ok(Err(failure)) => {
-                    retryable_failure |= failure.retryable;
-                    let disposition = if failure.retryable {
-                        "will retry"
-                    } else {
-                        "waiting for replacement server"
-                    };
                     lsp_warn!(
                         "LSP-BROADCAST",
-                        "Flush failed for server {} ({}): {}",
+                        "Flush failed for server {} (waiting for replacement server): {}",
                         sid,
-                        disposition,
                         failure.error
                     );
                 }
@@ -1816,7 +1798,10 @@ mod tests {
         let server = super::super::server::LanguageServer::spawn(
             "rust",
             "sh",
-            vec!["-c".to_string(), format!("exec cat > '{}'", capture_str)],
+            // Keep the shell's stdout pipe open while `cat` consumes stdin.
+            // `exec cat > file` closes the pipe immediately and correctly
+            // marks the LSP transport failed before this test sends changes.
+            vec!["-c".to_string(), format!("cat > '{}'", capture_str)],
         )
         .await
         .expect("spawn fake server");
