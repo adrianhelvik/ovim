@@ -6,6 +6,7 @@ use tauri::Webview;
 
 pub(super) const SNAPSHOT_SCRIPT: &str = include_str!("snapshot.js");
 pub(super) const ACTION_FUNCTION: &str = include_str!("action.js");
+pub(super) const MAX_SNAPSHOT_TEXT_BYTES: usize = 48 * 1024;
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) async fn eval_json(webview: &Webview, script: &str) -> Result<String, BrowserError> {
@@ -45,6 +46,17 @@ pub(super) struct SnapshotPayload {
     pub elements: Vec<BrowserElement>,
     pub viewport: BrowserViewport,
     pub truncated: bool,
+}
+
+impl SnapshotPayload {
+    pub(super) fn enforce_limits(mut self) -> Self {
+        let bounded = ovim_core::unicode::truncate_bytes(&self.text, MAX_SNAPSHOT_TEXT_BYTES);
+        if bounded.len() != self.text.len() {
+            self.text = bounded.to_owned();
+            self.truncated = true;
+        }
+        self
+    }
 }
 
 #[derive(Deserialize)]

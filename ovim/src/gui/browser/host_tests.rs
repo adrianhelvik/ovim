@@ -1,4 +1,5 @@
 use super::super::bridge::BrowserKeyRequest;
+use super::super::document::{SnapshotPayload, MAX_SNAPSHOT_TEXT_BYTES};
 use super::*;
 
 #[test]
@@ -17,7 +18,8 @@ fn browser_url_policy_blocks_local_executable_and_credentialed_urls() {
 
 #[test]
 fn scripts_keep_snapshot_and_action_surfaces_bounded() {
-    assert!(SNAPSHOT_SCRIPT.contains("MAX_TEXT = 48 * 1024"));
+    assert!(SNAPSHOT_SCRIPT.contains("MAX_TEXT_BYTES = 48 * 1024"));
+    assert!(SNAPSHOT_SCRIPT.contains("utf8Prefix"));
     assert!(SNAPSHOT_SCRIPT.contains("MAX_ELEMENTS = 200"));
     assert!(ACTION_FUNCTION.contains("manual browser control"));
     assert!(!ACTION_FUNCTION.contains("eval("));
@@ -28,6 +30,49 @@ fn scripts_keep_snapshot_and_action_surfaces_bounded() {
     assert!(KEY_BRIDGE_SCRIPT.contains("passNextKeys"));
     assert!(!KEY_BRIDGE_SCRIPT.contains("tagName.includes(\"-\")"));
     assert!(!KEY_BRIDGE_SCRIPT.contains("__TAURI_INTERNALS__"));
+}
+
+#[test]
+fn every_literal_page_bridge_intent_round_trips_through_rust() {
+    let token = "0123456789abcdef0123456789abcdef";
+    let intents = KEY_BRIDGE_SCRIPT
+        .split("emit(\"")
+        .skip(1)
+        .filter_map(|suffix| suffix.split_once('"').map(|(intent, _)| intent))
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(intents.contains("restore_tab"));
+    for intent in intents {
+        let request = browser_key_request(
+            &Url::parse(&format!("ovim-browser://key/{token}/{intent}")).unwrap(),
+            token,
+        )
+        .unwrap_or_else(|| panic!("page bridge intent is not recognized by Rust: {intent}"));
+        assert_eq!(serde_json::to_value(request.intent).unwrap(), intent);
+    }
+}
+
+#[test]
+fn snapshot_text_limit_is_utf8_byte_exact_and_marks_truncation() {
+    let text = "界".repeat(MAX_SNAPSHOT_TEXT_BYTES / 3 + 10);
+    let payload = SnapshotPayload {
+        text,
+        elements: Vec::new(),
+        viewport: ovim_core::browser::BrowserViewport {
+            width: 0,
+            height: 0,
+            scroll_x: 0,
+            scroll_y: 0,
+            document_width: 0,
+            document_height: 0,
+        },
+        truncated: false,
+    }
+    .enforce_limits();
+
+    assert!(payload.text.len() <= MAX_SNAPSHOT_TEXT_BYTES);
+    assert!(payload.text.chars().all(|character| character == '界'));
+    assert!(payload.truncated);
 }
 
 #[test]

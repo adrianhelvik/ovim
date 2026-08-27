@@ -1,7 +1,29 @@
 (() => {
-    const MAX_TEXT = 48 * 1024;
+    const MAX_TEXT_BYTES = 48 * 1024;
     const MAX_ELEMENTS = 200;
     const refAttribute = "data-ovim-browser-ref";
+    const utf8Prefix = (value, maxBytes) => {
+        let bytes = 0;
+        let end = 0;
+        while (end < value.length) {
+            const codePoint = value.codePointAt(end);
+            const width =
+                codePoint <= 0x7f
+                    ? 1
+                    : codePoint <= 0x7ff
+                      ? 2
+                      : codePoint <= 0xffff
+                        ? 3
+                        : 4;
+            if (bytes + width > maxBytes) break;
+            bytes += width;
+            end += codePoint > 0xffff ? 2 : 1;
+        }
+        return {
+            text: value.slice(0, end),
+            truncated: end < value.length,
+        };
+    };
     document.querySelectorAll(`[${refAttribute}]`).forEach((element) => {
         element.removeAttribute(refAttribute);
     });
@@ -99,20 +121,23 @@
             role: roleFor(element),
             name: nameFor(element),
             value,
-            description: (
-                element.getAttribute("aria-description") ||
-                element.getAttribute("title") ||
-                ""
-            )
-                .replace(/\s+/g, " ")
-                .trim()
-                .slice(0, 512) || null,
+            description:
+                (
+                    element.getAttribute("aria-description") ||
+                    element.getAttribute("title") ||
+                    ""
+                )
+                    .replace(/\s+/g, " ")
+                    .trim()
+                    .slice(0, 512) || null,
             href:
                 element instanceof HTMLAnchorElement && element.href
                     ? element.href.slice(0, 2048)
                     : null,
             inputType,
-            disabled: Boolean(element.disabled) || element.getAttribute("aria-disabled") === "true",
+            disabled:
+                Boolean(element.disabled) ||
+                element.getAttribute("aria-disabled") === "true",
             sensitive,
         };
     });
@@ -120,19 +145,25 @@
     const rawText = (document.body?.innerText || "")
         .replace(/\u0000/g, "")
         .trim();
-    const text = rawText.slice(0, MAX_TEXT);
+    const textProjection = utf8Prefix(rawText, MAX_TEXT_BYTES);
     const root = document.documentElement;
     return {
-        text,
+        text: textProjection.text,
         elements,
         viewport: {
             width: Math.max(0, Math.round(window.innerWidth)),
             height: Math.max(0, Math.round(window.innerHeight)),
             scrollX: Math.round(window.scrollX),
             scrollY: Math.round(window.scrollY),
-            documentWidth: Math.max(root?.scrollWidth || 0, document.body?.scrollWidth || 0),
-            documentHeight: Math.max(root?.scrollHeight || 0, document.body?.scrollHeight || 0),
+            documentWidth: Math.max(
+                root?.scrollWidth || 0,
+                document.body?.scrollWidth || 0,
+            ),
+            documentHeight: Math.max(
+                root?.scrollHeight || 0,
+                document.body?.scrollHeight || 0,
+            ),
         },
-        truncated: rawText.length > MAX_TEXT || candidates.length > MAX_ELEMENTS,
+        truncated: textProjection.truncated || candidates.length > MAX_ELEMENTS,
     };
-})()
+})();

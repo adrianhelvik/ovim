@@ -26,12 +26,14 @@ impl BrowserHost {
             (webview, browser.session.document_id, snapshot_id)
         };
         let value = eval_json(&webview, SNAPSHOT_SCRIPT).await?;
-        let payload: SnapshotPayload = serde_json::from_str(&value).map_err(|error| {
-            browser_error(
-                BrowserErrorKind::EvaluationFailed,
-                format!("Could not decode browser snapshot: {error}"),
-            )
-        })?;
+        let payload = serde_json::from_str::<SnapshotPayload>(&value)
+            .map_err(|error| {
+                browser_error(
+                    BrowserErrorKind::EvaluationFailed,
+                    format!("Could not decode browser snapshot: {error}"),
+                )
+            })?
+            .enforce_limits();
         let session = {
             let mut inner = self.lock()?;
             let browser = session_mut(&mut inner, session_id)?;

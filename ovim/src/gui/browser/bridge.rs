@@ -13,6 +13,7 @@ pub(super) const KEY_BRIDGE_SCRIPT: &str = concat!(
 pub(super) enum GuiBrowserKeyIntent {
     Command,
     NewTab,
+    RestoreTab,
     CloseTab,
     FocusAddress,
     Reload,
@@ -77,6 +78,7 @@ pub(super) fn browser_key_request(url: &Url, token: &str) -> Option<BrowserKeyRe
     let intent = match segments.next()? {
         "command" => GuiBrowserKeyIntent::Command,
         "new_tab" => GuiBrowserKeyIntent::NewTab,
+        "restore_tab" => GuiBrowserKeyIntent::RestoreTab,
         "close_tab" => GuiBrowserKeyIntent::CloseTab,
         "focus_address" => GuiBrowserKeyIntent::FocusAddress,
         "reload" => GuiBrowserKeyIntent::Reload,
