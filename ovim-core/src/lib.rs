@@ -13,6 +13,7 @@ pub mod coordinates;
 pub mod dap;
 pub mod dashboard;
 pub mod debug_config;
+mod diagnostic_log;
 pub mod display;
 pub mod edit;
 pub mod edit_log;

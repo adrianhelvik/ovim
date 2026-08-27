@@ -1,7 +1,8 @@
 //! General application logging for ovim
 //!
 //! This module provides safe logging that NEVER prints to stdout/stderr in TUI mode.
-//! All logs go to ~/.cache/ovim/ovim.log (or platform equivalent).
+//! All logs go to a bounded, private cache file at
+//! ~/.cache/ovim/ovim.log (or platform equivalent).
 //!
 //! For LSP-specific logging, use the LSP logger in lsp::logger.
 //!
@@ -10,28 +11,20 @@
 //!   log_warn!("config", "Config file not found");
 //!   log_error!("buffer", "Failed to parse: {}", error);
 
-use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 lazy_static::lazy_static! {
-    static ref LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
+    static ref LOG_FILE: Mutex<Option<crate::diagnostic_log::DiagnosticLog>> = Mutex::new(None);
 }
+
+const APP_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 /// Initialize the log file (creates the directory if needed)
 pub fn init() -> std::io::Result<()> {
     let log_path = get_log_path();
 
-    // Create parent directory if needed
-    if let Some(parent) = log_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
+    let file = crate::diagnostic_log::DiagnosticLog::open(&log_path, APP_LOG_MAX_BYTES)?;
 
     // Handle mutex poisoning gracefully by recovering the guard
     let mut log_file = match LOG_FILE.lock() {
@@ -50,17 +43,7 @@ pub fn log_file_path() -> PathBuf {
 
 /// Get the log file path
 fn get_log_path() -> PathBuf {
-    let mut path = if let Some(cache_dir) = dirs::cache_dir() {
-        cache_dir
-    } else if let Ok(home) = std::env::var("HOME") {
-        std::path::PathBuf::from(home).join(".cache")
-    } else {
-        std::path::PathBuf::from("/tmp")
-    };
-
-    path.push("ovim");
-    path.push("ovim.log");
-    path
+    crate::diagnostic_log::log_path("ovim.log")
 }
 
 /// Write a log message (internal function, but must be pub for macros)
@@ -73,8 +56,7 @@ pub fn write_log(level: &str, context: &str, message: &str) {
     let mut should_use_fallback = true;
     if let Ok(mut log_file) = LOG_FILE.lock() {
         if let Some(ref mut file) = *log_file {
-            if file.write_all(log_line.as_bytes()).is_ok() {
-                let _ = file.flush();
+            if file.write_record(&log_line).is_ok() {
                 should_use_fallback = false;
             }
         }
@@ -83,9 +65,10 @@ pub fn write_log(level: &str, context: &str, message: &str) {
     // Fallback: open file on-demand if handle is not available or write failed
     if should_use_fallback {
         let log_path = get_log_path();
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
-            let _ = file.write_all(log_line.as_bytes());
-            let _ = file.flush();
+        if let Ok(mut file) =
+            crate::diagnostic_log::DiagnosticLog::open(&log_path, APP_LOG_MAX_BYTES)
+        {
+            let _ = file.write_record(&log_line);
         }
     }
 }

@@ -1,29 +1,22 @@
 //! LSP logging infrastructure
 //!
-//! Logs LSP messages to a file instead of stderr/stdout to avoid cluttering the terminal.
+//! Logs LSP messages to a bounded private file instead of stderr/stdout, which
+//! would corrupt the TUI.
 
-use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 lazy_static::lazy_static! {
-    static ref LSP_LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
+    static ref LSP_LOG_FILE: Mutex<Option<crate::diagnostic_log::DiagnosticLog>> = Mutex::new(None);
 }
+
+const LSP_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Initialize LSP logging to a file
 pub fn init_lsp_logging() -> std::io::Result<()> {
     let log_path = get_log_path();
 
-    // Create parent directory if needed
-    if let Some(parent) = log_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
+    let file = crate::diagnostic_log::DiagnosticLog::open(&log_path, LSP_LOG_MAX_BYTES)?;
 
     // Handle mutex poisoning gracefully by recovering the guard
     let mut log_file = match LSP_LOG_FILE.lock() {
@@ -37,19 +30,7 @@ pub fn init_lsp_logging() -> std::io::Result<()> {
 
 /// Get the path to the LSP log file
 pub fn get_log_path() -> PathBuf {
-    let mut path = if let Ok(cache_dir) = std::env::var("XDG_CACHE_HOME") {
-        PathBuf::from(cache_dir)
-    } else if let Some(cache_dir) = dirs::cache_dir() {
-        cache_dir
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".cache")
-    } else {
-        PathBuf::from("/tmp")
-    };
-
-    path.push("ovim");
-    path.push("lsp.log");
-    path
+    crate::diagnostic_log::log_path("lsp.log")
 }
 
 /// Log levels
@@ -90,8 +71,7 @@ pub fn log_message(level: LogLevel, context: &str, message: &str) {
 
     if let Ok(mut log_file) = LSP_LOG_FILE.lock() {
         if let Some(ref mut file) = *log_file {
-            let _ = file.write_all(log_line.as_bytes());
-            let _ = file.flush();
+            let _ = file.write_record(&log_line);
         }
     }
 }
