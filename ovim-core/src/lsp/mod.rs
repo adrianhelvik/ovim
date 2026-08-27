@@ -126,6 +126,10 @@ pub(crate) struct ChangeDebouncer {
 
     /// Timer handle for the debounce delay
     timer_handle: Option<JoinHandle<()>>,
+
+    /// Consecutive delivery retries for the current pending payload.
+    /// Fresh editor input resets this so normal edits keep the short debounce.
+    retry_attempts: u8,
 }
 
 impl ChangeDebouncer {
@@ -134,6 +138,7 @@ impl ChangeDebouncer {
             language_id,
             pending: None,
             timer_handle: None,
+            retry_attempts: 0,
         }
     }
 

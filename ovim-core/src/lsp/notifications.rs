@@ -27,6 +27,31 @@ use tokio::sync::{mpsc, Mutex};
 /// per-server timeout in `flush_pending_changes_broadcast`.
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A failed didChange delivery is either worth retrying (the server is still
+/// starting or temporarily wedged) or terminal for this server instance. A
+/// closed outgoing channel cannot recover; treating it as transient used to
+/// create a 150 ms retry loop that could grow `lsp.log` without bound.
+struct DidChangeFailure {
+    error: anyhow::Error,
+    retryable: bool,
+}
+
+impl DidChangeFailure {
+    fn retryable(error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            error: error.into(),
+            retryable: true,
+        }
+    }
+
+    fn terminal(error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            error: error.into(),
+            retryable: false,
+        }
+    }
+}
+
 /// Sends a notification with `NOTIFY_TIMEOUT` applied (OV-00333).
 async fn notify_with_timeout(
     server: &super::LanguageServer,
@@ -190,12 +215,48 @@ impl LspManager {
         server_id: &str,
         text: &Arc<str>,
         version: i32,
-    ) -> Result<bool> {
-        // Get server reference
+    ) -> std::result::Result<bool, DidChangeFailure> {
+        // Clone the server out of the DashMap before awaiting its state.
         let server = self
             .servers
             .get(server_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", server_id))?;
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| {
+                DidChangeFailure::terminal(anyhow::anyhow!(
+                    "No active server for language: {}",
+                    server_id
+                ))
+            })?;
+
+        match server.state().await {
+            super::server::ServerState::Ready { .. } => {}
+            super::server::ServerState::Spawning
+            | super::server::ServerState::Initializing { .. } => {
+                return Err(DidChangeFailure::retryable(anyhow::anyhow!(
+                    "LSP server {} is not ready yet",
+                    server_id
+                )));
+            }
+            super::server::ServerState::Failed { error, .. } => {
+                return Err(DidChangeFailure::terminal(anyhow::anyhow!(
+                    "LSP server {} failed: {}",
+                    server_id,
+                    error
+                )));
+            }
+            super::server::ServerState::ShuttingDown => {
+                return Err(DidChangeFailure::terminal(anyhow::anyhow!(
+                    "LSP server {} is shutting down",
+                    server_id
+                )));
+            }
+            super::server::ServerState::Terminated => {
+                return Err(DidChangeFailure::terminal(anyhow::anyhow!(
+                    "LSP server {} has terminated",
+                    server_id
+                )));
+            }
+        }
 
         let supports_incremental = server.supports_incremental_sync().await;
         let baseline = self
@@ -250,8 +311,14 @@ impl LspManager {
 
         crate::metrics::LSP_DIDCHANGE_TOTAL.inc();
         server
-            .notify("textDocument/didChange", serde_json::to_value(params)?)
-            .await?;
+            .notify(
+                "textDocument/didChange",
+                serde_json::to_value(params).map_err(DidChangeFailure::terminal)?,
+            )
+            .await
+            // `notify` only fails after construction when its receiver is
+            // closed. That server instance cannot consume a later retry.
+            .map_err(DidChangeFailure::terminal)?;
 
         // The notification is in the server's ordered outgoing queue: record
         // `text` as this server's content so the next diff builds on it.
@@ -282,17 +349,36 @@ impl LspManager {
     }
 
     /// (Re)starts the debounce timer on a locked debouncer.
-    fn restart_debounce_timer(&self, debouncer: &mut ChangeDebouncer, uri: Uri) {
+    fn schedule_flush(&self, debouncer: &mut ChangeDebouncer, uri: Uri, delay: Duration) {
         debouncer.cancel_timer();
         let flush_tx = self.flush_tx.clone();
         let handle = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(CHANGE_DEBOUNCE_MS)).await;
+            tokio::time::sleep(delay).await;
             // Timer expired - request flush via channel
             if let Err(e) = flush_tx.send(uri).await {
                 lsp_error!("Debounce", "Error sending flush request: {}", e);
             }
         });
         debouncer.timer_handle = Some(handle);
+    }
+
+    fn restart_debounce_timer(&self, debouncer: &mut ChangeDebouncer, uri: Uri) {
+        self.schedule_flush(debouncer, uri, Duration::from_millis(CHANGE_DEBOUNCE_MS));
+    }
+
+    /// Retry transient delivery failures with a bounded exponential delay.
+    /// The ceiling keeps recovery responsive without turning a wedged server
+    /// into a CPU and disk pressure source.
+    fn restart_retry_timer(&self, debouncer: &mut ChangeDebouncer, uri: Uri) {
+        const BASE_RETRY_MS: u64 = 500;
+        const MAX_RETRY_MS: u64 = 30_000;
+
+        let exponent = u32::from(debouncer.retry_attempts.min(6));
+        let delay_ms = BASE_RETRY_MS
+            .saturating_mul(2_u64.pow(exponent))
+            .min(MAX_RETRY_MS);
+        debouncer.retry_attempts = debouncer.retry_attempts.saturating_add(1);
+        self.schedule_flush(debouncer, uri, Duration::from_millis(delay_ms));
     }
 
     /// Sends textDocument/didChange notification with debouncing.
@@ -350,6 +436,7 @@ impl LspManager {
             text,
             version: assigned_version,
         });
+        debouncer.retry_attempts = 0;
         self.restart_debounce_timer(&mut debouncer, uri);
 
         Ok(())
@@ -535,9 +622,11 @@ impl LspManager {
     /// `synced_content` (e.g. inlay-hint / completion tasks) **must** use the
     /// returned content — the debouncer may have been updated by another thread
     /// since the caller captured its snapshot. On partial or total send
-    /// failure the pending change is re-armed for a timer-driven retry
-    /// (unless a newer edit superseded it) and an error is returned; the
-    /// change is never silently discarded.
+    /// retryable failure the pending change is re-armed with capped
+    /// exponential backoff (unless a newer edit superseded it). Failed,
+    /// terminated, or closed server instances are terminal: a replacement
+    /// receives a fresh didOpen, so retrying the dead instance only creates
+    /// an unbounded log/CPU loop.
     pub async fn flush_pending_changes_broadcast(
         &self,
         uri: &Uri,
@@ -572,7 +661,8 @@ impl LspManager {
         let text_string = text.to_string();
         let server_ids = self.servers_for_document_uri(language_id, uri);
         let mut any_sent = false;
-        let mut all_synced = !server_ids.is_empty();
+        let mut any_synced = false;
+        let mut retryable_failure = false;
         for sid in &server_ids {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -581,16 +671,28 @@ impl LspManager {
             .await
             {
                 Ok(Ok(actually_sent)) => {
+                    any_synced = true;
                     any_sent = any_sent || actually_sent;
                     // Even no-diff (Ok(false)) means this server is in sync
                     // (OV-00211).
                 }
-                Ok(Err(e)) => {
-                    all_synced = false;
-                    lsp_warn!("LSP-BROADCAST", "Flush failed for server {}: {}", sid, e);
+                Ok(Err(failure)) => {
+                    retryable_failure |= failure.retryable;
+                    let disposition = if failure.retryable {
+                        "will retry"
+                    } else {
+                        "waiting for replacement server"
+                    };
+                    lsp_warn!(
+                        "LSP-BROADCAST",
+                        "Flush failed for server {} ({}): {}",
+                        sid,
+                        disposition,
+                        failure.error
+                    );
                 }
                 Err(_) => {
-                    all_synced = false;
+                    retryable_failure = true;
                     lsp_warn!(
                         "LSP-BROADCAST",
                         "Timeout flushing changes for server {} (5s)",
@@ -599,7 +701,14 @@ impl LspManager {
                 }
             }
         }
-        if all_synced {
+        if !retryable_failure {
+            // No registered server, or only terminal server instances, means
+            // there is nothing useful to retry. A newly started server gets
+            // the current full document through didOpen.
+            if !any_synced {
+                return Ok(None);
+            }
+
             let mut sent = self.last_sent_versions.lock().await;
             sent.insert(uri.clone(), version);
             drop(sent);
@@ -616,16 +725,14 @@ impl LspManager {
             return Ok(Some((text_string, version)));
         }
 
-        // At least one server did not receive the update (or no server is
-        // registered yet). Re-arm the pending change for a timer-driven
-        // retry unless a newer edit superseded it while we were sending —
-        // the newer edit re-diffs against each server's recorded baseline,
-        // so dropping this payload in that case loses nothing.
+        // At least one live server may still be able to receive the update.
+        // Re-arm with backoff unless a newer edit superseded it while we were
+        // sending; the newer edit already owns the normal debounce timer.
         {
             let mut debouncer = debouncer_arc.lock().await;
             if debouncer.pending.is_none() {
                 debouncer.pending = Some(super::PendingChange { text, version });
-                self.restart_debounce_timer(&mut debouncer, uri.clone());
+                self.restart_retry_timer(&mut debouncer, uri.clone());
             }
         }
         Err(anyhow!(
@@ -1516,7 +1623,7 @@ mod tests {
     /// queued concurrently with the flush (their timer then flushed
     /// nothing and the change was silently lost).
     #[tokio::test(flavor = "current_thread")]
-    async fn flush_keeps_debouncer_entry_and_pending_coalesces() {
+    async fn flush_keeps_debouncer_entry_without_retrying_absent_servers() {
         let manager = Arc::new(LspManager::new());
         let uri = Uri::from_str("file:///tmp/ovim-orphan-test.rs").expect("uri");
 
@@ -1537,11 +1644,13 @@ mod tests {
             assert_eq!(pending.version, 2);
         }
 
-        // Flush with no servers registered: the payload cannot be delivered.
+        // Flush with no servers registered: a future server will receive the
+        // current full document through didOpen, so retrying this payload
+        // would only create a tight timer loop.
         let result = manager.flush_pending_changes_broadcast(&uri, "rust").await;
         assert!(
-            result.is_err(),
-            "undeliverable flush must surface an error, not silently drop the edit"
+            matches!(result, Ok(None)),
+            "an absent server is not a retryable delivery target: {result:?}"
         );
 
         // The entry must survive the flush attempt...
@@ -1549,19 +1658,65 @@ mod tests {
             manager.change_debouncers.contains_key(&uri),
             "flush must not remove the debouncer entry (orphaned-edit race, OV-00326)"
         );
-        // ...and the pending change must be re-armed for retry, not discarded.
+        // ...but the stale pending payload must not be re-armed forever.
         {
             let entry = manager.change_debouncers.get(&uri).unwrap();
             let debouncer = entry.lock().await;
-            let pending = debouncer
-                .pending
-                .as_ref()
-                .expect("failed flush must retain the pending change for retry (OV-00326)");
-            assert_eq!(&*pending.text, "v2\n");
-            assert_eq!(pending.version, 2);
+            assert!(
+                debouncer.pending.is_none(),
+                "no-server flush must await didOpen instead of self-scheduling"
+            );
         }
         // last_sent must NOT claim the undelivered version.
         assert_eq!(manager.get_last_sent_version(&uri).await, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn flush_does_not_retry_a_failed_server_transport() {
+        let manager = Arc::new(LspManager::new());
+        let server = super::super::server::LanguageServer::spawn(
+            "rust",
+            "sh",
+            vec!["-c".to_string(), "exit 0".to_string()],
+        )
+        .await
+        .expect("spawn short-lived server");
+
+        for _ in 0..100 {
+            if matches!(
+                server.state().await,
+                super::super::server::ServerState::Failed { .. }
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(matches!(
+            server.state().await,
+            super::super::server::ServerState::Failed { .. }
+        ));
+
+        manager.servers.insert("rust".to_string(), server);
+        manager
+            .language_server_index
+            .insert("rust".to_string(), vec!["rust".to_string()]);
+
+        let uri = Uri::from_str("file:///tmp/ovim-dead-server.rs").expect("uri");
+        manager
+            .did_change(uri.clone(), "rust", Arc::from("fn main() {}\n"), None)
+            .await
+            .expect("queue edit");
+
+        let result = manager.flush_pending_changes_broadcast(&uri, "rust").await;
+        assert!(
+            matches!(result, Ok(None)),
+            "a failed server is terminal for this payload: {result:?}"
+        );
+
+        let entry = manager.change_debouncers.get(&uri).expect("debouncer");
+        let debouncer = entry.lock().await;
+        assert!(debouncer.pending.is_none());
+        assert_eq!(debouncer.retry_attempts, 0);
     }
 
     /// OV-00326: passing `old_text: None` declares the server-side content
