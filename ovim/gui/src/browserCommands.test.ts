@@ -12,6 +12,15 @@ describe("browser commands", () => {
         expect(normalizeBrowserAddress("http://localhost:3000/docs")).toBe(
             "http://localhost:3000/docs",
         );
+        expect(normalizeBrowserAddress("localhost:3000/docs")).toBe(
+            "http://localhost:3000/docs",
+        );
+        expect(normalizeBrowserAddress("example.com:8443/docs")).toBe(
+            "https://example.com:8443/docs",
+        );
+        expect(normalizeBrowserAddress("vim keyboard browsing")).toBe(
+            "https://duckduckgo.com/?q=vim+keyboard+browsing",
+        );
     });
 
     it("parses navigation, history, lifecycle, and workbench tab commands", () => {
@@ -20,6 +29,13 @@ describe("browser commands", () => {
             command: {
                 kind: "navigate",
                 url: "https://wikipedia.org",
+            },
+        });
+        expect(parseBrowserCommand(":goto vim keyboard browsing")).toEqual({
+            ok: true,
+            command: {
+                kind: "navigate",
+                url: "https://duckduckgo.com/?q=vim+keyboard+browsing",
             },
         });
         expect(parseBrowserCommand("back 3")).toEqual({

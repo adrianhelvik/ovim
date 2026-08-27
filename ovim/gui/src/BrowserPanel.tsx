@@ -123,6 +123,10 @@ export default function BrowserPanel(props: BrowserPanelProps) {
             await props.onNavigate(sessionId, url);
         } catch (reason) {
             setError(String(reason));
+            queueMicrotask(() => {
+                addressInput?.focus({ preventScroll: true });
+                addressInput?.select();
+            });
         }
     };
 
@@ -264,7 +268,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                         autocomplete="off"
                         aria-label="Browser address"
                         aria-keyshortcuts="Meta+L Control+L"
-                        placeholder="Enter an HTTP or HTTPS address"
+                        placeholder="Search or enter an address"
                         value={address()}
                         onInput={(event) =>
                             setAddress(event.currentTarget.value)
@@ -298,7 +302,7 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                                     }
                                     title={
                                         current().vimKeysEnabled
-                                            ? "Vim-style page keys are on · i enters Insert mode · ? shows help"
+                                            ? "Vim-style page keys are on · fields enter Insert mode · ? shows help"
                                             : "Vim-style page keys are off · browser shortcuts still work"
                                     }
                                     onClick={() => void toggleVimKeys()}
@@ -356,8 +360,8 @@ export default function BrowserPanel(props: BrowserPanelProps) {
                         <Icon name="command" size={24} tone="accent" />
                         <b>Where do you want to go?</b>
                         <span>
-                            Enter an address above. The browser is created only
-                            when you navigate.
+                            Search or enter an address above. The browser is
+                            created only when you navigate.
                         </span>
                     </div>
                 </Show>

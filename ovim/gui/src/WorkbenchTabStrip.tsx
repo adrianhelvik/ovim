@@ -12,9 +12,11 @@ interface WorkbenchTabStripProps {
     selection: WorkbenchSelection;
     browserState: BrowserState;
     browserOpening: boolean;
+    canRestoreBrowser: boolean;
     onSelect: (position: number) => void;
     onSourceFocus: () => void;
     onNewBrowser: () => void;
+    onRestoreBrowser: () => void;
     onNavigate: (event: KeyboardEvent, position: number) => void;
 }
 
@@ -173,6 +175,29 @@ export default function WorkbenchTabStrip(props: WorkbenchTabStripProps) {
     return (
         <div class="tabs" role="tablist" aria-label="Open tabs">
             <For each={props.tabs}>{renderTab}</For>
+            <Show when={props.canRestoreBrowser}>
+                <button
+                    type="button"
+                    class="restore-browser-tab"
+                    data-gui-native-control
+                    disabled={
+                        !props.native ||
+                        props.browserOpening ||
+                        props.browserState.sessions.length >=
+                            props.browserState.maxSessions
+                    }
+                    aria-label="Restore closed browser tab"
+                    title={
+                        props.browserState.sessions.length >=
+                        props.browserState.maxSessions
+                            ? `Close a Browser tab before restoring one (limit ${props.browserState.maxSessions})`
+                            : "Restore closed Browser tab · X or Cmd/Ctrl+Shift+T in Browser"
+                    }
+                    onClick={props.onRestoreBrowser}
+                >
+                    <Icon name="restore" size={16} />
+                </button>
+            </Show>
             <button
                 type="button"
                 class="new-browser-tab"

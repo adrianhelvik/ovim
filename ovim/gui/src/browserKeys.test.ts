@@ -121,7 +121,8 @@ describe("browser key router", () => {
         expect(actions.openTab).toHaveBeenCalledTimes(2);
         expect(actions.openTab).toHaveBeenCalledWith("https://example.com/");
         expect(actions.restoreTab).toHaveBeenCalledOnce();
-        expect(actions.selectTab.mock.calls).toEqual([[0], [0], [1], [2]]);
+        expect(actions.selectTab.mock.calls).toEqual([[2], [1], [2], [2]]);
+        expect(actions.selectTab).not.toHaveBeenCalledWith(0);
     });
 
     it("ignores stale session events", async () => {

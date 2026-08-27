@@ -272,6 +272,57 @@ describe("BrowserPanel", () => {
                     "https://docs.rs",
                 ),
             );
+            fireEvent.input(address, {
+                target: { value: "vim keyboard browsing" },
+            });
+            fireEvent.submit(address.closest("form")!);
+            await waitFor(() =>
+                expect(navigate).toHaveBeenCalledWith(
+                    "browser-1",
+                    "https://duckduckgo.com/?q=vim+keyboard+browsing",
+                ),
+            );
+        } finally {
+            result.unmount();
+        }
+    });
+
+    it("keeps a rejected address selected for quick correction", async () => {
+        invoke.mockResolvedValue(undefined);
+        const navigate = vi
+            .fn()
+            .mockRejectedValue(
+                "Navigation failed; check the address and try again",
+            );
+        const result = render(() => (
+            <BrowserPanel
+                native
+                active
+                obscured={false}
+                session={session()}
+                onNavigate={navigate}
+                onToolbar={vi.fn().mockResolvedValue(undefined)}
+                onClose={vi.fn().mockResolvedValue(undefined)}
+                onVimKeysChange={vi.fn().mockResolvedValue(undefined)}
+            />
+        ));
+        try {
+            const address = screen.getByLabelText(
+                "Browser address",
+            ) as HTMLInputElement;
+            fireEvent.input(address, {
+                target: { value: "javascript:alert(1)" },
+            });
+            fireEvent.submit(address.closest("form")!);
+
+            expect(
+                await screen.findByText(
+                    "Navigation failed; check the address and try again",
+                ),
+            ).toBeTruthy();
+            await waitFor(() => expect(document.activeElement).toBe(address));
+            expect(address.selectionStart).toBe(0);
+            expect(address.selectionEnd).toBe(address.value.length);
         } finally {
             result.unmount();
         }

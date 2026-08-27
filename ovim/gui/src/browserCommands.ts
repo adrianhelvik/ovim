@@ -25,8 +25,18 @@ export const BROWSER_COMMAND_NAMES = [
 
 export const normalizeBrowserAddress = (value: string) => {
     const address = value.trim();
-    if (!address || /^[a-z][a-z\d+.-]*:/i.test(address)) return address;
-    return `https://${address}`;
+    if (!address) return address;
+    if (/^localhost(?=[:/?#]|$)/i.test(address)) return `http://${address}`;
+
+    const authority = address.split(/[/?#]/, 1)[0];
+    const host = authority.split(":", 1)[0];
+    const looksLikeNetworkLocation =
+        !/\s|@/.test(address) &&
+        (host.includes(".") || host.startsWith("[") || /^\d+$/.test(host));
+    if (looksLikeNetworkLocation) return `https://${address}`;
+    if (/^[a-z][a-z\d+.-]*:/i.test(address)) return address;
+
+    return `https://duckduckgo.com/?${new URLSearchParams({ q: address })}`;
 };
 
 const countArgument = (

@@ -72,34 +72,39 @@ interface BrowserKeyRouterOptions {
 const commandCount = (count: number | undefined) =>
     Math.max(1, Math.min(Math.trunc(count ?? 1) || 1, 100));
 
-const currentTabPosition = (
+const browserTabPositions = (tabs: WorkbenchTabReference[]) =>
+    tabs.flatMap((tab, position) => (tab.kind === "browser" ? [position] : []));
+
+const currentBrowserPosition = (
     tabs: WorkbenchTabReference[],
     selection: WorkbenchSelection,
-) =>
-    tabs.findIndex((tab) => {
-        switch (selection.kind) {
-            case "source":
-                return tab.kind === "source" && tab.tabId === selection.tabId;
-            case "vector":
-                return (
-                    tab.kind === "vector" &&
-                    tab.sourceTabId === selection.sourceTabId
-                );
-            case "browser":
-                return (
-                    tab.kind === "browser" &&
-                    tab.sessionId === selection.sessionId
-                );
-        }
-    });
+) => {
+    if (selection.kind !== "browser") return -1;
+    return tabs.findIndex(
+        (tab) =>
+            tab.kind === "browser" && tab.sessionId === selection.sessionId,
+    );
+};
 
 export const createBrowserKeyRouter = (options: BrowserKeyRouterOptions) => {
     const selectRelativeTab = (delta: number) => {
         const tabs = options.tabs();
-        const current = currentTabPosition(tabs, options.selection());
-        if (!tabs.length || current < 0) return;
+        const positions = browserTabPositions(tabs);
+        const current = currentBrowserPosition(tabs, options.selection());
+        const currentBrowser = positions.indexOf(current);
+        if (!positions.length || currentBrowser < 0) return;
+        const target =
+            (currentBrowser + (delta % positions.length) + positions.length) %
+            positions.length;
+        options.selectTab(positions[target]);
+    };
+    const selectEdgeTab = (fromEnd: boolean, count = 1) => {
+        const positions = browserTabPositions(options.tabs());
+        if (!positions.length) return;
         options.selectTab(
-            (current + (delta % tabs.length) + tabs.length) % tabs.length,
+            fromEnd
+                ? positions[positions.length - 1]
+                : positions[Math.min(count - 1, positions.length - 1)],
         );
     };
 
@@ -144,10 +149,10 @@ export const createBrowserKeyRouter = (options: BrowserKeyRouterOptions) => {
                 selectRelativeTab(count);
                 break;
             case "first_tab":
-                options.selectTab(count - 1);
+                selectEdgeTab(false, count);
                 break;
             case "last_tab":
-                options.selectTab(options.tabs().length - 1);
+                selectEdgeTab(true);
                 break;
         }
     };

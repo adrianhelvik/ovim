@@ -76,12 +76,13 @@ closed, so no browser session is kept open by default. The terminal frontend
 does not attach a browser host, so these tools are omitted there.
 
 A manually created tab starts empty and focuses its address field; Ovim creates
-the child webview only after the first navigation. In a loaded page, press `:`
-outside an editable page field to open the Browser command line. It supports
-`:goto <address>`, `:back [count]`, `:forward [count]`, `:reload`, `:stop`,
-`:q`, `:tabnext [count]`, `:tabprev [count]`, and `:tabgoto <number>`. Browser
-commands are contextual: `:w` reports that writing is unavailable instead of
-saving a hidden editor buffer.
+the child webview only after the first navigation. The field accepts a network
+address or a DuckDuckGo search. In a loaded page, press `:` outside an editable
+page field to open the Browser command line. It supports
+`:goto <address-or-search>`, `:back [count]`, `:forward [count]`, `:reload`,
+`:stop`, `:q`, `:tabnext [count]`, `:tabprev [count]`, and `:tabgoto <number>`.
+Browser commands are contextual: `:w` reports that writing is unavailable
+instead of saving a hidden editor buffer.
 
 Browser tabs also have a Vimium-inspired Normal mode. Focusing an input,
 textarea, select, contenteditable region, or ARIA editor enters Insert mode so
@@ -100,7 +101,7 @@ policy.
 | `H`, `L`, `r` | Back, forward, reload |
 | `o`, `:` | Focus the address field; open the Browser command line |
 | `t`, `x` | Open or close a Browser tab |
-| `J` `K`, `gt` `gT`, `g0` `g$` | Move through the integrated workbench tabs |
+| `J` `K`, `gt` `gT`, `g0` `g$` | Move through Browser tabs without dropping back into the editor |
 | `gi`, `/`, `n` `N`, `yy` | Focus an input; find; repeat find; copy the address |
 | `i`, `Esc`, `?` | Insert mode; Normal mode; key reference |
 
@@ -109,8 +110,9 @@ shortcuts are contextual too: `Cmd/Ctrl+T` opens an unloaded Browser tab,
 `Cmd/Ctrl+W` closes the selected Browser tab, `Cmd/Ctrl+L` focuses its address,
 `Cmd/Ctrl+R` reloads, `Cmd/Ctrl+F` finds in the page, `Cmd/Ctrl+[` and
 `Cmd/Ctrl+]` move through history, and adding `Shift` to the bracket shortcuts
-moves through workbench tabs. Outside a Browser tab, existing editor/window
-behavior is preserved.
+moves through Browser tabs. The `:tabnext`, `:tabprev`, and `:tabgoto` commands
+deliberately traverse the integrated source/vector/browser workbench. Outside a
+Browser tab, existing editor/window behavior is preserved.
 
 The built-in `codex_sol` chat profile enables browser access by default. Custom
 or overridden profiles remain opt-in: add `scope_network = true` to the profile

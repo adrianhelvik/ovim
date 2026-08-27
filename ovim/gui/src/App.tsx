@@ -3260,9 +3260,13 @@ function App() {
                         selection={workbenchSelection()}
                         browserState={browserState()}
                         browserOpening={browserOpening()}
+                        canRestoreBrowser={browserWorkbench.canRestore()}
                         onSelect={selectWorkbenchTab}
                         onSourceFocus={() => queueMicrotask(focusEditorInput)}
                         onNewBrowser={() => void openBrowserSession()}
+                        onRestoreBrowser={() =>
+                            performBrowserKey({ intent: "restore_tab" })
+                        }
                         onNavigate={handleTabNavigation}
                     />
 

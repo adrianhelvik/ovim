@@ -314,7 +314,8 @@ button:focus-visible {
     background: var(--accent);
     animation: browser-loading-pulse 1.1s ease-in-out infinite;
 }
-.new-browser-tab {
+.new-browser-tab,
+.restore-browser-tab {
     position: sticky;
     right: 0;
     z-index: 1;
@@ -330,16 +331,24 @@ button:focus-visible {
     background: color-mix(in srgb, var(--surface-1) 88%, var(--canvas));
     font: 18px/1 var(--ui-font);
 }
-.new-browser-tab:hover:not(:disabled) {
+.restore-browser-tab {
+    right: 34px;
+    border-right: 0;
+    color: var(--accent);
+}
+.new-browser-tab:hover:not(:disabled),
+.restore-browser-tab:hover:not(:disabled) {
     color: var(--text-primary);
     background: var(--surface-selected);
 }
-.new-browser-tab:focus-visible {
+.new-browser-tab:focus-visible,
+.restore-browser-tab:focus-visible {
     z-index: 2;
     outline: 1px solid var(--accent);
     outline-offset: -2px;
 }
-.new-browser-tab:disabled {
+.new-browser-tab:disabled,
+.restore-browser-tab:disabled {
     opacity: 0.4;
     cursor: default;
 }
