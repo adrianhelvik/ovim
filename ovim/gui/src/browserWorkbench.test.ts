@@ -5,7 +5,22 @@ import type { GuiSnapshot } from "./types";
 import type { WorkbenchSelection } from "./workbench";
 
 const invoke = vi.hoisted(() => vi.fn());
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+const nativeChannels = vi.hoisted(
+    () =>
+        [] as Array<{
+            onmessage?: (state: unknown) => void;
+        }>,
+);
+vi.mock("@tauri-apps/api/core", () => ({
+    invoke,
+    Channel: class {
+        onmessage?: (state: unknown) => void;
+
+        constructor() {
+            nativeChannels.push(this);
+        }
+    },
+}));
 
 const sourceTabs: GuiSnapshot["tabs"] = [
     { id: 12, index: 0, title: "main.rs", active: true, modified: false },
@@ -14,6 +29,7 @@ const sourceTabs: GuiSnapshot["tabs"] = [
 beforeEach(() => {
     invoke.mockReset();
     invoke.mockResolvedValue(undefined);
+    nativeChannels.length = 0;
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
         callback(0);
         return 1;
@@ -23,6 +39,40 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("browser workbench controller", () => {
+    it("owns the native browser state subscription", async () => {
+        await new Promise<void>((resolve) =>
+            createRoot((dispose) => {
+                const [selection, setSelection] =
+                    createSignal<WorkbenchSelection>({
+                        kind: "source",
+                        tabId: 12,
+                    });
+                const controller = createBrowserWorkbench({
+                    native: true,
+                    sourceTabs: () => sourceTabs,
+                    includeVector: () => false,
+                    selection,
+                    setSelection,
+                    setError: vi.fn(),
+                });
+
+                void controller.subscribe().then(() => {
+                    expect(invoke).toHaveBeenCalledWith(
+                        "gui_browser_subscribe",
+                        { onEvent: nativeChannels[0] },
+                    );
+                    nativeChannels[0]?.onmessage?.({
+                        sessions: [],
+                        maxSessions: 4,
+                    });
+                    expect(controller.state().maxSessions).toBe(4);
+                    dispose();
+                    resolve();
+                });
+            }),
+        );
+    });
+
     it("restores a closed session at its prior workbench position", async () => {
         const original = {
             sessionId: "browser-1",

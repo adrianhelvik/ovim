@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { createMemo, createSignal, type Accessor, type Setter } from "solid-js";
 import type {
     BrowserSession,
@@ -20,7 +20,6 @@ interface BrowserWorkbenchOptions {
     selection: Accessor<WorkbenchSelection>;
     setSelection: Setter<WorkbenchSelection>;
     setError: Setter<string>;
-    onSessionsChanged?: (state: BrowserState) => void;
     onSessionCreated?: (
         sessionId: string,
         placement: WorkbenchTabPlacement,
@@ -92,7 +91,6 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
                 );
         }
         setState(next);
-        options.onSessionsChanged?.(next);
         const projection = projectBrowserState(
             options.selection(),
             latestPresentationRevision,
@@ -225,6 +223,12 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
             })
             .catch((reason) => options.setError(String(reason)));
     };
+    const subscribe = async () => {
+        if (!options.native) return;
+        const updates = new Channel<BrowserState>();
+        updates.onmessage = accept;
+        await invoke("gui_browser_subscribe", { onEvent: updates });
+    };
 
     return {
         state,
@@ -242,5 +246,10 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
         activate,
         present,
         focus,
+        subscribe,
     };
 };
+
+export type BrowserWorkbenchController = ReturnType<
+    typeof createBrowserWorkbench
+>;

@@ -16,20 +16,14 @@ import { mockSnapshot } from "./mock";
 import ChatModelPicker from "./ChatModelPicker";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
 import BrowserPanel, { browserTabTitle } from "./BrowserPanel";
-import type { BrowserState } from "./browserProtocol";
+import { createBrowserNavigation } from "./browserNavigation";
 import { createBrowserWorkbench } from "./browserWorkbench";
-import {
-    browserShortcutAction,
-    createBrowserKeyRouter,
-    type BrowserKeyEvent,
-} from "./browserKeys";
+import { browserShortcutAction, type BrowserKeyEvent } from "./browserKeys";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 import NativeDiffPanel from "./DiffPanel";
-import SurfaceCommandLine, {
-    type CommandExecutionResult,
-} from "./SurfaceCommandLine";
+import SurfaceCommandLine from "./SurfaceCommandLine";
 import WorkbenchTabStrip from "./WorkbenchTabStrip";
-import { BROWSER_COMMAND_NAMES, parseBrowserCommand } from "./browserCommands";
+import { BROWSER_COMMAND_NAMES } from "./browserCommands";
 import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
@@ -46,7 +40,6 @@ import {
     activeSourceSelection,
     createWorkbenchTabOrder,
     reconcileWorkbenchTabs,
-    workbenchSelectionId,
     type WorkbenchSelection,
     type WorkbenchTabReference,
 } from "./workbench";
@@ -1174,12 +1167,6 @@ function App() {
             activeSourceSelection(mockSnapshot.tabs),
         );
     const workbenchView = () => workbenchSelection().kind;
-    const [browserCommandRequest, setBrowserCommandRequest] = createSignal<{
-        serial: number;
-        sessionId: string;
-    }>();
-    const [browserAddressFocusRequest, setBrowserAddressFocusRequest] =
-        createSignal<{ serial: number; sessionId: string }>();
     const [vectorPreview, setVectorPreview] = createSignal<VectorPreview>();
     const [vectorPreviewError, setVectorPreviewError] = createSignal("");
     const [vectorPreviewLoading, setVectorPreviewLoading] = createSignal(false);
@@ -1209,9 +1196,6 @@ function App() {
     let wheelRemainder = 0;
     let lastDimensions = { columns: 0, rows: 0 };
     let latestSnapshotRevision: number | undefined;
-    let nextBrowserCommandSerial = 1;
-    let nextBrowserAddressFocusSerial = 1;
-    let browserCommandRefocusSession: string | undefined;
     const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
     const hasContextDock = createMemo(() =>
         Boolean(
@@ -1248,17 +1232,6 @@ function App() {
         setError,
         onSessionCreated: (sessionId, placement) =>
             workbenchTabOrder.placeBrowser(sessionId, placement),
-        onSessionsChanged: (next) => {
-            if (
-                browserCommandRequest() &&
-                !next.sessions.some(
-                    (session) =>
-                        session.sessionId ===
-                        browserCommandRequest()?.sessionId,
-                )
-            )
-                setBrowserCommandRequest(undefined);
-        },
     });
     const browserState = browserWorkbench.state;
     const browserOpening = browserWorkbench.opening;
@@ -1485,71 +1458,28 @@ function App() {
         if (chatInput?.isConnected) chatInput.focus({ preventScroll: true });
         else focusEditorInput();
     };
+    const browserNavigation = createBrowserNavigation({
+        workbench: browserWorkbench,
+        tabs: workbenchTabs,
+        selection: workbenchSelection,
+        selectTab: selectWorkbenchTab,
+        selectReference: selectWorkbenchReference,
+        focusSource: focusEditorInput,
+        setError,
+    });
     const focusBrowser = browserWorkbench.focus;
-    const presentBrowserSession = browserWorkbench.present;
-    const acceptBrowserState = browserWorkbench.accept;
     const openBrowserSession = browserWorkbench.open;
-    const closeBrowser = browserWorkbench.close;
-    const restoreBrowserSession = browserWorkbench.restore;
-    const closeBrowserSession = async (sessionId: string) => {
-        const tabs = workbenchTabs();
-        const position = tabs.findIndex(
-            (tab) => tab.kind === "browser" && tab.sessionId === sessionId,
-        );
-        const closingSelected =
-            workbenchSelection().kind === "browser" &&
-            activeBrowserId() === sessionId;
-        const fallback =
-            position >= 0
-                ? (tabs[position + 1] ?? tabs[position - 1])
-                : undefined;
-        await closeBrowser(sessionId, position >= 0 ? position : tabs.length);
-        if (closingSelected && fallback) selectWorkbenchReference(fallback);
-    };
+    const closeBrowserSession = browserNavigation.closeTab;
     const navigateBrowserSession = browserWorkbench.navigate;
     const runBrowserToolbar = browserWorkbench.toolbar;
     const setBrowserVimKeys = browserWorkbench.setVimKeys;
     const activateBrowserSession = browserWorkbench.activate;
-    const openBrowserCommand = (sessionId = activeBrowserId()) => {
-        if (
-            !sessionId ||
-            !browserState().sessions.some(
-                (session) => session.sessionId === sessionId,
-            )
-        )
-            return;
-        presentBrowserSession(sessionId);
-        browserCommandRefocusSession = sessionId;
-        setBrowserCommandRequest({
-            serial: nextBrowserCommandSerial++,
-            sessionId,
-        });
-    };
-    const focusBrowserAddress = (sessionId = activeBrowserId()) => {
-        if (
-            !sessionId ||
-            !browserState().sessions.some(
-                (session) => session.sessionId === sessionId,
-            )
-        )
-            return;
-        presentBrowserSession(sessionId);
-        setBrowserAddressFocusRequest({
-            serial: nextBrowserAddressFocusSerial++,
-            sessionId,
-        });
-    };
-    const dismissBrowserCommand = () => {
-        const sessionId = browserCommandRefocusSession;
-        browserCommandRefocusSession = undefined;
-        setBrowserCommandRequest(undefined);
-        if (sessionId)
-            requestAnimationFrame(() => {
-                void focusBrowser(sessionId).catch(() => {});
-            });
-        else if (workbenchView() === "source")
-            requestAnimationFrame(focusEditorInput);
-    };
+    const browserCommandRequest = browserNavigation.commandRequest;
+    const browserAddressFocusRequest = browserNavigation.addressFocusRequest;
+    const openBrowserCommand = browserNavigation.openCommand;
+    const dismissBrowserCommand = browserNavigation.dismissCommand;
+    const executeBrowserCommand = browserNavigation.executeCommand;
+    const performBrowserKey = browserNavigation.performKey;
     const focusPrimaryInput = () => {
         if (browserCommandRequest()) return;
         if (workbenchView() === "browser") {
@@ -1622,27 +1552,6 @@ function App() {
             meta: false,
         });
         await sendLiteral("ggVG");
-    };
-
-    const routeBrowserKey = createBrowserKeyRouter({
-        tabs: workbenchTabs,
-        selection: workbenchSelection,
-        hasSession: (sessionId) =>
-            browserState().sessions.some(
-                (session) => session.sessionId === sessionId,
-            ),
-        openTab: async (url) => {
-            await openBrowserSession(url);
-        },
-        restoreTab: restoreBrowserSession,
-        closeTab: closeBrowserSession,
-        focusAddress: focusBrowserAddress,
-        openCommand: openBrowserCommand,
-        runToolbar: runBrowserToolbar,
-        selectTab: (position) => selectWorkbenchTab(position),
-    });
-    const performBrowserKey = (event: BrowserKeyEvent) => {
-        void routeBrowserKey(event).catch((reason) => setError(String(reason)));
     };
 
     const performMenuAction = (action: string) => {
@@ -1799,7 +1708,7 @@ function App() {
         }
     };
 
-    const selectWorkbenchReference = (tab: WorkbenchTabReference) => {
+    function selectWorkbenchReference(tab: WorkbenchTabReference) {
         switch (tab.kind) {
             case "source":
                 setWorkbenchSelection({ kind: "source", tabId: tab.tabId });
@@ -1815,84 +1724,14 @@ function App() {
                 activateBrowserSession(tab.sessionId);
                 break;
         }
-    };
+    }
 
-    const selectWorkbenchTab = (position: number) => {
+    function selectWorkbenchTab(position: number) {
         const tab = workbenchTabs()[position];
         if (!tab) return false;
         selectWorkbenchReference(tab);
         return true;
-    };
-
-    const executeBrowserCommand = async (
-        input: string,
-    ): Promise<CommandExecutionResult> => {
-        const request = browserCommandRequest();
-        if (!request)
-            return { ok: false, message: "No browser tab is selected" };
-        const parsed = parseBrowserCommand(input);
-        if (!parsed.ok) return parsed;
-        try {
-            switch (parsed.command.kind) {
-                case "close":
-                    browserCommandRefocusSession = undefined;
-                    await closeBrowserSession(request.sessionId);
-                    break;
-                case "navigate":
-                    await navigateBrowserSession(
-                        request.sessionId,
-                        parsed.command.url,
-                    );
-                    break;
-                case "history":
-                    await runBrowserToolbar(
-                        request.sessionId,
-                        parsed.command.direction,
-                        parsed.command.count,
-                    );
-                    break;
-                case "reload":
-                case "stop":
-                    await runBrowserToolbar(
-                        request.sessionId,
-                        parsed.command.kind,
-                    );
-                    break;
-                case "select_relative_tab": {
-                    const tabs = workbenchTabs();
-                    const current = tabs.findIndex(
-                        (tab) =>
-                            tab.id ===
-                            workbenchSelectionId(workbenchSelection()),
-                    );
-                    if (!tabs.length || current < 0)
-                        return {
-                            ok: false,
-                            message: "No workbench tab is selected",
-                        };
-                    const position =
-                        (current +
-                            (parsed.command.delta % tabs.length) +
-                            tabs.length) %
-                        tabs.length;
-                    browserCommandRefocusSession = undefined;
-                    selectWorkbenchTab(position);
-                    break;
-                }
-                case "select_tab":
-                    if (!selectWorkbenchTab(parsed.command.position - 1))
-                        return {
-                            ok: false,
-                            message: `Workbench tab ${parsed.command.position} does not exist`,
-                        };
-                    browserCommandRefocusSession = undefined;
-                    break;
-            }
-            return { ok: true };
-        } catch (reason) {
-            return { ok: false, message: String(reason) };
-        }
-    };
+    }
 
     const handleTabNavigation = (event: KeyboardEvent, position: number) => {
         const tabCount = workbenchTabs().length;
@@ -3164,11 +3003,9 @@ function App() {
             ).then((unlisten) => {
                 unlistenBrowserKey = unlisten;
             });
-            const browserStates = new Channel<BrowserState>();
-            browserStates.onmessage = acceptBrowserState;
-            void invoke("gui_browser_subscribe", {
-                onEvent: browserStates,
-            }).catch((reason) => setError(String(reason)));
+            void browserWorkbench
+                .subscribe()
+                .catch((reason) => setError(String(reason)));
             const snapshots = new Channel<GuiSnapshot>();
             snapshots.onmessage = accept;
             lastDimensions = dimensions();
