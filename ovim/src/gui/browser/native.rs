@@ -88,6 +88,12 @@ impl BrowserHost {
                             );
                         }
                     }
+                } else if let Some(event) = external_new_tab_event(&command_session_id, &url) {
+                    let _ = command_parent.emit_to(
+                        EventTarget::webview("main"),
+                        "ovim://browser-key",
+                        event,
+                    );
                 }
                 NewWindowResponse::Deny
             })
@@ -352,6 +358,15 @@ impl BrowserHost {
             browser.reset_to_unloaded();
         }
     }
+}
+
+pub(super) fn external_new_tab_event(session_id: &str, url: &Url) -> Option<GuiBrowserKeyEvent> {
+    allowed_browser_url(url).then(|| GuiBrowserKeyEvent {
+        session_id: session_id.to_string(),
+        intent: GuiBrowserKeyIntent::NewTab,
+        count: 1,
+        url: Some(url.to_string()),
+    })
 }
 
 fn update_key_mode(

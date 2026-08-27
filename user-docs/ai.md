@@ -83,13 +83,15 @@ outside an editable page field to open the Browser command line. It supports
 commands are contextual: `:w` reports that writing is unavailable instead of
 saving a hidden editor buffer.
 
-Browser tabs also have a Vimium-inspired Normal mode. These keys never capture
-ordinary typing in an input, textarea, select, contenteditable region, ARIA
-textbox, or conservatively detected custom-element editor. Press `i` to pass
-all page keys through explicitly; `Esc` returns to Normal mode. The **Vim
+Browser tabs also have a Vimium-inspired Normal mode. Focusing an input,
+textarea, select, contenteditable region, or ARIA editor enters Insert mode so
+ordinary typing passes through to the page. Press `i` to enter Insert mode
+explicitly; `Esc` blurs the active editor and returns to Normal mode. The **Vim
 keys** control in the browser toolbar disables or reenables unmodified page
 bindings for that tab. Native application shortcuts remain available while
-page bindings are off.
+page bindings are off. Links and page popups that request a new webview open as
+another Ovim Browser tab when their destination passes the same HTTP(S) URL
+policy.
 
 | Keys | Browser action |
 | --- | --- |

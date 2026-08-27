@@ -1,5 +1,6 @@
 use super::super::bridge::BrowserKeyRequest;
 use super::super::document::{SnapshotPayload, MAX_SNAPSHOT_TEXT_BYTES};
+use super::super::native::external_new_tab_event;
 use super::*;
 
 #[test]
@@ -27,6 +28,8 @@ fn scripts_keep_snapshot_and_action_surfaces_bounded() {
     assert!(KEY_BRIDGE_SCRIPT.contains("event.isTrusted"));
     assert!(KEY_BRIDGE_SCRIPT.contains("deepActiveElement"));
     assert!(KEY_BRIDGE_SCRIPT.contains("searchbox"));
+    assert!(KEY_BRIDGE_SCRIPT.contains("focusin"));
+    assert!(KEY_BRIDGE_SCRIPT.contains("activePageEditable"));
     assert!(KEY_BRIDGE_SCRIPT.contains("passNextKeys"));
     assert!(!KEY_BRIDGE_SCRIPT.contains("tagName.includes(\"-\")"));
     assert!(!KEY_BRIDGE_SCRIPT.contains("__TAURI_INTERNALS__"));
@@ -124,6 +127,27 @@ fn browser_command_bridge_requires_its_per_webview_token() {
     assert!(find.contains(token));
     assert!(find.contains("run"));
     assert!(find.contains("find"));
+}
+
+#[test]
+fn credential_free_web_popups_become_ovim_tabs() {
+    let event = external_new_tab_event(
+        "browser-3",
+        &Url::parse("https://example.com/docs").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(event.session_id, "browser-3");
+    assert_eq!(event.intent, GuiBrowserKeyIntent::NewTab);
+    assert_eq!(event.count, 1);
+    assert_eq!(event.url.as_deref(), Some("https://example.com/docs"));
+
+    for blocked in [
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "https://user:secret@example.com/",
+    ] {
+        assert!(external_new_tab_event("browser-3", &Url::parse(blocked).unwrap()).is_none());
+    }
 }
 
 #[test]

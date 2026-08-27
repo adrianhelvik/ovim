@@ -56,10 +56,11 @@ cannot invoke Tauri commands or control Ovim directly.
 The injected key bridge is split by concern under `browser/key_bridge/` and is
 initialized in every frame. It synchronizes only the per-tab enabled and
 Normal/Insert state across frames; the per-webview command token never enters
-that message channel. Editable fields pass ordinary keys through, `i` enters an
-explicit Insert mode, and `Esc` returns to Normal mode. The toolbar toggle
-disables unmodified Vim-style keys for that tab without disabling native app
-shortcuts such as `Cmd/Ctrl+W`, `Cmd/Ctrl+T`, or `Cmd/Ctrl+L`.
+that message channel. Focusing an editable field enters Insert mode
+automatically, `i` enters it explicitly, and `Esc` blurs an editable and returns
+to Normal mode. The toolbar toggle disables unmodified Vim-style keys for that
+tab without disabling native app shortcuts such as `Cmd/Ctrl+W`, `Cmd/Ctrl+T`,
+or `Cmd/Ctrl+L`.
 
 The AI browser tools are advertised only when this live host is attached and
 the active chat profile sets `scope_network = true`; the built-in `codex_sol`

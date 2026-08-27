@@ -11,7 +11,7 @@
     ["J / K", "previous / next tab"],
     ["gt / gT", "next / previous tab"],
     ["g0 / g$", "first / last tab"],
-    ["gi", "focus an input"],
+    ["gi", "focus an input and enter Insert mode"],
     ["/ · n / N", "find · next / previous"],
     ["yy", "copy page address"],
     ["i / Esc", "Insert / Normal mode"],

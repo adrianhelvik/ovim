@@ -77,7 +77,12 @@
     return count;
   };
 
-  const editableRoles = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
+  const editableRoles = new Set([
+    "textbox",
+    "searchbox",
+    "combobox",
+    "spinbutton",
+  ]);
   const editableElement = node =>
     node instanceof HTMLElement &&
     (node.isContentEditable ||
@@ -93,6 +98,21 @@
   const editableInPath = event =>
     event.composedPath().some(editableElement) ||
     editableElement(deepActiveElement());
+  const overlayInPath = event =>
+    event
+      .composedPath()
+      .some(
+        node =>
+          node instanceof HTMLElement &&
+          Boolean(node.dataset.ovimBrowserOverlay),
+      );
+  const activePageEditable = () => {
+    const active = deepActiveElement();
+    return (
+      editableElement(active) &&
+      !active?.closest?.("[data-ovim-browser-overlay]")
+    );
+  };
 
   const removeHints = () => {
     hintSession?.host.remove();
@@ -170,11 +190,41 @@
       },
       run(controlToken, action) {
         if (controlToken !== commandToken) return;
-        if (action === "find") showFind();
+        if (action === "find") {
+          requestMode("normal");
+          showFind();
+        }
       },
     }),
     writable: false,
   });
+
+  document.addEventListener(
+    "focusin",
+    event => {
+      if (
+        sharedState.enabled &&
+        !overlayInPath(event) &&
+        editableInPath(event)
+      )
+        requestMode("insert");
+    },
+    true,
+  );
+  document.addEventListener(
+    "focusout",
+    () => {
+      queueMicrotask(() => {
+        if (
+          sharedState.enabled &&
+          sharedState.mode === "insert" &&
+          !activePageEditable()
+        )
+          requestMode("normal");
+      });
+    },
+    true,
+  );
 
   const scrollContainer = () => {
     let candidate =

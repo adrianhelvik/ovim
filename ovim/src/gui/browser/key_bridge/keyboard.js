@@ -189,6 +189,7 @@
       if (sharedState.mode === "insert") {
         if (event.key === "Escape") {
           prevent(event);
+          if (activePageEditable()) deepActiveElement()?.blur();
           requestMode("normal");
         }
         return;
