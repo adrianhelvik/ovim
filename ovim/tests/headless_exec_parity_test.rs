@@ -21,6 +21,16 @@ fn exec(test: &mut EditorTest, command: &str) -> CommandResult {
     InputHandler::execute_command_api(&mut test.editor, command)
 }
 
+#[test]
+fn exec_terminal_rejects_an_unattached_interactive_session() {
+    let mut test = EditorTest::new("text");
+
+    let result = exec(&mut test, "terminal");
+
+    assert_error(&result, ":terminal");
+    assert!(test.editor.take_pending_terminal_session().is_none());
+}
+
 fn assert_success(result: &CommandResult, ctx: &str) {
     assert!(
         matches!(result, CommandResult::Success(_)),

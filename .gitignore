@@ -9,5 +9,6 @@
 /benchmarks/*.txt
 /benchmarks/*.rs
 .claude
+/.impeccable
 .mcp.json
 .DS_Store

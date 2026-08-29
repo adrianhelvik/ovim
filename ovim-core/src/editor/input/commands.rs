@@ -446,6 +446,9 @@ pub fn execute_command_string_api(editor: &mut Editor, command: &str) -> Command
     editor.set_status_message(String::new());
     match execute_command_string(editor, command) {
         Ok(()) => {
+            if editor.take_pending_terminal_session().is_some() {
+                return err("Interactive terminal sessions require the TUI frontend");
+            }
             let status = editor.status_message().trim().to_string();
             if status.is_empty() {
                 ok_silent()
@@ -482,7 +485,7 @@ fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
     // Handle command chaining with |
     // BUG FIX: Don't split on | for substitute, global, or vglobal commands
     // because | can appear in patterns like :s/foo|bar/baz/
-    if command.contains('|') && !is_command_with_pattern(command) {
+    if command.contains('|') && !command_owns_bar(command) {
         // Simple split for non-substitute commands
         for part in command.split('|') {
             let part = part.trim();
@@ -496,26 +499,59 @@ fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
     execute_command_single(editor, command)
 }
 
-/// Helper: Check if command contains patterns that may include | characters.
-/// Returns true for substitute (:s), global (:g), and vglobal (:v) commands.
+/// Whether `|` belongs to this command's payload instead of separating Ex
+/// commands. Shell/terminal commands own their complete tail; pattern commands
+/// may contain a bar in their pattern.
 ///
-/// We strip leading range characters (digits, commas, %, ., $, ', <, >) then
-/// check if the command part starts with s/, g/, g!/, or v/.  This avoids
+/// We strip leading range characters (digits, commas, %, ., $, ', <, >) before
+/// recognizing filter/read/write shell forms and pattern commands. This avoids
 /// false positives on commands like `:e files/foo | set number`.
-fn is_command_with_pattern(command: &str) -> bool {
+fn command_owns_bar(command: &str) -> bool {
     let trimmed = command.trim();
+    if parse_terminal_session(trimmed).is_some() {
+        return true;
+    }
     // Skip past range prefix: digits, commas, %, ., $, ', <, >, +, -, spaces
     let cmd = trimmed.trim_start_matches(|c: char| c.is_ascii_digit() || ",%.$ '<>+-".contains(c));
-    cmd.starts_with("s/")
+    cmd.starts_with('!')
+        || ["r !", "read !", "w !", "write !"]
+            .iter()
+            .any(|prefix| cmd.starts_with(prefix))
+        || cmd.starts_with("s/")
         || cmd.starts_with("g/")
         || cmd.starts_with("g!/")
         || cmd.starts_with("v/")
+}
+
+/// Parse commands that request an interactive shell owned by the active
+/// frontend. `:term` is the conventional abbreviation; `:shell` exposes the
+/// same external-session behavior without pretending this is an embedded
+/// terminal buffer.
+fn parse_terminal_session(command: &str) -> Option<Option<String>> {
+    for name in ["terminal", "term", "shell"] {
+        if command == name {
+            return Some(None);
+        }
+        if let Some(rest) = command.strip_prefix(name) {
+            if rest.starts_with(char::is_whitespace) {
+                let command = rest.trim();
+                return Some((!command.is_empty()).then(|| command.to_string()));
+            }
+        }
+    }
+    None
 }
 
 /// Execute a single command (no chaining)
 fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // Update the : register with the command
     editor.registers_mut().set_last_command(command.to_string());
+
+    if let Some(command) = parse_terminal_session(command) {
+        editor.build.pending_terminal_session =
+            Some(crate::editor::PendingTerminalSession { command });
+        return Ok(());
+    }
 
     // Intercept plain :!cmd in TUI mode — queue for the event loop so it
     // runs with full terminal access (outside alternate screen).

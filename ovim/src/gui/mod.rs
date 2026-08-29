@@ -1211,6 +1211,11 @@ async fn run_editor(
                     break;
                 }
                 handle_request(request, &mut editor, &mut dimensions, &mut revision).await;
+                let rejected_terminal = editor.take_pending_terminal_session().is_some();
+                let rejected_shell = editor.take_pending_shell_command().is_some();
+                if rejected_terminal || rejected_shell {
+                    editor.set_status_message("External shell sessions require the TUI frontend".to_string());
+                }
                 publish_if_changed(
                     &editor,
                     &mut revision,

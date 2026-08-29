@@ -27,6 +27,109 @@ fn test_shell_command_echo() {
 }
 
 #[test]
+fn terminal_command_preserves_shell_pipeline() {
+    let mut test = EditorTest::new("hello world\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "terminal printf x | cat").unwrap();
+
+    let pending = test
+        .editor
+        .take_pending_terminal_session()
+        .expect(":terminal should own its complete command tail");
+    assert_eq!(pending.command.as_deref(), Some("printf x | cat"));
+}
+
+#[test]
+fn shell_pipeline_is_not_split_as_an_ex_command_chain() {
+    let mut test = EditorTest::new("hello world\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "!printf x | cat").unwrap();
+
+    let pending = test.editor.take_pending_shell_command().expect("pending");
+    assert_eq!(pending.command, "printf x | cat");
+}
+
+#[test]
+fn filter_pipeline_is_not_split_as_an_ex_command_chain() {
+    let mut test = EditorTest::new("hello world\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "%!printf 'second\\nfirst\\n' | sort")
+        .unwrap();
+
+    assert_eq!(test.buffer_content(), "first\nsecond\n");
+}
+
+#[test]
+fn read_pipeline_is_not_split_as_an_ex_command_chain() {
+    let mut test = EditorTest::new("first line\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "r !printf inserted | cat").unwrap();
+
+    assert_eq!(test.buffer_content(), "first line\ninserted\n");
+}
+
+#[test]
+fn read_shell_output_separates_an_unterminated_final_line() {
+    let mut test = EditorTest::new("first line");
+
+    InputHandler::execute_command_string(&mut test.editor, "r !printf inserted").unwrap();
+
+    assert_eq!(test.buffer_content(), "first line\ninserted\n");
+}
+
+#[test]
+fn terminal_queues_interactive_user_shell() {
+    let mut test = EditorTest::new("hello world\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "terminal").unwrap();
+
+    let pending = test
+        .editor
+        .take_pending_terminal_session()
+        .expect(":terminal should queue a session");
+    assert_eq!(pending.command, None);
+}
+
+#[test]
+fn shell_alias_queues_interactive_user_shell() {
+    let mut test = EditorTest::new("hello world\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "shell").unwrap();
+
+    let pending = test
+        .editor
+        .take_pending_terminal_session()
+        .expect(":shell should queue a session");
+    assert_eq!(pending.command, None);
+}
+
+#[test]
+fn term_queues_requested_command() {
+    let mut test = EditorTest::new("hello world\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "term cargo test").unwrap();
+
+    let pending = test
+        .editor
+        .take_pending_terminal_session()
+        .expect(":term should queue a session");
+    assert_eq!(pending.command.as_deref(), Some("cargo test"));
+}
+
+#[test]
+fn terminal_name_must_end_at_a_command_boundary() {
+    let mut test = EditorTest::new("hello world\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "terminally").unwrap();
+
+    assert!(test.editor.take_pending_terminal_session().is_none());
+    assert!(test
+        .editor
+        .status_message()
+        .contains("Not an editor command"));
+}
+
+#[test]
 fn test_shell_command_repeat_last() {
     let mut test = EditorTest::new("hello world\n");
 

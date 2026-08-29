@@ -22,6 +22,60 @@ fn emit_agent_attention_bell(output: &mut impl Write) -> io::Result<()> {
     output.flush()
 }
 
+fn configured_user_shell() -> std::ffi::OsString {
+    let variable = if cfg!(windows) { "COMSPEC" } else { "SHELL" };
+    std::env::var_os(variable)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "cmd.exe".into()
+            } else {
+                "/bin/sh".into()
+            }
+        })
+}
+
+/// Run an interactive shell (or terminal command) using the user's real
+/// terminal. This deliberately provides an external terminal session rather
+/// than claiming to create a PTY-backed editor buffer.
+fn execute_terminal_session(ui: &mut UI, editor: &mut Editor, command: Option<&str>) {
+    use std::process::{Command, Stdio};
+
+    if let Err(e) = ui.terminal_mut().suspend() {
+        editor.set_status_message(format!("Failed to suspend terminal: {e}"));
+        return;
+    }
+
+    let shell = configured_user_shell();
+    let mut child = Command::new(&shell);
+    if let Some(command) = command {
+        child
+            .arg(if cfg!(windows) { "/C" } else { "-c" })
+            .arg(command);
+    }
+    let status = child
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status();
+
+    if let Err(e) = ui.terminal_mut().resume() {
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!("Failed to resume terminal: {e}");
+        }
+    }
+    editor.mark_dirty();
+
+    match status {
+        Ok(status) if status.success() => editor.set_status_message(":terminal".to_string()),
+        Ok(status) => editor.set_status_message(format!("shell returned {status}")),
+        Err(e) => {
+            editor.set_status_message(format!("Failed to run {}: {e}", shell.to_string_lossy()))
+        }
+    }
+}
+
 fn emit_new_agent_attention(
     current: u64,
     observed_generation: &mut u64,
@@ -396,6 +450,9 @@ pub async fn run_event_loop(
         // Execute pending shell command with full terminal access
         if let Some(pending) = editor.take_pending_shell_command() {
             execute_shell_command(ui, editor, &pending.command);
+        }
+        if let Some(pending) = editor.take_pending_terminal_session() {
+            execute_terminal_session(ui, editor, pending.command.as_deref());
         }
 
         // Render after any select branch (if dirty)

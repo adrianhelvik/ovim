@@ -115,7 +115,7 @@ pub use ai_chat_state::{
 pub use ai_shell_process::{ShellInspectorView, ShellProcessPhase};
 pub use ai_state::{CodexAuthDialogPhase, CodexAuthDialogSummary};
 pub use ai_subagents::PreparedHeadlessAgentControl;
-pub use build_state::PendingShellCommand;
+pub use build_state::{PendingShellCommand, PendingTerminalSession};
 pub use code_explanation::{
     CodeExplanationCardLayout, CodeExplanationDiscussionView, CodeExplanationPageView,
     CodeExplanationView, ConceptExplanationCardLayout,
@@ -805,6 +805,11 @@ impl Editor {
     /// Take a pending shell command (if any) for the event loop to execute.
     pub fn take_pending_shell_command(&mut self) -> Option<build_state::PendingShellCommand> {
         self.build.pending_shell_command.take()
+    }
+
+    /// Take an interactive terminal session for the active frontend to run.
+    pub fn take_pending_terminal_session(&mut self) -> Option<build_state::PendingTerminalSession> {
+        self.build.pending_terminal_session.take()
     }
 
     /// Get the API server port.

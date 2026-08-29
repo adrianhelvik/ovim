@@ -187,8 +187,13 @@ pub(super) fn handle_read_shell_command(
                     format!("{}\n", output_text)
                 };
 
-                // Add newline prefix if inserting at end of file
-                let text = if insert_line >= editor.buffer().line_count() && insert_char > 0 {
+                // Separate appended output from an unterminated final line, but
+                // do not create a blank line when the buffer already ends in a
+                // newline.
+                let needs_line_break = insert_line >= editor.buffer().line_count()
+                    && insert_char > 0
+                    && editor.buffer().rope().char(insert_char - 1) != '\n';
+                let text = if needs_line_break {
                     format!("\n{}", text)
                 } else {
                     text

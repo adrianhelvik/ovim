@@ -17,4 +17,5 @@ ovim file.rs --headless --session dev       # Headless mode with named session
 - [Headless & Automation](headless.md) - Sessions, REST API, subcommands
 - [Language Support](LANGUAGE_SUPPORT.md) - LSP + syntax support and adding languages
 - [Options](options.md) - `:set` options reference (scrolling, wrap, clipboard, etc.)
+- [Terminal Sessions](terminal.md) - `:terminal`, `:term`, `:shell`, and `:!command`
 - [Troubleshooting](troubleshooting.md) - Common issues (sessions, LSP, dependencies)

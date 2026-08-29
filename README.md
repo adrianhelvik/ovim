@@ -268,6 +268,7 @@ Key modules:
 - [Configuration](user-docs/configuration.md)
 - [AI Setup](user-docs/ai.md)
 - [Headless & Automation](user-docs/headless.md)
+- [Terminal Sessions](user-docs/terminal.md)
 - [Language Support](user-docs/LANGUAGE_SUPPORT.md)
 - [Options Reference](user-docs/options.md)
 - [MCP](user-docs/MCP.md)

@@ -5,6 +5,16 @@ pub struct PendingShellCommand {
     pub command: String,
 }
 
+/// An interactive terminal session queued for a terminal-capable frontend.
+///
+/// `command` is `None` for the user's configured shell and `Some` for
+/// `:terminal {command}`. Unlike [`PendingShellCommand`], this session does not
+/// pause for an extra Enter after the child exits.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PendingTerminalSession {
+    pub command: Option<String>,
+}
+
 /// Grouped state for the build/test subsystem (`:make`, `<Space>t` test runs).
 #[derive(Default)]
 pub(crate) struct BuildState {
@@ -21,6 +31,8 @@ pub(crate) struct BuildState {
     pub(crate) last_make_output: Option<String>,
     /// Shell command waiting for the event loop to execute with terminal access
     pub(crate) pending_shell_command: Option<PendingShellCommand>,
+    /// Interactive shell waiting for a terminal-capable frontend.
+    pub(crate) pending_terminal_session: Option<PendingTerminalSession>,
     /// Last `:!` command (for bare `:!` repeat)
     pub(crate) last_shell_command: Option<String>,
 }
