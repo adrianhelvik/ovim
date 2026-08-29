@@ -1738,8 +1738,10 @@ fn execute_shell_command(cmd: &str) -> CommandResult {
 
 /// Handle :session start/stop/list commands
 ///
-/// `:session start NAME` — writes a session file so external tools can discover this instance
-/// `:session stop` — deletes the session file (API server keeps running for internal use)
+/// `:session start NAME` is retained as a clear migration error. Automation
+/// sessions must be explicit at process startup so ordinary TUI instances do
+/// not expose a latent network mutation surface.
+/// `:session stop` — removes a frontend-managed session registration
 /// `:session` or `:session list` — shows active sessions
 /// `:ai status` / `:ai env` — show active AI profile and env var diagnostics.
 fn handle_ai_status(editor: &mut Editor) -> CommandResult {
@@ -1918,7 +1920,7 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
                     let msg = if let Some(name) = editor.active_session() {
                         format!("Active session: {}", name)
                     } else {
-                        "No registered sessions. Use :session start NAME to register.".to_string()
+                        "No registered sessions. Start an explicit automation session with: ovim <file> --headless --session NAME".to_string()
                     };
                     ok(msg)
                 }
@@ -1964,7 +1966,9 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
             let port = match editor.api_port() {
                 Some(p) => p,
                 None => {
-                    return err("API server not running");
+                    return err(
+                        "Interactive sessions do not expose the automation API. Start one explicitly with: ovim <file> --headless --session NAME",
+                    );
                 }
             };
 
@@ -2439,7 +2443,7 @@ mod tests {
             let mut editor = Editor::new();
             let result = execute_command(&mut editor, &format!("session start {name}"));
             assert!(
-                matches!(result, CommandResult::Error(ref e) if e.error.contains("API server not running")),
+                matches!(result, CommandResult::Error(ref e) if e.error.contains("do not expose the automation API")),
                 "valid name {name:?} must pass validation, got: {result:?}"
             );
         }

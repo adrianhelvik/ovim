@@ -406,9 +406,9 @@ pub struct Editor {
     services: EditorServices,
     /// Deferred browser session request consumed by the async intent dispatcher.
     browser_start_pending: bool,
-    /// API server port (set during startup, used by :session start/stop)
+    /// API server port for an explicit headless automation session.
     api_port: Option<u16>,
-    /// Active session name (set by :session start, cleared by :session stop)
+    /// Active session name when a frontend registers one explicitly.
     active_session: Option<String>,
     /// Git branch name for the current file (if in a git repo)
     git_branch: Option<String>,

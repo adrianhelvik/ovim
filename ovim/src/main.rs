@@ -191,29 +191,6 @@ async fn main() -> Result<()> {
     // Initialize the Java status sender in the lsp_init module
     ovim::lsp_init::init_java_status_sender(java_status_tx);
 
-    // Set up API server (always start in both headless and UI modes)
-    let (tx, rx) = mpsc::channel(256);
-    let (port_tx, port_rx) = tokio::sync::oneshot::channel();
-
-    // Spawn API server in a separate task
-    let tx_clone = tx.clone();
-    tokio::spawn(async move {
-        if let Err(e) = ovim::api::start_server("127.0.0.1:0", tx_clone, port_tx).await {
-            ovim_core::lsp_error!("API", "API server error: {}", e);
-        }
-    });
-
-    // Wait for the server to start and get the actual port
-    let port = match port_rx.await {
-        Ok(port) => port,
-        Err(_) => {
-            ovim_core::lsp_error!("API", "Failed to receive port from API server");
-            return Err(anyhow::anyhow!("API server port channel closed"));
-        }
-    };
-
-    // Store API port in editor for :session start/stop commands
-    editor.set_api_port(port);
     let start_time = SystemTime::now();
 
     // Handle headless mode
@@ -239,6 +216,20 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         };
+
+        // Automation is an explicit headless capability. Interactive TUI
+        // processes never open a listener merely to support a later command.
+        let (tx, rx) = mpsc::channel(256);
+        let (port_tx, port_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            if let Err(e) = ovim::api::start_server("127.0.0.1:0", tx, port_tx).await {
+                ovim_core::lsp_error!("API", "API server error: {}", e);
+            }
+        });
+        let port = port_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("API server port channel closed"))?;
+        editor.set_api_port(port);
 
         let file_path = file_arg.map(|f| f.path);
         let headless_dimensions = dimension.unwrap_or((120, 35));
@@ -323,9 +314,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // TUI mode - no session registration by default
-    // The API server still runs for internal communication,
-    // but no session file is written. Users can opt in with :session start NAME.
+    // TUI mode is network-closed. Automation uses an explicit named headless
+    // session, which owns the lifetime of its loopback listener.
 
     // Install panic hook BEFORE entering raw mode so crashes restore the terminal
     // and leave a diagnostic trace in the log file.
@@ -338,12 +328,7 @@ async fn main() -> Result<()> {
         UI::new()?
     };
 
-    // Main event loop with TUI (now with API support)
-    event_loop::run_event_loop(&mut ui, &mut editor, Some(rx), java_status_rx, start_time).await?;
-
-    if let Some(name) = editor.take_active_session() {
-        let _ = SessionInfo::new(port, None, name).delete();
-    }
+    event_loop::run_event_loop(&mut ui, &mut editor, None, java_status_rx, start_time).await?;
 
     let code = editor.exit_code();
 
