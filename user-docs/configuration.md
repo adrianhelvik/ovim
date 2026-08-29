@@ -209,3 +209,5 @@ You can override this location by setting:
 `OVIM_SESSION_DIR=/path/to/dir`
 
 This affects session file reads/writes and cleanup.
+Ovim secures the selected directory for owner-only access on Unix because each
+named headless session descriptor contains its API bearer capability.

@@ -10,16 +10,60 @@
 #![allow(clippy::print_stderr)]
 
 use anyhow::{Context, Result};
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{Duration, SystemTime};
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+fn ensure_private_directory(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .context("Failed to secure session directory")?;
+    Ok(())
+}
 
 /// Information about a running headless session
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct SessionCapability(String);
+
+impl SessionCapability {
+    /// Generate a 256-bit capability from the operating system CSPRNG.
+    pub fn generate() -> Self {
+        let mut bytes = [0_u8; 32];
+        OsRng.fill_bytes(&mut bytes);
+        let mut encoded = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            use fmt::Write as _;
+            write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        Self(encoded)
+    }
+
+    /// Expose the capability only at an authenticated transport boundary.
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_configured(&self) -> bool {
+        !self.0.is_empty()
+    }
+}
+
+impl fmt::Debug for SessionCapability {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SessionCapability(<redacted>)")
+    }
+}
+
+/// Information about a running headless session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     /// Process ID of the ovim instance
@@ -36,6 +80,12 @@ pub struct SessionInfo {
 
     /// Session name (default: "default")
     pub session_name: String,
+
+    /// Bearer capability for this session's loopback automation API.
+    ///
+    /// The descriptor is owner-private. Debug output is always redacted.
+    #[serde(default)]
+    pub capability: SessionCapability,
 
     /// Whether LSP is ready
     pub lsp_ready: bool,
@@ -68,6 +118,7 @@ impl SessionInfo {
             file,
             started_at,
             session_name,
+            capability: SessionCapability::generate(),
             lsp_ready: false,
             start_time,
             viewport_width: None,
@@ -78,6 +129,11 @@ impl SessionInfo {
     pub fn with_dimensions(mut self, width: u16, height: u16) -> Self {
         self.viewport_width = Some(width);
         self.viewport_height = Some(height);
+        self
+    }
+
+    pub fn with_capability(mut self, capability: SessionCapability) -> Self {
+        self.capability = capability;
         self
     }
 
@@ -95,14 +151,14 @@ impl SessionInfo {
     pub fn session_dir() -> Result<PathBuf> {
         if let Ok(dir) = std::env::var("OVIM_SESSION_DIR") {
             let session_dir = PathBuf::from(dir);
-            fs::create_dir_all(&session_dir)?;
+            ensure_private_directory(&session_dir)?;
             return Ok(session_dir);
         }
 
         let cache_dir = dirs::cache_dir().context("Failed to get cache directory")?;
 
         let session_dir = cache_dir.join("ovim").join("sessions");
-        fs::create_dir_all(&session_dir)?;
+        ensure_private_directory(&session_dir)?;
 
         Ok(session_dir)
     }
@@ -133,41 +189,51 @@ impl SessionInfo {
         use std::io::Write;
 
         Self::validate_session_name(&self.session_name)?;
-        fs::create_dir_all(session_dir)?;
+        ensure_private_directory(session_dir)?;
         let path = self.session_file_path_in(session_dir);
         let json = serde_json::to_string_pretty(self)?;
 
-        // Use atomic write: write to temp file, then rename
-        let temp_path = path.with_extension("tmp");
+        let (temp_path, mut temp_file) = (0..8)
+            .find_map(|_| {
+                let nonce = OsRng.next_u64();
+                let temp_path = session_dir.join(format!(".{}.{}.tmp", self.session_name, nonce));
+                let mut options = fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                options.mode(0o600);
+                match options.open(&temp_path) {
+                    Ok(file) => Some(Ok((temp_path, file))),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .transpose()
+            .context("Failed to create private session staging file")?
+            .context("Failed to allocate a unique session staging file")?;
 
-        // Write to temporary file
-        let mut temp_file =
-            fs::File::create(&temp_path).context("Failed to create temporary session file")?;
-
-        // SECURITY: Set restrictive permissions (0o600 = rw-------) to prevent information
-        // disclosure on multi-user systems. Session files contain sensitive data like port
-        // numbers and file paths that should only be readable by the owner.
-        #[cfg(unix)]
-        {
-            let mut perms = temp_file.metadata()?.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(&temp_path, perms)?;
+        let staged = (|| -> Result<()> {
+            temp_file
+                .write_all(json.as_bytes())
+                .context("Failed to write to temporary session file")?;
+            temp_file
+                .flush()
+                .context("Failed to flush temporary session file")?;
+            temp_file
+                .sync_all()
+                .context("Failed to sync session file to disk")?;
+            Ok(())
+        })();
+        if let Err(error) = staged {
+            drop(temp_file);
+            let _ = fs::remove_file(&temp_path);
+            return Err(error);
         }
+        drop(temp_file);
 
-        temp_file
-            .write_all(json.as_bytes())
-            .context("Failed to write to temporary session file")?;
-        temp_file
-            .flush()
-            .context("Failed to flush temporary session file")?;
-
-        // Ensure data is written to disk before atomic rename to prevent data loss on crash
-        temp_file
-            .sync_all()
-            .context("Failed to sync session file to disk")?;
-
-        // Atomically replace the old file with the new one
-        fs::rename(&temp_path, &path).context("Failed to rename session file")?;
+        if let Err(error) = fs::rename(&temp_path, &path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error).context("Failed to rename session file");
+        }
 
         Ok(())
     }
@@ -538,7 +604,8 @@ impl CleanupResult {
 /// 2. API health endpoint - ensures the process is actually functional
 ///
 /// **Why we clean up temp files:**
-/// During atomic writes, we create temp.tmp then rename to session.json.
+/// During atomic writes, we create a unique hidden `.tmp` file and rename it
+/// to the session descriptor.
 /// If the process crashes between these steps, temp files are orphaned.
 /// We only clean up old temp files (>1 hour) to avoid racing with active writers.
 ///
@@ -875,6 +942,62 @@ mod tests {
             .expect("64-char name must be readable after creation");
         assert_eq!(read.session_name, name);
         assert_eq!(read.file.as_deref(), Some("max.txt"));
+        assert_eq!(read.capability, info.capability);
+        assert!(read.capability.is_configured());
+
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                fs::metadata(session_dir.path())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(info.session_file_path_in(session_dir.path()))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn generated_capability_is_random_256_bit_hex_and_debug_redacted() {
+        let first = SessionCapability::generate();
+        let second = SessionCapability::generate();
+
+        assert_eq!(first.expose_secret().len(), 64);
+        assert!(first
+            .expose_secret()
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+        assert_eq!(format!("{first:?}"), "SessionCapability(<redacted>)");
+
+        let mut session = SessionInfo::new(1, None, "test".into());
+        session.capability = first.clone();
+        assert!(!format!("{session:?}").contains(first.expose_secret()));
+    }
+
+    #[test]
+    fn legacy_descriptor_without_capability_is_readable_but_unconfigured() {
+        let descriptor = r#"{
+            "pid": 1,
+            "port": 1234,
+            "file": null,
+            "started_at": 0,
+            "session_name": "legacy",
+            "lsp_ready": false,
+            "start_time": null
+        }"#;
+
+        let session: SessionInfo = serde_json::from_str(descriptor).unwrap();
+        assert!(!session.capability.is_configured());
     }
 
     #[test]

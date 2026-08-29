@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ovim::session::{cleanup_stale_sessions_in, SessionInfo};
+use ovim::session::{cleanup_stale_sessions_in, SessionCapability, SessionInfo};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -25,6 +25,7 @@ fn create_fake_session(
         file: Some(format!("test_{}.txt", name)),
         started_at,
         session_name: name.to_string(),
+        capability: SessionCapability::default(),
         lsp_ready: false,
         start_time: None, // No start time = stale
         viewport_width: None,
@@ -68,6 +69,7 @@ fn test_cleanup_stale_sessions() -> Result<()> {
             .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs(),
         session_name: "stale_test1".to_string(),
+        capability: SessionCapability::default(),
         lsp_ready: false,
         start_time: None,
         viewport_width: None,
@@ -82,6 +84,7 @@ fn test_cleanup_stale_sessions() -> Result<()> {
             .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs(),
         session_name: "stale_test2".to_string(),
+        capability: SessionCapability::default(),
         lsp_ready: false,
         start_time: None,
         viewport_width: None,
@@ -152,6 +155,7 @@ fn test_cleanup_expired_sessions() -> Result<()> {
         file: Some("old.txt".to_string()),
         started_at,
         session_name: "expired_test".to_string(),
+        capability: SessionCapability::default(),
         lsp_ready: false,
         start_time: None,
         viewport_width: None,
@@ -231,6 +235,7 @@ fn test_cleanup_dry_run() -> Result<()> {
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs(),
             session_name: session_name.clone(),
+            capability: SessionCapability::default(),
             lsp_ready: false,
             start_time: None,
             viewport_width: None,
@@ -291,6 +296,7 @@ fn test_session_is_expired() -> Result<()> {
         file: None,
         started_at,
         session_name: "test".to_string(),
+        capability: SessionCapability::default(),
         lsp_ready: false,
         start_time: None,
         viewport_width: None,
@@ -328,6 +334,7 @@ fn test_session_age() -> Result<()> {
         file: None,
         started_at,
         session_name: "test".to_string(),
+        capability: SessionCapability::default(),
         lsp_ready: false,
         start_time: None,
         viewport_width: None,

@@ -178,7 +178,8 @@ See [Configuration](user-docs/configuration.md) and [Options Reference](user-doc
 
 ## Headless Mode & Automation
 
-ovim can run without a terminal — as a programmable text engine with a REST API.
+ovim can run without a terminal — as a programmable text engine with an
+authenticated loopback REST API. Ordinary TUI sessions open no API listener.
 
 ```bash
 # Start a headless session
@@ -193,7 +194,10 @@ ovim context -s dev          # 21-line window around cursor
 
 ### REST API
 
-Every session exposes an HTTP server:
+Every explicit headless session exposes an HTTP server. Ovim's CLI reads the
+owner-private session descriptor and authenticates automatically. Custom HTTP
+clients must send its `capability` value as `Authorization: Bearer <capability>`;
+never log, commit, or share that value.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|

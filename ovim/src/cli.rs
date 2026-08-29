@@ -20,7 +20,7 @@ pub struct Cli {
     /// File or directory to open (files support FILE:LINE:COL syntax)
     pub file: Option<String>,
 
-    /// Run in headless mode with REST API enabled (no TUI)
+    /// Run with an authenticated loopback REST API and no TUI
     #[arg(long)]
     pub headless: bool,
 

@@ -1,6 +1,8 @@
 # Headless & Automation
 
-Headless mode is designed for tests, CI, and automation. It runs ovim without the TUI and exposes a local API.
+Headless mode is designed for tests, CI, and automation. It runs ovim without
+the TUI and exposes an authenticated loopback API. Ordinary interactive TUI
+sessions do not open an API listener.
 
 ## Start a Session
 
@@ -11,6 +13,11 @@ ovim path/to/file.rs --headless --session dev --dimension 100x30
 The logical viewport is initialized before the API starts accepting input.
 Motions, wrapping, scrolling, snapshots, and renders therefore use the same
 dimensions. Change it later with `ovim resize -s dev 120x40`.
+
+At startup, Ovim creates a cryptographically random bearer capability in the
+owner-private session descriptor. Built-in `ovim` commands and the MCP stdio
+broker read and use it automatically. Treat the descriptor like a credential:
+do not copy it into logs, bug reports, shell history, or a repository.
 
 ## Inspect and Control Sessions
 
@@ -123,6 +130,10 @@ Session files are JSON and live in:
 - macOS: `~/Library/Caches/ovim/sessions`
 - Linux: `~/.cache/ovim/sessions`
 
+The directory is owner-only on Unix and each descriptor is created with mode
+`0600`. A descriptor contains the session's port, process metadata, active file
+path, and bearer capability.
+
 Override with:
 
 ```bash
@@ -160,3 +171,9 @@ When headless, ovim exposes endpoints like:
 - `GET /lines`
 
 Use `ovim snapshot -s <name>` instead of calling the API directly unless you need custom tooling.
+
+For custom tooling, read both `port` and `capability` from the named session
+descriptor and send `Authorization: Bearer <capability>` on every request.
+Requests with a missing/wrong capability, an unexpected Host, or any browser
+Origin are rejected. The API intentionally has no browser CORS mode or remote
+bind mode.

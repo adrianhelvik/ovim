@@ -22,6 +22,7 @@ struct DiagnosticsInfo {
 
 struct DiagnosticSession {
     port: u16,
+    capability: String,
     session_name: String,
     process: Child,
 }
@@ -59,6 +60,7 @@ impl DiagnosticSession {
         #[derive(Debug, Deserialize)]
         struct SessionInfo {
             port: u16,
+            capability: String,
         }
 
         let session_json =
@@ -68,6 +70,7 @@ impl DiagnosticSession {
 
         Ok(Self {
             port: info.port,
+            capability: info.capability,
             session_name,
             process,
         })
@@ -136,6 +139,7 @@ edition = "2024"
     for _ in 0..60 {
         let response = client
             .get(&url)
+            .bearer_auth(&session.capability)
             .send()
             .await
             .context("GET /diagnostics")?

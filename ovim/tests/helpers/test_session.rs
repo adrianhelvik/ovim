@@ -47,6 +47,7 @@ use tempfile::NamedTempFile;
 pub struct TestSession {
     pub name: String,
     pub port: u16,
+    capability: String,
     process: Child,
     _temp_file: NamedTempFile,
 }
@@ -85,6 +86,7 @@ impl TestSession {
             Ok(session_info) => Ok(Self {
                 name: session_name,
                 port: session_info.port,
+                capability: session_info.capability.expose_secret().to_string(),
                 process,
                 _temp_file: temp_file,
             }),
@@ -110,7 +112,10 @@ impl TestSession {
 
     /// Helper: GET request returning JSON value
     pub async fn get_json(&self, path: &str) -> Result<serde_json::Value> {
-        let resp = reqwest::get(&self.url(path))
+        let resp = reqwest::Client::new()
+            .get(self.url(path))
+            .bearer_auth(&self.capability)
+            .send()
             .await
             .context("GET request failed")?;
 
@@ -129,6 +134,7 @@ impl TestSession {
     ) -> Result<serde_json::Value> {
         let resp = reqwest::Client::new()
             .post(&self.url(path))
+            .bearer_auth(&self.capability)
             .json(&body)
             .send()
             .await
@@ -147,6 +153,7 @@ impl TestSession {
     pub async fn put_json(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
         let resp = reqwest::Client::new()
             .put(&self.url(path))
+            .bearer_auth(&self.capability)
             .json(&body)
             .send()
             .await
@@ -192,7 +199,12 @@ async fn wait_for_session(name: &str, timeout: Duration) -> Result<SessionInfo> 
                         // Verify server is responding
                         let health_url = format!("http://127.0.0.1:{}/v1/health", info.port);
 
-                        if let Ok(resp) = reqwest::get(&health_url).await {
+                        if let Ok(resp) = reqwest::Client::new()
+                            .get(&health_url)
+                            .bearer_auth(info.capability.expose_secret())
+                            .send()
+                            .await
+                        {
                             if resp.status().is_success() {
                                 return Ok(info);
                             }

@@ -610,6 +610,7 @@ async fn forward_tool_call_to_session(
     })?;
     let response = client
         .post(format!("http://127.0.0.1:{}/v1/mcp", session.port))
+        .bearer_auth(session.capability.expose_secret())
         .json(&json!({
             "jsonrpc": "2.0",
             "id": "ovim-session-forward",

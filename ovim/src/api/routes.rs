@@ -13,7 +13,7 @@ use axum::{
 };
 
 /// Create the API router with all routes
-pub fn create_router(state: ApiState) -> Router {
+pub(crate) fn create_router(state: ApiState) -> Router {
     // V1 API routes (current stable API)
     let v1_routes = Router::new()
         .route("/health", get(get_health))

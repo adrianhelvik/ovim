@@ -2,10 +2,10 @@ mod handlers;
 pub mod mcp;
 mod mcp_handler;
 mod routes;
+mod security;
 mod state;
 
 pub use mcp::{get_resources, get_tools, JsonRpcRequest, JsonRpcResponse};
-pub use routes::create_router;
 pub use state::{
     format_context_window, parse_key_string, AgentArtifactHandle, AgentArtifactsResponse,
     AgentControlPlaneSnapshot, AgentControlResponse, AgentControlTarget, AgentEventsResponse,
@@ -25,6 +25,8 @@ use axum::{
     middleware::{self, Next},
     response::Response,
 };
+use ovim_core::session::SessionCapability;
+use routes::create_router;
 use tokio::sync::mpsc;
 
 /// Middleware to add deprecation warning for unversioned API routes
@@ -64,12 +66,24 @@ pub async fn start_server(
     addr: &str,
     tx: mpsc::Sender<ApiRequest>,
     port_tx: tokio::sync::oneshot::Sender<u16>,
+    capability: SessionCapability,
 ) -> Result<()> {
-    let state = ApiState::new(tx);
-    let app = create_router(state).layer(middleware::from_fn(deprecation_middleware));
-
+    anyhow::ensure!(
+        capability.is_configured(),
+        "automation API requires a configured session capability"
+    );
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let actual_addr = listener.local_addr()?;
+    anyhow::ensure!(
+        actual_addr.ip().is_loopback(),
+        "automation API must bind to a loopback address"
+    );
+    let security = security::ApiSecurity::new(capability, actual_addr.port());
+    let state = ApiState::new(tx);
+    let app = security::secure_router(
+        create_router(state).layer(middleware::from_fn(deprecation_middleware)),
+        security,
+    );
 
     // Log to LSP log file instead of stderr to avoid garbling TUI output
     ovim_core::lsp_info!("API", "REST API server listening on http://{}", actual_addr);

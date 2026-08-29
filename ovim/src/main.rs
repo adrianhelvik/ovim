@@ -9,7 +9,7 @@ use anyhow::Result;
 use ovim::cli::Cli;
 use ovim::editor::Editor;
 use ovim::mode::Mode;
-use ovim::session::{SessionGuard, SessionInfo};
+use ovim::session::{SessionCapability, SessionGuard, SessionInfo};
 use ovim::subcommands;
 use ovim::ui::UI;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -221,8 +221,12 @@ async fn main() -> Result<()> {
         // processes never open a listener merely to support a later command.
         let (tx, rx) = mpsc::channel(256);
         let (port_tx, port_rx) = tokio::sync::oneshot::channel();
+        let capability = SessionCapability::generate();
+        let server_capability = capability.clone();
         tokio::spawn(async move {
-            if let Err(e) = ovim::api::start_server("127.0.0.1:0", tx, port_tx).await {
+            if let Err(e) =
+                ovim::api::start_server("127.0.0.1:0", tx, port_tx, server_capability).await
+            {
                 ovim_core::lsp_error!("API", "API server error: {}", e);
             }
         });
@@ -234,6 +238,7 @@ async fn main() -> Result<()> {
         let file_path = file_arg.map(|f| f.path);
         let headless_dimensions = dimension.unwrap_or((120, 35));
         let session_info = SessionInfo::new(port, file_path, session_name.clone())
+            .with_capability(capability)
             .with_dimensions(headless_dimensions.0, headless_dimensions.1);
 
         if let Err(e) = session_info.write() {

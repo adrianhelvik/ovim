@@ -95,7 +95,7 @@ workspace_context(
 Suggested output:
 
 ```text
-Workspace: /Users/adrian/Projects/example
+Workspace: /workspace/example
 Branch: feature/billing
 Git: 4 modified, 1 untracked
 

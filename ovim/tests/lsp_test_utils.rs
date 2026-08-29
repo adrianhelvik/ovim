@@ -59,6 +59,7 @@ pub struct RenderInfo {
 pub struct OvimTestSession {
     pub port: u16,
     pub session_name: String,
+    capability: String,
     process: Child,
 }
 
@@ -90,6 +91,7 @@ impl OvimTestSession {
         #[derive(Deserialize)]
         struct SessionInfo {
             port: u16,
+            capability: String,
         }
         let info: SessionInfo =
             serde_json::from_str(&session_json).context("Failed to parse session info")?;
@@ -97,6 +99,7 @@ impl OvimTestSession {
         let session = Self {
             port: info.port,
             session_name,
+            capability: info.capability,
             process,
         };
 
@@ -150,6 +153,7 @@ impl OvimTestSession {
 
         let response = client
             .post(&url)
+            .bearer_auth(&self.capability)
             .json(&SendKeysRequest {
                 keys: keys.to_string(),
             })
@@ -171,6 +175,7 @@ impl OvimTestSession {
 
         let snapshot = client
             .get(&url)
+            .bearer_auth(&self.capability)
             .send()
             .await
             .context("Failed to get snapshot")?
@@ -188,6 +193,7 @@ impl OvimTestSession {
 
         let render = client
             .get(&url)
+            .bearer_auth(&self.capability)
             .send()
             .await
             .context("Failed to get render")?
@@ -205,6 +211,7 @@ impl OvimTestSession {
 
         let status = client
             .get(&url)
+            .bearer_auth(&self.capability)
             .send()
             .await
             .context("Failed to get LSP status")?

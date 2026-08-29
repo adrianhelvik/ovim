@@ -4,6 +4,7 @@
 #![allow(clippy::print_stderr)]
 
 use anyhow::{Context, Result};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde_json::{json, Value};
 
 use crate::api::{
@@ -19,6 +20,19 @@ pub struct OvimClient {
 }
 
 impl OvimClient {
+    fn authenticated_client(session: &SessionInfo) -> reqwest::blocking::Client {
+        let mut headers = HeaderMap::new();
+        let mut authorization =
+            HeaderValue::from_str(&format!("Bearer {}", session.capability.expose_secret()))
+                .expect("session capabilities contain only HTTP header-safe hex digits");
+        authorization.set_sensitive(true);
+        headers.insert(AUTHORIZATION, authorization);
+        reqwest::blocking::Client::builder()
+            .default_headers(headers)
+            .build()
+            .expect("failed to construct session HTTP client")
+    }
+
     fn ensure_success(response: reqwest::blocking::Response, action: &str) -> Result<Value> {
         let status = response.status();
         let body = response.text().context("Failed to read response")?;
@@ -34,15 +48,17 @@ impl OvimClient {
     pub fn new(session: &SessionInfo) -> Self {
         Self {
             base_url: format!("http://127.0.0.1:{}", session.port),
-            client: reqwest::blocking::Client::new(),
+            client: Self::authenticated_client(session),
         }
     }
 
-    /// Create a client from a port number directly
-    pub fn from_port(port: u16) -> Self {
+    /// Create a client from explicit session coordinates.
+    pub fn from_port(port: u16, capability: &ovim_core::session::SessionCapability) -> Self {
+        let session = SessionInfo::new(port, None, "direct-client".into())
+            .with_capability(capability.clone());
         Self {
             base_url: format!("http://127.0.0.1:{}", port),
-            client: reqwest::blocking::Client::new(),
+            client: Self::authenticated_client(&session),
         }
     }
 
