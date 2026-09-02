@@ -547,6 +547,9 @@ async fn poll_background_tasks(editor: &mut Editor) {
     if editor.poll_git_refresh() {
         editor.mark_dirty();
     }
+    if editor.poll_git_fetch() {
+        editor.mark_dirty();
+    }
     if editor.has_approved_lsp_install() {
         crate::lsp_init::handle_approved_lsp_install(editor).await;
         editor.mark_dirty();

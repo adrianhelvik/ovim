@@ -149,7 +149,7 @@ Run `ovim lsp languages` to see all supported languages.
 
 **Languages with LSP**: Rust, TypeScript, JavaScript, Astro, Python, Java, Kotlin, Scala, Groovy, SQL, C#, Terraform, Go, C, C++, Ruby, Bash, JSON, YAML, HTML, CSS, TOML, Zig, Lua, Elixir
 
-**Syntax highlighting only**: Markdown, HCL
+**Syntax highlighting only**: Markdown, HCL, Diff
 
 See [user-docs/LANGUAGE_SUPPORT.md](user-docs/LANGUAGE_SUPPORT.md) for installation instructions.
 

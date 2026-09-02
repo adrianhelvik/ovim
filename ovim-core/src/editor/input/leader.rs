@@ -108,6 +108,10 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
             // <Space>s... - Search prefix
             editor.set_input_state(InputState::Leader { keys: vec!['s'] });
         }
+        'g' => {
+            // <Space>g... - Git prefix (gd diff review, gf fetch base)
+            editor.set_input_state(InputState::Leader { keys: vec!['g'] });
+        }
 
         // Unknown key - cancel sequence
         _ => {
@@ -290,6 +294,18 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
             let picker = Picker::new_live_grep(base_dir, preferred_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
+            editor.reset_input_state();
+        }
+
+        // <Space>g... sequences (git)
+        (&['g'], 'd') => {
+            // <Space>gd - Toggle the branch diff review
+            editor.toggle_diff_review();
+            editor.reset_input_state();
+        }
+        (&['g'], 'f') => {
+            // <Space>gf - Fetch the review base branch
+            editor.fetch_review_base();
             editor.reset_input_state();
         }
 

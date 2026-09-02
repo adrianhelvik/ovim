@@ -36,6 +36,14 @@ pub enum HighlightGroup {
     MarkupHeading,
     /// Markup raw/code (`code` or code blocks)
     MarkupRaw,
+    /// Added line in a diff
+    DiffAdded,
+    /// Removed line in a diff
+    DiffRemoved,
+    /// File header line in a diff (`diff --git`, `---`, `+++`)
+    DiffHeader,
+    /// Hunk location line in a diff (`@@ -1,4 +1,5 @@`)
+    DiffLocation,
     /// Control characters displayed as caret notation (^[, ^@, etc.)
     SpecialKey,
     Other,
@@ -123,7 +131,19 @@ impl ColorScheme {
         self.syntax_colors
             .get(&group)
             .copied()
-            .unwrap_or(Color::White)
+            .unwrap_or_else(|| Self::fallback_syntax_color(group))
+    }
+
+    /// Colors for groups a theme did not define explicitly. Diff groups get
+    /// conventional colors so every theme renders patches sensibly.
+    fn fallback_syntax_color(group: HighlightGroup) -> Color {
+        match group {
+            HighlightGroup::DiffAdded => Color::Green,
+            HighlightGroup::DiffRemoved => Color::Red,
+            HighlightGroup::DiffHeader => Color::Blue,
+            HighlightGroup::DiffLocation => Color::Cyan,
+            _ => Color::White,
+        }
     }
 
     /// Gets the color for a UI element group

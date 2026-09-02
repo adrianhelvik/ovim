@@ -3068,6 +3068,10 @@ fn syntax_name(group: HighlightGroup) -> &'static str {
         HighlightGroup::MarkupBold => "markup-bold",
         HighlightGroup::MarkupHeading => "markup-heading",
         HighlightGroup::MarkupRaw => "markup-raw",
+        HighlightGroup::DiffAdded => "diff-added",
+        HighlightGroup::DiffRemoved => "diff-removed",
+        HighlightGroup::DiffHeader => "diff-header",
+        HighlightGroup::DiffLocation => "diff-location",
         HighlightGroup::SpecialKey => "special-key",
         HighlightGroup::Other => "other",
     }

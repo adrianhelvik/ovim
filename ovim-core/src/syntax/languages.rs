@@ -33,6 +33,8 @@ pub enum Language {
     Terraform,
     Hcl,
     Wgsl,
+    /// Unified diffs and patches (also used by the branch diff review)
+    Diff,
     /// Tree-sitter query files (used for highlight queries, etc.)
     TreeSitterQuery,
 }
@@ -74,6 +76,7 @@ impl LanguageRegistry {
             "terraform" => Language::Terraform,
             "hcl" => Language::Hcl,
             "wgsl" => Language::Wgsl,
+            "diff" => Language::Diff,
             "tree-sitter-query" => Language::TreeSitterQuery,
             _ => return None,
         })
@@ -189,6 +192,9 @@ impl LanguageRegistry {
 
             // HCL (HashiCorp Configuration Language)
             "hcl" | "nomad" | "vault" => Some(Language::Hcl),
+
+            // Unified diffs / patches
+            "diff" | "patch" | "rej" => Some(Language::Diff),
 
             // WebGPU Shading Language
             "wgsl" => Some(Language::Wgsl),
@@ -316,6 +322,7 @@ impl LanguageRegistry {
             Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
             Language::Hcl => tree_sitter_hcl::LANGUAGE.into(),
             Language::Wgsl => tree_sitter_wgsl_bevy::LANGUAGE.into(),
+            Language::Diff => tree_sitter_diff::LANGUAGE.into(),
             // Tree-sitter query: use Bash grammar fallback for now (still gives *some* structure).
             // TODO: add a dedicated tree-sitter-query grammar crate.
             Language::TreeSitterQuery => tree_sitter_bash::LANGUAGE.into(),
@@ -365,6 +372,7 @@ impl LanguageRegistry {
             Language::Terraform => include_str!("queries/terraform.scm"),
             Language::Hcl => include_str!("queries/terraform.scm"),
             Language::Wgsl => include_str!("queries/wgsl.scm"),
+            Language::Diff => include_str!("queries/diff.scm"),
             // Tree-sitter query: basic fallback highlights.
             Language::TreeSitterQuery => include_str!("queries/tree_sitter_query.scm"),
         }
@@ -431,6 +439,7 @@ impl LanguageRegistry {
             Language::Terraform => Some("terraform"),
             Language::Hcl => Some("hcl"),
             Language::Wgsl => None,
+            Language::Diff => None,
             Language::TreeSitterQuery => None,
         })
     }
@@ -532,6 +541,7 @@ impl LanguageRegistry {
             "terraform" | "tf" => Some(Language::Terraform),
             "hcl" => Some(Language::Hcl),
             "wgsl" => Some(Language::Wgsl),
+            "diff" | "patch" => Some(Language::Diff),
 
             _ => None,
         }

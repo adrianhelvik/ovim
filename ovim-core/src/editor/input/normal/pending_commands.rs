@@ -281,6 +281,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.show_blame_diff();
             editor.clear_count();
         }
+        ('g', KeyCode::Char('f')) => {
+            // gf - in the diff review, open the file at the cursor
+            if editor.is_diff_review_buffer() {
+                editor.diff_review_open_at_cursor();
+            }
+            editor.clear_count();
+        }
         ('g', KeyCode::Char('k')) => {
             // gk - move up one visual (display) line
             let count = editor.count().unwrap_or(1);
@@ -579,6 +586,16 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.goto_agent_edit(false);
             editor.clear_count();
         }
+        ('[', KeyCode::Char('c')) => {
+            // [c - previous change (git hunk, or hunk in the diff review)
+            editor.goto_change(false);
+            editor.clear_count();
+        }
+        ('[', KeyCode::Char('f')) => {
+            // [f - previous file in the diff review
+            editor.diff_review_goto_file(false);
+            editor.clear_count();
+        }
 
         // =====================================================================
         // ']' - Section/bracket forward navigation
@@ -619,6 +636,16 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (']', KeyCode::Char('a')) => {
             editor.goto_agent_edit(true);
+            editor.clear_count();
+        }
+        (']', KeyCode::Char('c')) => {
+            // ]c - next change (git hunk, or hunk in the diff review)
+            editor.goto_change(true);
+            editor.clear_count();
+        }
+        (']', KeyCode::Char('f')) => {
+            // ]f - next file in the diff review
+            editor.diff_review_goto_file(true);
             editor.clear_count();
         }
 

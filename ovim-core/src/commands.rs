@@ -341,6 +341,31 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             editor.request_format_document();
             ok("Formatting document...")
         }
+        "GitDiff" | "gitdiff" | "DiffReview" => {
+            // Open (or return to) the branch diff review against the default branch
+            match editor.open_diff_review(None) {
+                Ok(()) => ok_silent(),
+                Err(e) => err(format!("GitDiff: {e:#}")),
+            }
+        }
+        cmd if cmd.starts_with("GitDiff ")
+            || cmd.starts_with("gitdiff ")
+            || cmd.starts_with("DiffReview ") =>
+        {
+            // :GitDiff <base> — compare the working tree against an explicit ref
+            let spec = cmd
+                .split_once(' ')
+                .map(|(_, rest)| rest.trim())
+                .unwrap_or("");
+            match editor.open_diff_review(Some(spec)) {
+                Ok(()) => ok_silent(),
+                Err(e) => err(format!("GitDiff: {e:#}")),
+            }
+        }
+        "GitFetch" | "gitfetch" => {
+            editor.fetch_review_base();
+            ok_silent()
+        }
         "LspInfo" => {
             // Show LSP status information in a scratch buffer
             let mut info = String::new();

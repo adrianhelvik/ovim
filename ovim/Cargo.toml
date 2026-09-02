@@ -69,6 +69,7 @@ metrics = ["prometheus", "ovim-core/metrics"]
 vendored = ["ovim-core/vendored", "reqwest/native-tls-vendored"]
 
 [dev-dependencies]
+git2 = "0.19"
 tower = { version = "0.5", features = ["util"] }
 ropey = "1.6"
 tree-sitter = "0.25"

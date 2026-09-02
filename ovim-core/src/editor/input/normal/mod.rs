@@ -27,6 +27,12 @@ pub fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         editor.close_test_panel();
     }
 
+    // 0. Buffer-local keys of the branch diff review (Enter / q / r). Only
+    //    when nothing is pending so `]c`, counts and searches still work.
+    if try_handle_diff_review_key(editor, key_event) {
+        return Ok(());
+    }
+
     // 1. Try pending operators (dd, dw, yy, etc.)
     if operators::try_handle(editor, key_event)? {
         return Ok(());
@@ -65,6 +71,25 @@ pub fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
     // Clear count on unrecognized key
     editor.clear_count();
     Ok(())
+}
+
+/// Keys that only apply while the branch diff review buffer is current.
+fn try_handle_diff_review_key(editor: &mut Editor, key_event: KeyEvent) -> bool {
+    use crate::editor::InputState;
+
+    if !editor.is_diff_review_buffer()
+        || !matches!(editor.input_state(), InputState::Normal)
+        || editor.count().is_some()
+    {
+        return false;
+    }
+    match key_event.code {
+        KeyCode::Enter => editor.diff_review_open_at_cursor(),
+        KeyCode::Char('q') => editor.close_diff_review(),
+        KeyCode::Char('r') => editor.refresh_diff_review(),
+        _ => return false,
+    }
+    true
 }
 
 /// Set up pending operators or commands for multi-key sequences.

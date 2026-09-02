@@ -39,6 +39,35 @@ Create, rename, and paste operations refuse to overwrite existing paths.
 Rename and create prompts also reject paths that escape the selected directory,
 and the explorer root cannot be renamed, moved, or deleted.
 
+## Reviewing Branch Changes
+
+Press `<Space>gd` to open a review of everything your branch changed compared
+with the default branch, including uncommitted work. The review is a read-only,
+syntax-highlighted patch in its own tab with a file summary at the top.
+
+| Key | Action |
+|---|---|
+| `<Space>gd` | Open the review, return to it from a file, or leave it |
+| `]c` / `[c` | Next / previous hunk (in ordinary files: next / previous git change) |
+| `]f` / `[f` | Next / previous file |
+| `Enter`, `gf` | Open the file at the line under the cursor, in the tab you came from |
+| `Enter` on a summary row | Jump to that file's section of the patch |
+| `r` | Refresh the patch |
+| `q` | Close the review |
+| `<Space>gf` | Fetch the base branch from its remote, then refresh |
+
+The base is picked automatically: the default branch from `origin/HEAD` (or
+`main`, `master`, `develop`, `trunk`), compared at its merge-base with your
+branch so commits that landed on main after you branched are not shown. When
+both `main` and `origin/main` exist, the one with the newer merge-base wins,
+so a stale local or un-fetched remote branch never pollutes the review. The
+header shows how many commits you are ahead and behind, and when the remote was
+last fetched. On the default branch itself the review shows uncommitted changes.
+
+`:GitDiff` does the same from the command line, `:GitDiff <ref>` compares
+against any ref (for example `:GitDiff HEAD` for uncommitted work only, or
+`:GitDiff main..feature`), and `:GitFetch` fetches the base branch.
+
 ## AI Chat and Editing
 
 Press `Space Space` in normal mode to open AI chat. Select text visually and

@@ -717,6 +717,19 @@ file = { path = "src/syntax/queries/terraform.scm" }
 # for Terraform-related HCL files. Users can configure project-specific LSP.
 
 # ============================================================================
+# Diff / Patch
+# ============================================================================
+
+[[language]]
+id = "diff"
+name = "Diff"
+extensions = ["diff", "patch", "rej"]
+
+[language.syntax]
+grammar = "tree-sitter-diff"
+file = { path = "src/syntax/queries/diff.scm" }
+
+# ============================================================================
 # WGSL (WebGPU Shading Language)
 # ============================================================================
 

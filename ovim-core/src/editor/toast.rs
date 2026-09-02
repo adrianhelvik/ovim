@@ -30,6 +30,7 @@ pub enum ToastSource {
     Command,
     FileTree,
     Diagnostics,
+    Git,
 }
 
 impl ToastSource {
@@ -41,6 +42,7 @@ impl ToastSource {
             Self::Command => "CMD",
             Self::FileTree => "FILES",
             Self::Diagnostics => "DIAG",
+            Self::Git => "GIT",
         }
     }
 }

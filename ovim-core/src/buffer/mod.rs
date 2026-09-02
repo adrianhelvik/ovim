@@ -786,6 +786,20 @@ impl Buffer {
     /// Call this after setting `self.rope` to new content.
     /// Does NOT touch: file_path, rope, cursor, modified, line_ending,
     /// encoding, file_mtime, read_only, recording.
+    /// Replaces the entire buffer text with `content`, resetting every piece
+    /// of derived state (highlights, folds, undo history) and clamping the
+    /// cursor. Used by generated read-only views that re-render themselves.
+    pub fn replace_content(&mut self, content: &str) {
+        let line = self.cursor.line();
+        let col = self.cursor.col();
+        self.rope = Rope::from_str(content);
+        self.modified = false;
+        self.reset_derived_state(content);
+        let max_line = self.line_count().saturating_sub(1);
+        self.cursor.set_position(line.min(max_line), col);
+        self.validate_cursor_position();
+    }
+
     pub(crate) fn reset_derived_state(&mut self, new_content: &str) {
         // Syntax: reparse tree against new content
         if let Some(ref mut syntax) = self.syntax {

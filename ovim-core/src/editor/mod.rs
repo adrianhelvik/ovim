@@ -44,6 +44,7 @@ mod command_history;
 mod completion;
 mod debug_integration;
 pub mod decoration;
+mod diff_review;
 mod editing_state;
 mod filetree;
 pub mod fuzzy;
@@ -122,6 +123,7 @@ pub use code_explanation::{
 };
 pub use command_context::CommandContext;
 pub use completion::CompletionMenu;
+pub use diff_review::{DiffReviewState, PendingGitFetch, DIFF_REVIEW_TITLE_PREFIX};
 pub use editing_state::{EditingState, PendingChangeRepeat};
 pub use filetree::{FileTree, FileTreeAction, FileTreeClipboardKind, TreeNode};
 pub use fold::{Fold, FoldManager};

@@ -776,6 +776,11 @@ impl SyntaxHighlighter {
             "markup.bold" => return HighlightGroup::MarkupBold,
             "markup.heading" => return HighlightGroup::MarkupHeading,
             "markup.raw" => return HighlightGroup::MarkupRaw,
+            // Diff captures (see queries/diff.scm)
+            "diff.plus" => return HighlightGroup::DiffAdded,
+            "diff.minus" => return HighlightGroup::DiffRemoved,
+            "diff.header" => return HighlightGroup::DiffHeader,
+            "diff.location" => return HighlightGroup::DiffLocation,
             _ => {}
         }
 

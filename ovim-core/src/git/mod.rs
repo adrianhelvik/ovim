@@ -35,6 +35,22 @@ impl GitStatus {
         self.line_status.get(&line).copied()
     }
 
+    /// First line (0-indexed) of every run of consecutive changed lines,
+    /// sorted ascending. Used for `]c` / `[c` hunk navigation.
+    pub fn hunk_starts(&self) -> Vec<usize> {
+        let mut lines: Vec<usize> = self.line_status.keys().copied().collect();
+        lines.sort_unstable();
+        let mut starts = Vec::new();
+        let mut previous: Option<usize> = None;
+        for line in lines {
+            if previous.is_none_or(|prev| line != prev + 1) {
+                starts.push(line);
+            }
+            previous = Some(line);
+        }
+        starts
+    }
+
     /// Returns (added, modified, removed) line counts.
     pub fn change_counts(&self) -> (usize, usize, usize) {
         let mut added = 0;
@@ -408,6 +424,16 @@ mod tests {
         let status = GitStatus::new();
         assert_eq!(status.get_line_status(0), None);
         assert_eq!(status.get_line_status(10), None);
+    }
+
+    #[test]
+    fn hunk_starts_groups_consecutive_lines() {
+        let mut status = GitStatus::new();
+        for line in [3, 4, 5, 9, 12, 13] {
+            status.line_status.insert(line, LineStatus::Added);
+        }
+        assert_eq!(status.hunk_starts(), vec![3, 9, 12]);
+        assert!(GitStatus::new().hunk_starts().is_empty());
     }
 
     #[test]

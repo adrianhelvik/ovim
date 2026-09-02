@@ -48,6 +48,7 @@ These languages have full LSP support and will auto-install the language server 
 - Dockerfile and Containerfile variants
 - Tree-sitter queries (`.scm`)
 - HCL (`.hcl`, `.nomad`, `.vault`)
+- Diff (`.diff`, `.patch`, `.rej`) — also used by the branch diff review (`<Space>gd`)
 - WGSL (`.wgsl`), including Bevy shader preprocessor directives
 
 ## Auto-Install

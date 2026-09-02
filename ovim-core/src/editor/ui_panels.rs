@@ -36,4 +36,8 @@ pub struct UiPanels {
     pub last_escape_time: Option<std::time::Instant>,
     /// Top-right toast notifications (transient and sticky)
     pub toast_center: ToastCenter,
+    /// Open branch diff review (`<Space>gd`), if any
+    pub diff_review: Option<super::diff_review::DiffReviewState>,
+    /// Background `git fetch` started from the diff review
+    pub pending_git_fetch: Option<super::diff_review::PendingGitFetch>,
 }
