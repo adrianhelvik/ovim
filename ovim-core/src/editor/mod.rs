@@ -153,7 +153,9 @@ pub use search_context::{SearchContext, VisualSearchState};
 pub use services::EditorServices;
 pub use single_line_input::SingleLineInput;
 pub use tabpage::{TabPage, TabPageId, TabPageManager};
-pub use test_panel::{format_duration, TestPanelState, TestRun, TestRunStatus};
+pub use test_panel::{
+    format_duration, TestFailure, TestPanelState, TestRun, TestRunStatus, TestSourceLocation,
+};
 pub use textobjects::{TextObjectRange, TextObjects};
 pub use theme_state::ThemeState;
 pub use toast::{Toast, ToastCenter, ToastLevel, ToastRequest, ToastSource};

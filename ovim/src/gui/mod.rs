@@ -611,8 +611,18 @@ pub struct GuiTestPanel {
     pub status: String,
     pub elapsed_ms: u64,
     pub summary: Option<String>,
+    pub failure: Option<GuiTestFailure>,
     pub truncated: usize,
     pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiTestFailure {
+    pub message: String,
+    pub file: Option<String>,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2840,6 +2850,18 @@ fn test_panel(editor: &Editor) -> Option<GuiTestPanel> {
         status: format!("{:?}", run.status).to_lowercase(),
         elapsed_ms: ((run.elapsed().as_millis().min(u64::MAX as u128) as u64) / 100) * 100,
         summary: run.summary.clone(),
+        failure: run.failures.first().map(|failure| GuiTestFailure {
+            message: failure.message.clone(),
+            file: failure
+                .location
+                .as_ref()
+                .map(|location| location.path.to_string_lossy().to_string()),
+            line: failure.location.as_ref().map(|location| location.line),
+            column: failure
+                .location
+                .as_ref()
+                .and_then(|location| location.column),
+        }),
         truncated: run.truncated + start,
         lines: run.lines[start..]
             .iter()

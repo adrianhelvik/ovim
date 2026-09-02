@@ -156,6 +156,34 @@ fn run_lines<'a>(runs: &'a [TestRun], latest: &'a TestRun, height: usize) -> Vec
     )));
     lines.push(Line::from(""));
 
+    // Keep the actionable failure visible even when the raw output tail has
+    // scrolled past the assertion and stack trace.
+    if let Some(failure) = latest.failures.first() {
+        if let Some(location) = &failure.location {
+            let column = location
+                .column
+                .map(|column| format!(":{column}"))
+                .unwrap_or_default();
+            lines.push(Line::from(Span::styled(
+                format!(" {}:{}{}", location.path.display(), location.line, column),
+                Style::default()
+                    .fg(colors::FAIL)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+        if !failure.message.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!(" {}", failure.message),
+                Style::default().fg(colors::TEXT),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            " :cfirst opens failure · :cn next",
+            Style::default().fg(colors::DIM),
+        )));
+        lines.push(Line::from(""));
+    }
+
     // Output tail fills the rest.
     let used = lines.len();
     let budget = height.saturating_sub(used);

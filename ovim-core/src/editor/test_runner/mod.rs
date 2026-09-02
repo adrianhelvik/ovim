@@ -199,7 +199,7 @@ impl Editor {
             .unwrap_or_else(|| cwd.to_string_lossy().to_string());
         self.build
             .test_panel
-            .start_run(scope_label, cmd.to_string(), dir_name.clone());
+            .start_run(scope_label, cmd.to_string(), cwd.clone());
         self.build.pending_test = Some(PendingTest { receiver: rx });
 
         // Show where the command runs when it isn't the process cwd — in a
