@@ -225,6 +225,19 @@ impl Buffer {
         }
     }
 
+    /// Installs highlights computed by a generated read-only view, bypassing
+    /// this buffer's own grammar. `Buffer::replace_content` clears them, so a
+    /// view that re-renders must set them again afterwards.
+    pub fn set_forced_highlights(&mut self, highlights: LineHighlights) {
+        self.forced_highlights = Some(highlights);
+        self.version += 1;
+    }
+
+    /// True when this buffer renders highlights supplied by a generated view.
+    pub fn has_forced_highlights(&self) -> bool {
+        self.forced_highlights.is_some()
+    }
+
     /// Checks if syntax highlighting should be initialized (lazy loading)
     /// Returns true if the buffer has a file path with supported language but no syntax yet
     pub fn should_init_syntax(&self) -> bool {
@@ -675,6 +688,13 @@ impl Buffer {
         &self,
         line_idx: usize,
     ) -> Cow<'_, [(Range<usize>, HighlightGroup)]> {
+        // A generated view (the branch diff review) owns its colouring: it
+        // composes one grammar per changed file into a single buffer, so no
+        // buffer-wide grammar could produce the same result.
+        if let Some(ref forced) = self.forced_highlights {
+            return Cow::Borrowed(forced.get(line_idx).map(Vec::as_slice).unwrap_or(&[]));
+        }
+
         // For markdown: check code block cache first (language-specific highlighting)
         if let Some(ref code_cache) = self.code_block_cache {
             if let Some(highlights) = code_cache.highlights_for_line(line_idx) {
@@ -828,7 +848,7 @@ impl Buffer {
 
     /// Checks if syntax highlighting is enabled
     pub fn has_syntax_highlighting(&self) -> bool {
-        self.syntax.is_some()
+        self.syntax.is_some() || self.forced_highlights.is_some()
     }
 
     /// Returns a reference to the treesitter syntax tree, if available.

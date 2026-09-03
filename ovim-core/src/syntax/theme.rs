@@ -96,6 +96,10 @@ pub enum UiGroup {
     TabInactiveFg,
     /// Tab bar fill (empty space)
     TabFill,
+    /// Background tint behind an added line in the diff review
+    DiffAddedBg,
+    /// Background tint behind a removed line in the diff review
+    DiffRemovedBg,
 }
 
 /// Color scheme definition
@@ -148,7 +152,22 @@ impl ColorScheme {
 
     /// Gets the color for a UI element group
     pub fn get_ui_color(&self, group: UiGroup) -> Color {
-        self.ui_colors.get(&group).copied().unwrap_or(Color::White)
+        self.ui_colors
+            .get(&group)
+            .copied()
+            .unwrap_or_else(|| Self::fallback_ui_color(group))
+    }
+
+    /// Colors for UI groups a theme did not define. Only the diff tints have a
+    /// meaningful fallback — white would make added and removed lines
+    /// unreadable, so themes written before these groups existed still get a
+    /// usable (dark) tint.
+    fn fallback_ui_color(group: UiGroup) -> Color {
+        match group {
+            UiGroup::DiffAddedBg => Color::Rgb(22, 46, 30),
+            UiGroup::DiffRemovedBg => Color::Rgb(58, 26, 30),
+            _ => Color::White,
+        }
     }
 
     /// Default dark theme
@@ -205,6 +224,8 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::TabInactiveBg, Color::DarkGray);
         scheme.set_ui(UiGroup::TabInactiveFg, Color::White);
         scheme.set_ui(UiGroup::TabFill, Color::Black);
+        scheme.set_ui(UiGroup::DiffAddedBg, Color::Rgb(22, 46, 30));
+        scheme.set_ui(UiGroup::DiffRemovedBg, Color::Rgb(58, 26, 30));
 
         scheme
     }
@@ -275,6 +296,8 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::TabInactiveBg, Color::Rgb(60, 56, 54));
         scheme.set_ui(UiGroup::TabInactiveFg, fg);
         scheme.set_ui(UiGroup::TabFill, bg0);
+        scheme.set_ui(UiGroup::DiffAddedBg, Color::Rgb(38, 54, 32));
+        scheme.set_ui(UiGroup::DiffRemovedBg, Color::Rgb(66, 40, 34));
 
         scheme
     }
@@ -345,6 +368,8 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::TabInactiveBg, Color::Rgb(213, 196, 161));
         scheme.set_ui(UiGroup::TabInactiveFg, fg);
         scheme.set_ui(UiGroup::TabFill, bg0);
+        scheme.set_ui(UiGroup::DiffAddedBg, Color::Rgb(226, 236, 205));
+        scheme.set_ui(UiGroup::DiffRemovedBg, Color::Rgb(248, 214, 205));
 
         scheme
     }
@@ -417,6 +442,8 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::TabInactiveBg, base02);
         scheme.set_ui(UiGroup::TabInactiveFg, base0);
         scheme.set_ui(UiGroup::TabFill, base03);
+        scheme.set_ui(UiGroup::DiffAddedBg, Color::Rgb(0, 58, 44));
+        scheme.set_ui(UiGroup::DiffRemovedBg, Color::Rgb(64, 32, 34));
 
         scheme
     }
@@ -489,6 +516,8 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::TabInactiveBg, base2);
         scheme.set_ui(UiGroup::TabInactiveFg, base00);
         scheme.set_ui(UiGroup::TabFill, base3);
+        scheme.set_ui(UiGroup::DiffAddedBg, Color::Rgb(226, 240, 214));
+        scheme.set_ui(UiGroup::DiffRemovedBg, Color::Rgb(250, 216, 208));
 
         scheme
     }
@@ -558,6 +587,8 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::TabInactiveBg, Color::Rgb(49, 50, 44));
         scheme.set_ui(UiGroup::TabInactiveFg, fg);
         scheme.set_ui(UiGroup::TabFill, bg);
+        scheme.set_ui(UiGroup::DiffAddedBg, Color::Rgb(40, 58, 36));
+        scheme.set_ui(UiGroup::DiffRemovedBg, Color::Rgb(66, 38, 40));
 
         scheme
     }
@@ -629,6 +660,8 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::TabInactiveBg, selection);
         scheme.set_ui(UiGroup::TabInactiveFg, fg);
         scheme.set_ui(UiGroup::TabFill, bg);
+        scheme.set_ui(UiGroup::DiffAddedBg, Color::Rgb(34, 58, 44));
+        scheme.set_ui(UiGroup::DiffRemovedBg, Color::Rgb(70, 36, 46));
 
         scheme
     }
@@ -708,6 +741,8 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::TabInactiveBg, Color::Rgb(35, 38, 55)); // #232637
         scheme.set_ui(UiGroup::TabInactiveFg, fg_dim);
         scheme.set_ui(UiGroup::TabFill, bg_dark);
+        scheme.set_ui(UiGroup::DiffAddedBg, Color::Rgb(26, 48, 44));
+        scheme.set_ui(UiGroup::DiffRemovedBg, Color::Rgb(56, 32, 44));
 
         scheme
     }

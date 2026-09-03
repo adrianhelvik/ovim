@@ -362,6 +362,21 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 Err(e) => err(format!("GitDiff: {e:#}")),
             }
         }
+        "GitDiffLayout" | "gitdifflayout" => {
+            editor.toggle_diff_review_layout();
+            ok_silent()
+        }
+        cmd if cmd.starts_with("GitDiffLayout ") || cmd.starts_with("gitdifflayout ") => {
+            // :GitDiffLayout split|unified
+            let name = cmd.split_once(' ').map(|(_, rest)| rest).unwrap_or("");
+            match crate::editor::DiffLayout::parse(name) {
+                Some(layout) => {
+                    editor.set_diff_review_layout(layout);
+                    ok_silent()
+                }
+                None => err("GitDiffLayout: use split or unified"),
+            }
+        }
         "GitFetch" | "gitfetch" => {
             editor.fetch_review_base();
             ok_silent()

@@ -68,6 +68,10 @@ pub struct Buffer {
     pub(super) syntax_loading: bool,
     /// Cached syntax highlights per line (line_idx -> Vec<(range, group)>)
     pub(super) cached_highlights: Option<LineHighlights>,
+    /// Highlights supplied by a generated read-only view (the branch diff
+    /// review), which composes several grammars into one buffer. When set,
+    /// these win over every other source — the view owns its own colouring.
+    pub(super) forced_highlights: Option<LineHighlights>,
     /// Version counter for highlight cache (incremented on every edit)
     pub(super) highlight_version: u64,
     /// Whether re-highlighting is pending
@@ -130,6 +134,7 @@ impl Buffer {
             language_catalog: crate::language_catalog::LanguageCatalog::shared_built_in(),
             syntax_loading: false,
             cached_highlights: None,
+            forced_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
             fold_manager: crate::fold::FoldManager::new(),
@@ -236,6 +241,7 @@ impl Buffer {
             language_catalog: crate::language_catalog::LanguageCatalog::shared_built_in(),
             syntax_loading: false,
             cached_highlights: None,
+            forced_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
             fold_manager: crate::fold::FoldManager::new(),
@@ -809,6 +815,7 @@ impl Buffer {
         // Highlight caches: all line/col references are stale
         self.syntax_loading = false;
         self.cached_highlights = None;
+        self.forced_highlights = None;
         self.highlight_version = self.highlight_version.wrapping_add(1);
         self.pending_rehighlight = true;
         self.semantic_highlights = None;

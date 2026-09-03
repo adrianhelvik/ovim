@@ -42,12 +42,23 @@ and the explorer root cannot be renamed, moved, or deleted.
 ## Reviewing Branch Changes
 
 Press `<Space>gd` to open a review of everything your branch changed compared
-with the default branch, including uncommitted work. The review is a read-only,
-syntax-highlighted patch in its own tab with a file summary at the top.
+with the default branch, including uncommitted work. The review is a read-only
+patch in its own tab with a file summary at the top. Each hunk is coloured with
+the grammar of the file it came from — the way `delta` renders a patch — and
+added and removed rows carry a background tint.
+
+The toolbar above the patch switches between two layouts. Click a button, press
+`s`, or run `:GitDiffLayout split` / `:GitDiffLayout unified`:
+
+- **Unified** shows the raw patch, so the buffer still yanks as a valid patch.
+- **Split** puts the old file on the left and the new one on the right, with
+  source line numbers on both sides. Long lines wrap inside their column, and
+  the view re-flows when the window changes width.
 
 | Key | Action |
 |---|---|
 | `<Space>gd` | Open the review, return to it from a file, or leave it |
+| `s` | Switch between the unified and side-by-side layouts |
 | `]c` / `[c` | Next / previous hunk (in ordinary files: next / previous git change) |
 | `]f` / `[f` | Next / previous file |
 | `Enter`, `gf` | Open the file at the line under the cursor, in the tab you came from |
@@ -66,7 +77,11 @@ last fetched. On the default branch itself the review shows uncommitted changes.
 
 `:GitDiff` does the same from the command line, `:GitDiff <ref>` compares
 against any ref (for example `:GitDiff HEAD` for uncommitted work only, or
-`:GitDiff main..feature`), and `:GitFetch` fetches the base branch.
+`:GitDiff main..feature`), `:GitDiffLayout [split|unified]` picks the layout,
+and `:GitFetch` fetches the base branch.
+
+`Enter` works in both layouts: in the side-by-side view the column your cursor
+is in decides which side you jump from, and the cursor keeps its column.
 
 ## AI Chat and Editing
 

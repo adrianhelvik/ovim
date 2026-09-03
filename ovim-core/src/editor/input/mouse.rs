@@ -611,8 +611,11 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         return Ok(None);
     }
 
-    // Buffer click → move cursor
+    // Buffer click → move cursor, unless it hit the diff review's toolbar
     if let Some((line, char_col)) = screen_to_buffer(editor, col, row) {
+        if editor.diff_review_click(line, char_col) {
+            return Ok(None);
+        }
         editor
             .buffer_mut()
             .cursor_mut()

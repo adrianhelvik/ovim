@@ -161,15 +161,15 @@ impl HighlightShiftBuffers {
 ///
 /// `buffers` provides reusable scratch space — the caller keeps one instance
 /// across all lines in the render pass, eliminating per-line allocation.
-fn shift_highlights_for_viewport(
-    highlights: &[(Range<usize>, HighlightGroup)],
+fn shift_highlights_for_viewport<T: Copy>(
+    highlights: &[(Range<usize>, T)],
     expanded_text: &str,
     sliced_text: &str,
     h_offset: usize,
     width: usize,
     precedes: bool,
     buffers: &mut HighlightShiftBuffers,
-) -> Vec<(Range<usize>, HighlightGroup)> {
+) -> Vec<(Range<usize>, T)> {
     let offset_adjustment = if precedes { 1 } else { 0 }; // Account for '<' indicator
 
     // Build a byte-offset-to-display-column mapping for the expanded text
@@ -963,6 +963,18 @@ fn pad_line_to(line: &mut Line<'static>, target_width: usize) {
     }
 }
 
+/// Pad the line with trailing spaces carrying `color` as their background, so
+/// a diff row's tint reaches the right edge of the viewport.
+fn pad_line_to_styled(line: &mut Line<'static>, target_width: usize, color: Color) {
+    let width = line_display_width(line);
+    if width < target_width {
+        line.spans.push(Span::styled(
+            " ".repeat(target_width - width),
+            Style::default().bg(color),
+        ));
+    }
+}
+
 /// Where an EOL decoration should be placed within a rendered row.
 #[derive(Debug, Clone, Copy)]
 enum EolPlacement {
@@ -1411,6 +1423,19 @@ pub fn render_buffer(
     // allocating two Vec<usize> per visible line per frame.
     let mut hl_shift_buffers = HighlightShiftBuffers::new();
 
+    // The branch diff review paints added/removed backgrounds per row; every
+    // other buffer skips this entirely.
+    let diff_review_tints = editor
+        .diff_review()
+        .filter(|state| state.buffer_id == editor.buffer().id());
+    let diff_tint_color = |added: bool| {
+        crate::key_convert::convert_core_color(theme.get_ui_color(if added {
+            UiGroup::DiffAddedBg
+        } else {
+            UiGroup::DiffRemovedBg
+        }))
+    };
+
     // Project every decoration through the edit log ONCE per render. Per-line
     // lookups in the loop below then read from a line-keyed map instead of
     // re-scanning `iter_all()` and re-projecting each decoration.
@@ -1519,7 +1544,15 @@ pub fn render_buffer(
                         }
                     } else {
                         place_eol_on_line(&mut cached_line, &eol_decs, text_width, render_width);
-                        pad_line_to(&mut cached_line, render_width);
+                        match diff_review_tints.and_then(|state| state.line_trailing_tint(line_idx))
+                        {
+                            Some(added) => pad_line_to_styled(
+                                &mut cached_line,
+                                render_width,
+                                diff_tint_color(added),
+                            ),
+                            None => pad_line_to(&mut cached_line, render_width),
+                        }
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
                                 &gutter_ctx,
@@ -1604,6 +1637,38 @@ pub fn render_buffer(
                     &mut hl_shift_buffers,
                 );
             }
+
+            // Diff review: added/removed background tints, in the same byte
+            // space as the syntax highlights above.
+            let mut background_ranges: Vec<(Range<usize>, Color)> = diff_review_tints
+                .map(|state| {
+                    state
+                        .line_tints(line_idx)
+                        .into_iter()
+                        .map(|(range, added)| (range, diff_tint_color(added)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !background_ranges.is_empty() {
+                background_ranges = remap_highlights(&background_ranges, &conceal_byte_map);
+                if !wrap {
+                    background_ranges = shift_highlights_for_viewport(
+                        &background_ranges,
+                        &expanded_text,
+                        line_text,
+                        h_offset,
+                        text_width,
+                        precedes,
+                        &mut hl_shift_buffers,
+                    );
+                }
+            }
+            // A tint that runs to the end of the line keeps going through the
+            // padding, so a changed row reads as a full-width band. Derived
+            // from the unsliced row so a cache hit pads identically.
+            let trailing_background = diff_review_tints
+                .and_then(|state| state.line_trailing_tint(line_idx))
+                .map(diff_tint_color);
 
             // Check if we need special highlighting (visual selection or search)
             let has_visual_selection = has_visual_on_line;
@@ -1867,6 +1932,7 @@ pub fn render_buffer(
                 || yank_flash.is_some()
                 || !ai_selection_ranges.is_empty()
                 || !concealed_links.is_empty()
+                || !background_ranges.is_empty()
                 || any_decoration;
 
             if needs_detailed_rendering {
@@ -1880,6 +1946,7 @@ pub fn render_buffer(
                     &syntax_highlights,
                     &remapped_diagnostics,
                     &control_ranges,
+                    &background_ranges,
                 );
 
                 // Apply cursorline background if this is the cursor line
@@ -2020,7 +2087,10 @@ pub fn render_buffer(
                     // diagnostic margin — `place_eol_on_line` picks the
                     // right strategy.
                     place_eol_on_line(&mut line, &eol_decs, text_width, render_width);
-                    pad_line_to(&mut line, render_width);
+                    match trailing_background {
+                        Some(color) => pad_line_to_styled(&mut line, render_width, color),
+                        None => pad_line_to(&mut line, render_width),
+                    }
                     if gutter_area.is_some() {
                         gutter_lines.push(build_gutter_line(
                             &gutter_ctx,
@@ -2216,6 +2286,7 @@ pub fn render_line_with_highlights(
     syntax_highlights: &[(std::ops::Range<usize>, crate::syntax::HighlightGroup)],
     diagnostics: &[RemappedDiagnostic],
     control_ranges: &[std::ops::Range<usize>],
+    background_ranges: &[(std::ops::Range<usize>, Color)],
 ) -> Line<'static> {
     let chars: Vec<char> = line_text.chars().collect();
     let num_chars = chars.len();
@@ -2272,6 +2343,26 @@ pub fn render_line_with_highlights(
         for (char_idx, &byte_idx) in byte_indices[..num_chars].iter().enumerate() {
             if byte_idx < byte_len {
                 syntax_per_char[char_idx] = best_group[byte_idx].map(|(g, _)| g);
+            }
+        }
+    }
+
+    // 3b. Background tints (the diff review's added/removed rows): byte
+    //     ranges, resolved like syntax spans but never overlapping.
+    let mut bg_per_char: Vec<Option<Color>> = vec![None; num_chars];
+    if !background_ranges.is_empty() {
+        let byte_len = line_text.len();
+        let mut bg_bytes: Vec<Option<Color>> = vec![None; byte_len];
+        for (range, color) in background_ranges {
+            let s = range.start.min(byte_len);
+            let e = range.end.min(byte_len);
+            for slot in bg_bytes[s..e].iter_mut() {
+                *slot = Some(*color);
+            }
+        }
+        for (char_idx, &byte_idx) in byte_indices[..num_chars].iter().enumerate() {
+            if byte_idx < byte_len {
+                bg_per_char[char_idx] = bg_bytes[byte_idx];
             }
         }
     }
@@ -2348,6 +2439,7 @@ pub fn render_line_with_highlights(
         let syntax_group = syntax_per_char[col_idx];
         let diag_underline_color = diag_per_char[col_idx];
         let is_control = control_per_char[col_idx];
+        let background = bg_per_char[col_idx];
 
         // Extend span while styling is identical
         let mut end_col = col_idx + 1;
@@ -2357,6 +2449,7 @@ pub fn render_line_with_highlights(
             && syntax_per_char[end_col] == syntax_group
             && diag_per_char[end_col] == diag_underline_color
             && control_per_char[end_col] == is_control
+            && bg_per_char[end_col] == background
         {
             end_col += 1;
         }
@@ -2402,6 +2495,12 @@ pub fn render_line_with_highlights(
         } else {
             Style::default()
         };
+
+        // Apply the diff tint under everything except selection and search,
+        // which own the background themselves.
+        if let (Some(background), false, false) = (background, is_selected, is_search_match) {
+            style = style.bg(background);
+        }
 
         // Apply diagnostic underline (additive — works on top of any style)
         if let Some(underline_color) = diag_underline_color {
@@ -2761,6 +2860,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
         );
         assert!(line.spans.is_empty());
     }
@@ -2774,6 +2874,7 @@ mod tests {
             0,
             None,
             crate::mode::Mode::Normal,
+            &[],
             &[],
             &[],
             &[],
@@ -2799,6 +2900,7 @@ mod tests {
             &highlights,
             &[],
             &[],
+            &[],
         );
         // Should have at least 2 spans: "fn" (highlighted) and " main()" (default)
         assert!(line.spans.len() >= 2);
@@ -2819,6 +2921,7 @@ mod tests {
             crate::mode::Mode::Normal,
             &search,
             &highlights,
+            &[],
             &[],
             &[],
         );
@@ -2844,6 +2947,7 @@ mod tests {
             &highlights,
             &[],
             &[],
+            &[],
         );
         assert!(line.spans.len() >= 2);
         assert_eq!(line.spans[0].content.as_ref(), "a");
@@ -2866,6 +2970,7 @@ mod tests {
             &[],
             &[],
             &diags,
+            &[],
             &[],
         );
         // First span should have underline modifier
@@ -2892,6 +2997,7 @@ mod tests {
             crate::mode::Mode::Normal,
             &[],
             &highlights,
+            &[],
             &[],
             &[],
         );

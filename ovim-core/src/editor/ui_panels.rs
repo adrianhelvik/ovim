@@ -40,4 +40,6 @@ pub struct UiPanels {
     pub diff_review: Option<super::diff_review::DiffReviewState>,
     /// Background `git fetch` started from the diff review
     pub pending_git_fetch: Option<super::diff_review::PendingGitFetch>,
+    /// Layout the next review opens in; `s` and the toolbar change it.
+    pub diff_review_layout: super::diff_review::DiffLayout,
 }

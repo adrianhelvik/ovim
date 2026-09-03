@@ -1,9 +1,13 @@
 //! Branch diff review.
 //!
-//! `<Space>gd` (or `:GitDiff`) opens a read-only, syntax-highlighted patch of
-//! everything the current branch changed relative to the default branch,
-//! including uncommitted work. Inside the review:
+//! `<Space>gd` (or `:GitDiff`) opens a read-only patch of everything the
+//! current branch changed relative to the default branch, including
+//! uncommitted work. Each hunk is coloured with the grammar of the file it
+//! came from — the way `delta` renders a patch — rather than with a diff
+//! grammar, so the review reads like code. Inside the review:
 //!
+//! - `s` (or a click on the toolbar) switches between the unified and the
+//!   side-by-side layout
 //! - `]c` / `[c` move between hunks, `]f` / `[f` between files
 //! - `Enter` (or `gf`) opens the file at the line under the cursor in the tab
 //!   the review was opened from; `<Space>gd` returns to the review, refreshed
@@ -13,26 +17,22 @@
 //! whichever of `main` / `origin/main` has the most recent merge-base with
 //! HEAD so a stale local or remote copy never pollutes the review.
 
+mod highlight;
+mod render;
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
-use std::time::Duration;
 
 use super::{Editor, ToastLevel, ToastRequest, ToastSource};
 use crate::buffer::{Buffer, BufferId};
-use crate::native_diff::{
-    self, BaseKind, DiffFile, PatchLine, PatchLineKind, ReviewBase, ReviewPatch,
+use crate::native_diff::{self, PatchLineKind, ReviewBase, ReviewPatch};
+use crate::unicode::{grapheme_index_for_byte, GraphemeCol};
+
+pub use render::{DiffLayout, DIFF_REVIEW_TITLE_PREFIX};
+
+use render::{
+    layout_body, summary_message, Rendered, ReviewCell, ReviewRow, Toolbar, DEFAULT_LAYOUT_WIDTH,
 };
-use crate::unicode::GraphemeCol;
-
-/// Display-name prefix shared with the GUI, which uses it to enable diff
-/// line styling for pathless buffers.
-pub const DIFF_REVIEW_TITLE_PREFIX: &str = "Diff · ";
-
-/// Fake path used to select the `diff` grammar for the pathless review buffer.
-const REVIEW_SYNTAX_PATH: &str = "review.diff";
-
-const KEY_HINT: &str =
-    "# Enter open at cursor · ]c [c hunk · ]f [f file · r refresh · q close · <Space>gf fetch base";
 
 /// State of the open branch review, if any.
 pub struct DiffReviewState {
@@ -46,22 +46,49 @@ pub struct DiffReviewState {
     pub origin_tab: usize,
     /// User-supplied comparison (`:GitDiff <spec>`); `None` means auto.
     pub explicit_spec: Option<String>,
-    pub root: PathBuf,
-    pub base: ReviewBase,
-    pub files: Vec<DiffFile>,
-    /// Source mapping per buffer line; `None` for header/summary lines.
-    pub lines: Vec<Option<PatchLine>>,
+    pub layout: DiffLayout,
+    /// The patch the buffer was rendered from, kept so switching layout or
+    /// re-flowing after a resize costs no Git work.
+    patch: ReviewPatch,
+    /// Text width the side-by-side layout was laid out for.
+    layout_width: usize,
+    /// Buffer-area width that produced `layout_width`. Re-flowing keys off
+    /// this rather than off the text width, which also moves when the line
+    /// number gutter grows — that would oscillate.
+    layout_area_width: usize,
+    /// Source mapping per buffer line.
+    rows: Vec<ReviewRow>,
     /// `(buffer line, file index)` for each row of the file summary.
-    pub stat_rows: Vec<(usize, usize)>,
+    stat_rows: Vec<(usize, usize)>,
     /// Buffer lines of hunk headers.
-    pub hunk_lines: Vec<usize>,
-    /// Buffer line of the first header line of each file.
-    pub file_lines: Vec<usize>,
+    hunk_lines: Vec<usize>,
+    /// Buffer line of the first header line of each file, indexed by file.
+    file_lines: Vec<usize>,
+    /// The same lines in buffer order, for `]f` / `[f`.
+    file_nav: Vec<usize>,
+    /// The clickable layout switch.
+    toolbar: Toolbar,
     /// Buffer text split into lines (for refresh anchoring).
     text_lines: Vec<String>,
+    /// Byte range of each patch line inside `patch.text`, for mapping a
+    /// cursor column back to a column in the source file. Ranges rather than
+    /// owned lines: a review can hold a hundred thousand of them.
+    patch_line_ranges: Vec<(usize, usize)>,
 }
 
 impl DiffReviewState {
+    pub fn root(&self) -> &Path {
+        &self.patch.root
+    }
+
+    pub fn base(&self) -> &ReviewBase {
+        &self.patch.base
+    }
+
+    fn row(&self, line: usize) -> Option<&ReviewRow> {
+        self.rows.get(line)
+    }
+
     fn file_for_stat_row(&self, line: usize) -> Option<usize> {
         self.stat_rows
             .iter()
@@ -69,34 +96,41 @@ impl DiffReviewState {
             .map(|(_, file)| *file)
     }
 
-    fn info(&self, line: usize) -> Option<PatchLine> {
-        self.lines.get(line).copied().flatten()
+    fn info(&self, line: usize) -> Option<crate::native_diff::PatchLine> {
+        self.row(line).and_then(ReviewRow::info)
     }
 
     /// Best `(file index, 1-based line)` source target for a buffer line.
     fn source_target(&self, line: usize) -> Option<(usize, usize)> {
-        let info = self.info(line)?;
+        self.cell_target(line, self.info(line)?)
+    }
+
+    fn cell_target(
+        &self,
+        line: usize,
+        info: crate::native_diff::PatchLine,
+    ) -> Option<(usize, usize)> {
         let file = info.file?;
         if let Some(new_line) = info.new_line {
             return Some((file, new_line));
         }
         // File headers and meta lines: use the first hunk that follows.
         let next_hunk = self
-            .lines
+            .rows
             .iter()
             .skip(line + 1)
-            .map_while(|entry| entry.as_ref())
+            .map_while(ReviewRow::info)
             .find(|entry| entry.file == Some(file) && entry.kind == PatchLineKind::HunkHeader)
             .and_then(|entry| entry.new_line);
         Some((file, next_hunk.unwrap_or(1)))
     }
 
-    /// Where the cursor is, in source terms, so a refresh can restore it.
+    /// Where the cursor is, in source terms, so a re-render can restore it.
     fn anchor(&self, line: usize, text: Option<String>) -> Option<Anchor> {
         let target = self
             .source_target(line)
             .or_else(|| self.file_for_stat_row(line).map(|file| (file, 1)))?;
-        let path = self.files.get(target.0)?.path.clone();
+        let path = self.patch.files.get(target.0)?.path.clone();
         Some(Anchor {
             path,
             new_line: target.1,
@@ -104,16 +138,17 @@ impl DiffReviewState {
         })
     }
 
-    /// Buffer line to restore after a refresh: the same patch line if its
+    /// Buffer line to restore after a re-render: the same patch line if its
     /// text still exists in that file (nearest to the old position), else the
     /// first line at or after the old source line, else the file header.
     fn line_for_anchor(&self, anchor: &Anchor) -> Option<usize> {
         let file = self
+            .patch
             .files
             .iter()
             .position(|entry| entry.path == anchor.path)?;
-        let candidates = self.lines.iter().enumerate().filter_map(|(line, entry)| {
-            let entry = entry.as_ref()?;
+        let candidates = self.rows.iter().enumerate().filter_map(|(line, row)| {
+            let entry = row.info()?;
             (entry.file == Some(file) && entry.kind != PatchLineKind::FileHeader)
                 .then_some((line, entry.new_line?))
         });
@@ -121,7 +156,7 @@ impl DiffReviewState {
         if let Some(text) = &anchor.text {
             let same_text = candidates
                 .clone()
-                .filter(|(line, _)| self.line_text(*line).as_deref() == Some(text.as_str()))
+                .filter(|(line, _)| self.line_text(*line) == Some(text.as_str()))
                 .min_by_key(|(_, new_line)| new_line.abs_diff(anchor.new_line));
             if let Some((line, _)) = same_text {
                 return Some(line);
@@ -138,9 +173,58 @@ impl DiffReviewState {
     fn line_text(&self, line: usize) -> Option<&str> {
         self.text_lines.get(line).map(String::as_str)
     }
+
+    /// The `(byte range, added)` tints for a rendered line, so the frontend
+    /// can paint the added/removed background the way `delta` does.
+    pub fn line_tints(&self, line: usize) -> Vec<(std::ops::Range<usize>, bool)> {
+        self.row(line)
+            .map(|row| row.tints().collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether a rendered line's tint runs all the way to its end, so the
+    /// frontend can carry the band through the padding to the right edge.
+    /// `Some(true)` is an addition, `Some(false)` a removal.
+    pub fn line_trailing_tint(&self, line: usize) -> Option<bool> {
+        let length = self.line_text(line)?.len();
+        if length == 0 {
+            return None;
+        }
+        self.row(line)?
+            .tints()
+            .find(|(range, _)| range.end >= length)
+            .map(|(_, added)| added)
+    }
+
+    /// The column in the source file a cursor at `col` refers to.
+    fn source_column(&self, cell: &ReviewCell, col: usize, tab_width: usize) -> usize {
+        if cell.text_len == 0 {
+            return 0;
+        }
+        let Some(body) = self.patch_body(cell.patch_line) else {
+            return 0;
+        };
+        let glyphs = layout_body(body, tab_width, self.layout == DiffLayout::Split);
+        if glyphs.is_empty() {
+            return 0;
+        }
+        let offset = col.saturating_sub(cell.text_col).min(cell.text_len - 1);
+        let index = (cell.src_glyph + offset).min(glyphs.len() - 1);
+        grapheme_index_for_byte(body, glyphs[index].src_byte)
+    }
+
+    /// The text of a patch line with its `+`/`-`/space marker stripped.
+    fn patch_body(&self, patch_line: usize) -> Option<&str> {
+        let (start, end) = *self.patch_line_ranges.get(patch_line)?;
+        let text = self.patch.text.get(start..end)?;
+        match self.patch.lines.get(patch_line)?.kind {
+            PatchLineKind::Added | PatchLineKind::Removed | PatchLineKind::Context => text.get(1..),
+            _ => Some(text),
+        }
+    }
 }
 
-/// Source position of the cursor, captured before a refresh.
+/// Source position of the cursor, captured before a re-render.
 struct Anchor {
     path: String,
     new_line: usize,
@@ -152,15 +236,6 @@ struct Anchor {
 pub struct PendingGitFetch {
     receiver: Receiver<Result<(), String>>,
     target: String,
-}
-
-struct Rendered {
-    title: String,
-    text: String,
-    lines: Vec<Option<PatchLine>>,
-    stat_rows: Vec<(usize, usize)>,
-    hunk_lines: Vec<usize>,
-    file_lines: Vec<usize>,
 }
 
 impl Editor {
@@ -212,13 +287,20 @@ impl Editor {
             None => native_diff::resolve_base(&root_hint)?,
         };
         let patch = native_diff::review_patch(&root_hint, &base)?;
-        let rendered = render_review(&patch, self.unsaved_buffer_count());
+
+        let layout = self.ui_panels.diff_review_layout;
+        let (area_width, width) = self.diff_review_widths();
+        let rendered = render::render(
+            &patch,
+            layout,
+            width,
+            self.unsaved_buffer_count(),
+            self.diff_review_tab_width(),
+        );
 
         let origin_buffer_id = Some(self.buffer().id());
         let origin_tab = self.current_tab_index();
         self.open_diff_buffer_in_new_tab(&rendered.title, &rendered.text);
-        self.buffer_mut()
-            .enable_syntax_highlighting_for_path(REVIEW_SYNTAX_PATH);
         let buffer_id = self.buffer().id();
 
         self.ui_panels.diff_review = Some(DiffReviewState {
@@ -226,16 +308,29 @@ impl Editor {
             origin_buffer_id,
             origin_tab,
             explicit_spec: explicit_spec.map(str::to_string),
-            root: patch.root.clone(),
-            base: patch.base.clone(),
-            files: patch.files.clone(),
-            lines: rendered.lines,
-            stat_rows: rendered.stat_rows,
-            hunk_lines: rendered.hunk_lines,
-            file_lines: rendered.file_lines,
-            text_lines: rendered.text.lines().map(str::to_string).collect(),
+            layout,
+            layout_width: width,
+            layout_area_width: area_width,
+            patch_line_ranges: patch_line_ranges(&patch),
+            patch,
+            rows: Vec::new(),
+            stat_rows: Vec::new(),
+            hunk_lines: Vec::new(),
+            file_lines: Vec::new(),
+            file_nav: Vec::new(),
+            toolbar: Toolbar::default(),
+            text_lines: Vec::new(),
         });
-        self.set_status_message(summary_message(&patch));
+        self.apply_rendered_review(rendered);
+
+        let message = self
+            .ui_panels
+            .diff_review
+            .as_ref()
+            .map(|state| summary_message(&state.patch));
+        if let Some(message) = message {
+            self.set_status_message(message);
+        }
         self.mark_dirty();
         Ok(())
     }
@@ -245,24 +340,18 @@ impl Editor {
         let Some(index) = self.review_buffer_index() else {
             return;
         };
-        let (root, base, anchor, explicit) = {
+        let (root, base, explicit) = {
             let state = self.ui_panels.diff_review.as_ref().expect("review state");
-            let cursor_line = self.buffers[index].cursor().line();
-            let cursor_text = state.line_text(cursor_line).map(str::to_string);
             (
-                state.root.clone(),
-                state.base.clone(),
-                state.anchor(cursor_line, cursor_text),
+                state.patch.root.clone(),
+                state.patch.base.clone(),
                 state.explicit_spec.clone(),
             )
         };
 
         let base = match &explicit {
             Some(spec) => ReviewBase::explicit(spec),
-            None => match native_diff::resolve_base(&root) {
-                Ok(base) => base,
-                Err(_) => base,
-            },
+            None => native_diff::resolve_base(&root).unwrap_or(base),
         };
         let patch = match native_diff::review_patch(&root, &base) {
             Ok(patch) => patch,
@@ -271,34 +360,89 @@ impl Editor {
                 return;
             }
         };
-        let rendered = render_review(&patch, self.unsaved_buffer_count());
 
-        let buffer = &mut self.buffers[index];
-        buffer.replace_content(&rendered.text);
-        buffer.set_display_name(rendered.title);
-
-        let state = self.ui_panels.diff_review.as_mut().expect("review state");
-        state.base = patch.base.clone();
-        state.files = patch.files.clone();
-        state.lines = rendered.lines;
-        state.stat_rows = rendered.stat_rows;
-        state.hunk_lines = rendered.hunk_lines;
-        state.file_lines = rendered.file_lines;
-        state.text_lines = rendered.text.lines().map(str::to_string).collect();
-
-        if let Some(anchor) = anchor {
-            if let Some(line) = state.line_for_anchor(&anchor) {
-                self.buffers[index]
-                    .cursor_mut()
-                    .set_position(line, GraphemeCol(0));
-            }
+        let anchor = self.diff_review_anchor(index, true);
+        {
+            let state = self.ui_panels.diff_review.as_mut().expect("review state");
+            state.patch_line_ranges = patch_line_ranges(&patch);
+            state.patch = patch;
         }
-        if index == self.current_buffer_index {
-            self.buffer_mut().validate_cursor_position();
-            self.center_cursor_in_viewport();
+        self.rerender_diff_review(anchor);
+
+        let message = self
+            .ui_panels
+            .diff_review
+            .as_ref()
+            .map(|state| summary_message(&state.patch));
+        if let Some(message) = message {
+            self.set_status_message(message);
         }
-        self.set_status_message(summary_message(&patch));
-        self.mark_dirty();
+    }
+
+    /// `s` in the review, or a click on the toolbar.
+    pub fn toggle_diff_review_layout(&mut self) {
+        let next = self
+            .ui_panels
+            .diff_review
+            .as_ref()
+            .map(|state| state.layout)
+            .unwrap_or(self.ui_panels.diff_review_layout)
+            .toggled();
+        self.set_diff_review_layout(next);
+    }
+
+    /// Switches the review to `layout`, keeping the cursor on the same change.
+    /// The choice sticks for reviews opened later in the session.
+    pub fn set_diff_review_layout(&mut self, layout: DiffLayout) {
+        self.ui_panels.diff_review_layout = layout;
+        let Some(index) = self.review_buffer_index() else {
+            return;
+        };
+        if self
+            .ui_panels
+            .diff_review
+            .as_ref()
+            .is_some_and(|state| state.layout == layout)
+        {
+            return;
+        }
+        // The rendered line text differs between layouts, so anchor on the
+        // source position only.
+        let anchor = self.diff_review_anchor(index, false);
+        if let Some(state) = self.ui_panels.diff_review.as_mut() {
+            state.layout = layout;
+        }
+        self.rerender_diff_review(anchor);
+        self.set_status_message(format!("Diff review: {} view", layout.label()));
+    }
+
+    /// Re-flows the side-by-side layout after the window changed width.
+    /// Returns true when the buffer was re-rendered.
+    pub fn relayout_diff_review(&mut self) -> bool {
+        let Some(index) = self.review_buffer_index() else {
+            return false;
+        };
+        let (area_width, width) = self.diff_review_widths();
+        // Re-flow on a real resize, and once more if the review's own line
+        // number gutter turned out wider than the buffer it replaced. Only
+        // shrinking is allowed without a resize, so the two cannot chase each
+        // other.
+        let visible = index == self.current_buffer_index;
+        let stale = self.ui_panels.diff_review.as_ref().is_some_and(|state| {
+            state.layout == DiffLayout::Split
+                && (state.layout_area_width != area_width
+                    || (visible && width < state.layout_width))
+        });
+        if !stale {
+            return false;
+        }
+        let anchor = self.diff_review_anchor(index, true);
+        if let Some(state) = self.ui_panels.diff_review.as_mut() {
+            state.layout_width = width;
+            state.layout_area_width = area_width;
+        }
+        self.rerender_diff_review(anchor);
+        true
     }
 
     /// Closes the review tab and drops its buffer and state.
@@ -325,6 +469,22 @@ impl Editor {
         self.mark_dirty();
     }
 
+    /// A left click inside the review. Returns true when it hit the toolbar
+    /// and the caller should not move the cursor.
+    pub fn diff_review_click(&mut self, line: usize, col: usize) -> bool {
+        let Some(layout) = self
+            .ui_panels
+            .diff_review
+            .as_ref()
+            .filter(|state| state.buffer_id == self.buffer().id())
+            .and_then(|state| state.toolbar.hit(line, col))
+        else {
+            return false;
+        };
+        self.set_diff_review_layout(layout);
+        true
+    }
+
     /// `Enter` in the review: open the file at the line under the cursor in
     /// the originating tab.
     pub fn diff_review_open_at_cursor(&mut self) {
@@ -342,28 +502,26 @@ impl Editor {
             return;
         }
 
-        let Some((file_index, new_line)) = state.source_target(line) else {
+        let cell = state.row(line).and_then(|row| row.cell_at(col));
+        let target = cell.and_then(|cell| state.cell_target(line, cell.info));
+        let Some((file_index, new_line)) = target else {
             self.set_status_message("Move to a changed line and press Enter to open it");
             return;
         };
-        let file = &state.files[file_index];
+        let file = &state.patch.files[file_index];
         if file.status == "deleted" {
+            let path = file.path.clone();
             self.review_toast(
                 ToastLevel::Warning,
-                format!("{} was deleted on this branch", file.path),
+                format!("{path} was deleted on this branch"),
             );
             return;
         }
-        let is_text_line = matches!(
-            state.info(line).map(|info| info.kind),
-            Some(PatchLineKind::Added | PatchLineKind::Removed | PatchLineKind::Context)
-        );
-        let target_col = if is_text_line {
-            col.saturating_sub(1)
-        } else {
-            0
-        };
-        let path = state.root.join(&file.path);
+        let tab_width = self.diff_review_tab_width();
+        let target_col = cell
+            .map(|cell| state.source_column(&cell, col, tab_width))
+            .unwrap_or(0);
+        let path = state.patch.root.join(&file.path);
         let display_path = file.path.clone();
 
         self.go_to_review_origin();
@@ -436,7 +594,7 @@ impl Editor {
             return;
         };
         let cursor_line = self.buffer().cursor().line();
-        let target = next_in(&state.file_lines, cursor_line, forward);
+        let target = next_in(&state.file_nav, cursor_line, forward);
         match target {
             Some(line) => self.jump_to_review_line(line),
             None => self.set_status_message(if forward { "Last file" } else { "First file" }),
@@ -452,7 +610,7 @@ impl Editor {
         }
         let root = self.diff_review_root_hint();
         let base = match self.ui_panels.diff_review.as_ref() {
-            Some(state) => Ok(state.base.clone()),
+            Some(state) => Ok(state.patch.base.clone()),
             None => native_diff::resolve_base(&root),
         };
         let remote = match base {
@@ -542,6 +700,98 @@ impl Editor {
     fn review_buffer_index(&self) -> Option<usize> {
         let state = self.ui_panels.diff_review.as_ref()?;
         self.find_buffer_index_by_id(state.buffer_id)
+    }
+
+    /// Captures where the cursor is, in source terms, before a re-render.
+    /// `match_text` anchors on the patch line's text too, which only helps
+    /// when the layout stays the same.
+    fn diff_review_anchor(&self, index: usize, match_text: bool) -> Option<Anchor> {
+        let state = self.ui_panels.diff_review.as_ref()?;
+        let cursor_line = self.buffers[index].cursor().line();
+        let text = match_text
+            .then(|| state.line_text(cursor_line).map(str::to_string))
+            .flatten();
+        state.anchor(cursor_line, text)
+    }
+
+    /// Re-renders the review buffer from the patch already in state.
+    fn rerender_diff_review(&mut self, anchor: Option<Anchor>) {
+        let Some(index) = self.review_buffer_index() else {
+            return;
+        };
+        let unsaved = self.unsaved_buffer_count();
+        let tab_width = self.diff_review_tab_width();
+        let rendered = {
+            let state = self.ui_panels.diff_review.as_ref().expect("review state");
+            render::render(
+                &state.patch,
+                state.layout,
+                state.layout_width,
+                unsaved,
+                tab_width,
+            )
+        };
+        self.buffers[index].replace_content(&rendered.text);
+        self.buffers[index].set_display_name(rendered.title.clone());
+        self.apply_rendered_review(rendered);
+
+        if let Some(anchor) = anchor {
+            let target = self
+                .ui_panels
+                .diff_review
+                .as_ref()
+                .and_then(|state| state.line_for_anchor(&anchor));
+            if let Some(line) = target {
+                self.buffers[index]
+                    .cursor_mut()
+                    .set_position(line, GraphemeCol(0));
+            }
+        }
+        if index == self.current_buffer_index {
+            self.buffer_mut().validate_cursor_position();
+            self.center_cursor_in_viewport();
+        }
+        self.mark_dirty();
+    }
+
+    /// Installs a fresh render into the state and the review buffer.
+    fn apply_rendered_review(&mut self, rendered: Rendered) {
+        let Some(index) = self.review_buffer_index() else {
+            return;
+        };
+        self.buffers[index].set_forced_highlights(rendered.highlights);
+        let state = self.ui_panels.diff_review.as_mut().expect("review state");
+        state.rows = rendered.rows;
+        state.stat_rows = rendered.stat_rows;
+        state.hunk_lines = rendered.hunk_lines;
+        state.file_nav = {
+            let mut lines = rendered.file_lines.clone();
+            lines.sort_unstable();
+            lines.dedup();
+            lines
+        };
+        state.file_lines = rendered.file_lines;
+        state.toolbar = rendered.toolbar;
+        state.text_lines = rendered.text.lines().map(str::to_string).collect();
+    }
+
+    /// `(buffer area width, text width)` the review lays out against.
+    fn diff_review_widths(&self) -> (usize, usize) {
+        let Some(area) = self.render_cache.last_buffer_area else {
+            return (0, DEFAULT_LAYOUT_WIDTH);
+        };
+        let area_width = area.width as usize;
+        let text_width = if self.render_cache.last_text_width > 0 {
+            self.render_cache.last_text_width
+        } else {
+            area_width.saturating_sub(self.render_cache.last_gutter_width)
+        };
+        // Stop one column short so a full-width row never triggers a soft wrap.
+        (area_width, text_width.saturating_sub(1).max(20))
+    }
+
+    fn diff_review_tab_width(&self) -> usize {
+        self.indent_options().tab_width
     }
 
     /// Switches to the review tab (or shows the review buffer in a new tab)
@@ -635,7 +885,7 @@ impl Editor {
 
     fn diff_review_root_hint(&self) -> PathBuf {
         if let Some(state) = self.ui_panels.diff_review.as_ref() {
-            return state.root.clone();
+            return state.patch.root.clone();
         }
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let Some(path) = self.buffer().file_path() else {
@@ -664,6 +914,23 @@ impl Editor {
     }
 }
 
+/// Byte ranges of each line of `patch.text`, in the same order as
+/// [`ReviewPatch::lines`].
+fn patch_line_ranges(patch: &ReviewPatch) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::with_capacity(patch.lines.len());
+    let mut start = 0;
+    for (offset, byte) in patch.text.bytes().enumerate() {
+        if byte == b'\n' {
+            ranges.push((start, offset));
+            start = offset + 1;
+        }
+    }
+    if start < patch.text.len() {
+        ranges.push((start, patch.text.len()));
+    }
+    ranges
+}
+
 fn next_in(lines: &[usize], cursor_line: usize, forward: bool) -> Option<usize> {
     if forward {
         lines.iter().copied().find(|line| *line > cursor_line)
@@ -672,241 +939,9 @@ fn next_in(lines: &[usize], cursor_line: usize, forward: bool) -> Option<usize> 
     }
 }
 
-fn summary_message(patch: &ReviewPatch) -> String {
-    if patch.files.is_empty() {
-        return format!("No changes: {} matches {}", patch.head, patch.base.name);
-    }
-    format!(
-        "{} → {}: {} · +{} −{}",
-        patch.head,
-        patch.base.name,
-        plural(patch.files.len(), "file"),
-        patch.additions(),
-        patch.deletions()
-    )
-}
-
-/// Renders the review buffer: a summary header, a file list, then the patch.
-fn render_review(patch: &ReviewPatch, unsaved_buffers: usize) -> Rendered {
-    let mut text = String::new();
-    let mut lines: Vec<Option<PatchLine>> = Vec::new();
-    let mut stat_rows = Vec::new();
-
-    let header = |text: &mut String, lines: &mut Vec<Option<PatchLine>>, line: &str| {
-        text.push_str(line);
-        text.push('\n');
-        lines.push(None);
-    };
-
-    header(
-        &mut text,
-        &mut lines,
-        &format!("{} → {}", patch.head, patch.base.name),
-    );
-    header(&mut text, &mut lines, &describe_base(patch));
-    if patch.files.is_empty() {
-        header(&mut text, &mut lines, "No changes");
-    } else {
-        header(
-            &mut text,
-            &mut lines,
-            &format!(
-                "{} · +{} −{}",
-                plural(patch.files.len(), "file"),
-                patch.additions(),
-                patch.deletions()
-            ),
-        );
-    }
-    if unsaved_buffers > 0 {
-        header(
-            &mut text,
-            &mut lines,
-            &format!(
-                "! {} with unsaved changes; the review reflects what is on disk",
-                plural(unsaved_buffers, "buffer")
-            ),
-        );
-    }
-    if patch.truncated {
-        header(&mut text, &mut lines, "! Diff truncated at 4 MiB");
-    }
-
-    if !patch.files.is_empty() {
-        header(&mut text, &mut lines, "");
-        let width = patch
-            .files
-            .iter()
-            .map(|file| stat_label(file).chars().count())
-            .max()
-            .unwrap_or(0)
-            .min(72);
-        for (index, file) in patch.files.iter().enumerate() {
-            stat_rows.push((lines.len(), index));
-            let label = stat_label(file);
-            let counts = if file.binary {
-                "binary".to_string()
-            } else {
-                let mut counts = String::new();
-                if file.additions > 0 || file.deletions == 0 {
-                    counts.push_str(&format!("+{}", file.additions));
-                }
-                if file.deletions > 0 {
-                    if !counts.is_empty() {
-                        counts.push(' ');
-                    }
-                    counts.push_str(&format!("−{}", file.deletions));
-                }
-                counts
-            };
-            header(
-                &mut text,
-                &mut lines,
-                &format!(
-                    "  {}  {label:<width$}  {counts}",
-                    status_letter(&file.status)
-                ),
-            );
-        }
-    }
-
-    header(&mut text, &mut lines, "");
-    header(&mut text, &mut lines, KEY_HINT);
-    header(&mut text, &mut lines, "");
-
-    let offset = lines.len();
-    text.push_str(&patch.text);
-    lines.extend(patch.lines.iter().copied().map(Some));
-
-    let mut hunk_lines = Vec::new();
-    let mut file_lines = Vec::new();
-    let mut seen_file: Option<usize> = None;
-    for (index, info) in patch.lines.iter().enumerate() {
-        let line = offset + index;
-        if info.kind == PatchLineKind::HunkHeader {
-            hunk_lines.push(line);
-        }
-        if info.kind == PatchLineKind::FileHeader && info.file != seen_file {
-            seen_file = info.file;
-            file_lines.push(line);
-        }
-    }
-    // `file_lines` must be indexable by file index; fill gaps for files that
-    // produced no header (should not happen, but keep lookups safe).
-    if file_lines.len() < patch.files.len() {
-        let mut by_file = vec![usize::MAX; patch.files.len()];
-        for (index, info) in patch.lines.iter().enumerate() {
-            if let (PatchLineKind::FileHeader, Some(file)) = (info.kind, info.file) {
-                if by_file[file] == usize::MAX {
-                    by_file[file] = offset + index;
-                }
-            }
-        }
-        let fallback = offset;
-        file_lines = by_file
-            .into_iter()
-            .map(|line| if line == usize::MAX { fallback } else { line })
-            .collect();
-    }
-
-    Rendered {
-        title: format!(
-            "{DIFF_REVIEW_TITLE_PREFIX}{} → {}",
-            patch.head, patch.base.name
-        ),
-        text,
-        lines,
-        stat_rows,
-        hunk_lines,
-        file_lines,
-    }
-}
-
-fn describe_base(patch: &ReviewPatch) -> String {
-    let base = &patch.base;
-    match base.kind {
-        BaseKind::OnDefaultBranch => {
-            format!("On {}: uncommitted changes against HEAD", base.name)
-        }
-        BaseKind::NoDefaultBranch => {
-            "No default branch found: uncommitted changes against HEAD".to_string()
-        }
-        BaseKind::Explicit if !base.spec.ends_with("...WORKTREE") => {
-            format!("Comparison {}", base.spec)
-        }
-        BaseKind::DefaultBranch | BaseKind::Explicit => {
-            let mut parts = Vec::new();
-            if let Some(merge_base) = &patch.merge_base {
-                parts.push(format!("merge-base {merge_base}"));
-            }
-            parts.push(format!("{} ahead", plural(patch.ahead, "commit")));
-            if patch.behind > 0 {
-                parts.push(format!("{} behind", patch.behind));
-            }
-            if base.remote.is_some() {
-                let fetched = match (base.ever_fetched, base.fetched_ago) {
-                    (false, _) => "never fetched".to_string(),
-                    (true, Some(age)) => format!("fetched {}", humanize(age)),
-                    (true, None) => "fetched".to_string(),
-                };
-                parts.push(format!("{} {fetched}", base.name));
-            }
-            parts.join(" · ")
-        }
-    }
-}
-
-fn stat_label(file: &DiffFile) -> String {
-    match &file.old_path {
-        Some(old) => format!("{old} → {}", file.path),
-        None => file.path.clone(),
-    }
-}
-
-fn status_letter(status: &str) -> char {
-    match status {
-        "added" => 'A',
-        "deleted" => 'D',
-        "renamed" => 'R',
-        "copied" => 'C',
-        "typechanged" => 'T',
-        "conflicted" => 'U',
-        _ => 'M',
-    }
-}
-
-fn plural(count: usize, noun: &str) -> String {
-    if count == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{count} {noun}s")
-    }
-}
-
-fn humanize(age: Duration) -> String {
-    let seconds = age.as_secs();
-    if seconds < 90 {
-        "just now".to_string()
-    } else if seconds < 90 * 60 {
-        format!("{} min ago", seconds / 60)
-    } else if seconds < 36 * 3600 {
-        format!("{} h ago", seconds / 3600)
-    } else {
-        format!("{} d ago", seconds / 86_400)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn humanize_buckets() {
-        assert_eq!(humanize(Duration::from_secs(10)), "just now");
-        assert_eq!(humanize(Duration::from_secs(600)), "10 min ago");
-        assert_eq!(humanize(Duration::from_secs(3 * 3600)), "3 h ago");
-        assert_eq!(humanize(Duration::from_secs(3 * 86_400)), "3 d ago");
-    }
 
     #[test]
     fn next_in_moves_relative_to_cursor() {

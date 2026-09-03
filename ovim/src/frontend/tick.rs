@@ -550,6 +550,11 @@ async fn poll_background_tasks(editor: &mut Editor) {
     if editor.poll_git_fetch() {
         editor.mark_dirty();
     }
+    // The side-by-side diff review is laid out to a fixed width, so it has to
+    // re-flow when the window changes size.
+    if editor.relayout_diff_review() {
+        editor.mark_dirty();
+    }
     if editor.has_approved_lsp_install() {
         crate::lsp_init::handle_approved_lsp_install(editor).await;
         editor.mark_dirty();

@@ -1,12 +1,12 @@
-use crate::syntax::{HighlightGroup, Theme, UiGroup};
+use crate::syntax::{Theme, UiGroup};
 use ratatui::style::{Color, Modifier, Style};
 use std::ops::Range;
 
 /// Adjusts syntax highlight ranges based on tab expansion mapping
-pub fn remap_highlights(
-    highlights: &[(Range<usize>, HighlightGroup)],
+pub fn remap_highlights<T: Copy>(
+    highlights: &[(Range<usize>, T)],
     byte_mapping: &[(usize, usize)],
-) -> Vec<(Range<usize>, HighlightGroup)> {
+) -> Vec<(Range<usize>, T)> {
     highlights
         .iter()
         .map(|(range, group)| {

@@ -117,6 +117,7 @@ impl Buffer {
             language_catalog: crate::language_catalog::LanguageCatalog::shared_built_in(),
             syntax_loading: false,
             cached_highlights: None,
+            forced_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
             fold_manager: FoldManager::new(),

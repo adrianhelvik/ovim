@@ -27,7 +27,7 @@ pub fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         editor.close_test_panel();
     }
 
-    // 0. Buffer-local keys of the branch diff review (Enter / q / r). Only
+    // 0. Buffer-local keys of the branch diff review (Enter / q / r / s). Only
     //    when nothing is pending so `]c`, counts and searches still work.
     if try_handle_diff_review_key(editor, key_event) {
         return Ok(());
@@ -87,6 +87,7 @@ fn try_handle_diff_review_key(editor: &mut Editor, key_event: KeyEvent) -> bool 
         KeyCode::Enter => editor.diff_review_open_at_cursor(),
         KeyCode::Char('q') => editor.close_diff_review(),
         KeyCode::Char('r') => editor.refresh_diff_review(),
+        KeyCode::Char('s') => editor.toggle_diff_review_layout(),
         _ => return false,
     }
     true
