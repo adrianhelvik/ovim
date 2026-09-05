@@ -144,6 +144,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         _ => unreachable!("text object key should be validated before object_type mapping"),
     };
 
+    let result = if operator == Operator::Change {
+        object_type.resolve_for_change(editor.buffer())
+    } else {
+        result
+    };
     if let Some(range) = result {
         match operator {
             Operator::Delete => {
@@ -278,16 +283,21 @@ fn apply_change_operator(
         );
         buf.set_cursor_char_col(range.start_line, range.start_col);
     });
-    if edits.is_empty() {
-        return Ok(());
-    }
-    editor.delete_to_register(deleted);
     let cursor_after = editor.cursor_position();
-    let delete_token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    let delete_token = if edits.is_empty() {
+        editor
+            .buffer_mut()
+            .change_manager_mut()
+            .last_repeat_register = editor.pending_register();
+        None
+    } else {
+        editor.delete_to_register(deleted);
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
+    };
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteTextObject { object_type },
         linewise: false,
-        delete_token: Some(delete_token),
+        delete_token,
     });
 
     let new_cursor = editor.buffer().cursor();

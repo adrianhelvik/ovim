@@ -102,6 +102,32 @@ pub enum TextObjectType {
 }
 
 impl TextObjectType {
+    /// A change can insert inside an empty pair or quote even though there is
+    /// no text for a delete or visual selection to operate on.
+    pub fn resolve_for_change(&self, buffer: &Buffer) -> Option<TextObjectRange> {
+        if let Some(range) = self.resolve(buffer) {
+            return Some(range);
+        }
+        let around = match self {
+            Self::Paired {
+                open,
+                close,
+                inner: true,
+            } => TextObjects::paired_delimiters(buffer, *open, *close, true),
+            Self::Quote { char, inner: true } => TextObjects::quoted_string(buffer, *char, true),
+            _ => None,
+        }?;
+        if around.start_line == around.end_line && around.end_col == around.start_col + 2 {
+            Some(TextObjectRange {
+                start_col: around.start_col + 1,
+                end_col: around.start_col + 1,
+                ..around
+            })
+        } else {
+            None
+        }
+    }
+
     /// Resolve this text object to a range at the current cursor position.
     pub fn resolve(&self, buffer: &Buffer) -> Option<TextObjectRange> {
         match self {
@@ -634,6 +660,8 @@ pub struct ChangeManager {
     pub change_list_index: Option<usize>,
     /// Semantic repeat action for dot-repeat (mutually exclusive with last_change)
     pub last_repeat_action: Option<RepeatAction>,
+    /// Explicit register used by the last delete/change/paste command.
+    pub last_repeat_register: Option<char>,
 }
 
 impl Default for ChangeManager {
@@ -655,6 +683,7 @@ impl ChangeManager {
             change_list: Vec::new(),
             change_list_index: None,
             last_repeat_action: None,
+            last_repeat_register: None,
         }
     }
 

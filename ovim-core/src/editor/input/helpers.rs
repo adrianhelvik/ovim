@@ -676,10 +676,16 @@ fn expand_paste_by_count(text: String, reg_type: RegisterType, count: usize) -> 
 }
 
 pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
+    let register = editor.pending_register();
     let (text, reg_type) = editor.get_from_register_with_type();
     if text.is_empty() {
         return Ok(());
     }
+
+    editor
+        .buffer_mut()
+        .change_manager_mut()
+        .last_repeat_register = register;
 
     // Multiply paste text by count, respecting the register type:
     // - Character: concatenate copies inline.
@@ -901,10 +907,16 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
 }
 
 pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
+    let register = editor.pending_register();
     let (text, reg_type) = editor.get_from_register_with_type();
     if text.is_empty() {
         return Ok(());
     }
+
+    editor
+        .buffer_mut()
+        .change_manager_mut()
+        .last_repeat_register = register;
 
     // Multiply paste text by count (see `expand_paste_by_count`).
     let text = expand_paste_by_count(text, reg_type, count);

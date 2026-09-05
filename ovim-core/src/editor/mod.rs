@@ -1960,6 +1960,7 @@ impl Editor {
 
     /// Deletes text and stores in the appropriate register with explicit type
     pub fn delete_to_register_with_type(&mut self, text: String, reg_type: RegisterType) {
+        self.buffer_mut().change_manager_mut().last_repeat_register = self.input.pending_register;
         if let Some(reg) = self.input.pending_register {
             self.input.pending_register = None;
             match reg {
@@ -2092,6 +2093,7 @@ impl Editor {
                 // so the re-paste re-anchors to the current cursor (same
                 // semantics the old `Change::InsertText::repeat` provided).
                 self.registers.set(None, text.to_string());
+                self.buffer_mut().change_manager_mut().last_repeat_register = None;
                 let cursor = self.buffer().cursor();
                 let cursor_before = CursorPos::new(cursor.line(), cursor.col());
                 // Convert grapheme col to char col for buffer operations.

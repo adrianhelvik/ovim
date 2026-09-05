@@ -660,66 +660,42 @@ impl Buffer {
         till: bool,
         count: usize,
     ) -> String {
-        let line_idx = self.cursor().line();
-        let col = self.cursor_char_col();
-
-        let Some(line_text) = self.line_text(line_idx) else {
+        let Some((start_col, end_col)) = self.char_motion_range(target, forward, till, count)
+        else {
             return String::new();
         };
-        let chars: Vec<char> = line_text.chars().collect();
-
-        let found = if forward {
-            let mut seen = 0usize;
-            let mut found_idx = None;
-            for (i, &c) in chars.iter().enumerate().skip(col.0 + 1) {
-                if c == target {
-                    seen += 1;
-                    if seen == count {
-                        found_idx = Some(i);
-                        break;
-                    }
-                }
-            }
-            found_idx
-        } else if col == 0 {
-            None
-        } else {
-            let mut seen = 0usize;
-            let mut found_idx = None;
-            for i in (0..col.0).rev() {
-                if chars.get(i).copied() == Some(target) {
-                    seen += 1;
-                    if seen == count {
-                        found_idx = Some(i);
-                        break;
-                    }
-                }
-            }
-            found_idx
-        };
-
-        let Some(found_idx) = found else {
-            return String::new();
-        };
-        let found_col = CharCol(found_idx);
-
-        // Backward F/T are EXCLUSIVE in vim: the cursor character itself is
-        // not deleted (dFx on `axbc` with cursor on `c` leaves `ac`) —
-        // OV-00288, mirrored in the interactive handler in char_motion.rs.
-        let (start_col, end_col) = if forward {
-            let end_excl = if till { found_col } else { found_col + 1 };
-            (col, end_excl)
-        } else if till {
-            // Backward till-motion (T): delete from just after target up to cursor.
-            (found_col + 1, col)
-        } else {
-            // Backward find-motion (F): delete from target up to cursor.
-            (found_col, col)
-        };
-
-        let deleted = self.delete_range(line_idx, start_col, line_idx, end_col);
-        self.set_cursor_char_col(line_idx, start_col);
+        let line = self.cursor().line();
+        let deleted = self.delete_range(line, start_col, line, end_col);
+        self.set_cursor_char_col(line, start_col);
         deleted
+    }
+
+    /// Resolves the same grapheme range as a live f/t/F/T operator, without
+    /// changing the cursor. A missing target cancels both deletion and change.
+    pub(crate) fn char_motion_range(
+        &mut self,
+        target: char,
+        forward: bool,
+        till: bool,
+        count: usize,
+    ) -> Option<(CharCol, CharCol)> {
+        use crate::editor::CharMotion;
+        let motion = match (forward, till) {
+            (true, false) => CharMotion::Find,
+            (true, true) => CharMotion::Till,
+            (false, false) => CharMotion::FindBack,
+            (false, true) => CharMotion::TillBack,
+        };
+        let start = *self.cursor();
+        let start_char = self.cursor_char_col();
+        let found = motion.execute(self, target, count);
+        let range = if forward {
+            (start_char, self.cursor_grapheme_end_char_col())
+        } else {
+            (self.cursor_char_col(), start_char)
+        };
+        *self.cursor_mut() = start;
+        found.then_some(range)
     }
 
     /// Clears a line range for a change operator, retaining its first line's

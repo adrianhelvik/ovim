@@ -225,6 +225,80 @@ impl RepeatAction {
         self
     }
 
+    /// Extracts the register payload from the recorded deletion phase. Undo
+    /// replays the same edits mechanically without changing any registers.
+    pub(crate) fn deleted_register(
+        &self,
+        edits: &[Edit],
+        before: &ropey::Rope,
+    ) -> Option<(String, crate::editor::RegisterType)> {
+        use crate::editor::RegisterType;
+        let first = edits
+            .iter()
+            .find(|edit| matches!(edit, Edit::Delete { .. }))?;
+        let register_type = match self {
+            Self::Change { linewise: true, .. }
+            | Self::DeleteLines { .. }
+            | Self::DeleteVisualLine { .. }
+            | Self::DeleteLineDown { .. }
+            | Self::DeleteLineUp { .. }
+            | Self::DeleteToLastLine { .. }
+            | Self::DeleteToFirstLine { .. }
+            | Self::DeleteTextObject {
+                object_type: TextObjectType::Paragraph { .. },
+            } => RegisterType::Line,
+            Self::Change { delete, .. } => return delete.deleted_register(edits, before),
+            Self::DeleteVisualBlock { .. } | Self::ChangeVisualBlock { .. } => RegisterType::Block,
+            Self::DeleteParagraphForward { .. } | Self::DeleteParagraphBackward { .. } => {
+                let starts_line =
+                    before.line_to_char(before.char_to_line(first.offset())) == first.offset();
+                if starts_line && first.text().ends_with('\n') {
+                    RegisterType::Line
+                } else {
+                    RegisterType::Character
+                }
+            }
+            Self::DeleteCharMotion { .. }
+            | Self::DeleteCharForward { .. }
+            | Self::DeleteCharBackward { .. }
+            | Self::DeleteToEndOfLine
+            | Self::DeleteWordForward { .. }
+            | Self::DeleteWordChange { .. }
+            | Self::DeleteWordChangeBig { .. }
+            | Self::ChangeWordEnd { .. }
+            | Self::ChangeWordEndBig { .. }
+            | Self::ChangeToMatchingBracket
+            | Self::DeleteSearchMatch { .. }
+            | Self::DeleteWordBackward { .. }
+            | Self::DeleteWordEnd { .. }
+            | Self::DeleteWordBackwardBig { .. }
+            | Self::DeleteWordEndBig { .. }
+            | Self::DeleteCharLeft { .. }
+            | Self::DeleteToStartOfLine
+            | Self::DeleteToFirstNonBlank
+            | Self::DeleteWordForwardBig { .. }
+            | Self::DeleteToMatchingBracket
+            | Self::DeleteVisualChar { .. }
+            | Self::DeleteTextObject { .. } => RegisterType::Character,
+            _ => return None,
+        };
+        let text = if register_type == RegisterType::Block {
+            edits
+                .iter()
+                .filter_map(|edit| match edit {
+                    Edit::Delete { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            // Change replay may also remove autoindent after an empty insert;
+            // only its first deletion belongs in the delete register.
+            first.text().to_string()
+        };
+        Some((text, register_type))
+    }
+
     /// Execute this action at the current cursor position.
     /// Caller is responsible for wrapping in `buffer.record()`.
     pub fn execute(&self, buffer: &mut Buffer) {
@@ -671,6 +745,25 @@ impl RepeatAction {
                 inserted_text,
                 linewise,
             } => {
+                match delete.as_ref() {
+                    Self::DeleteTextObject { object_type }
+                        if object_type.resolve_for_change(buffer).is_none() =>
+                    {
+                        return
+                    }
+                    Self::DeleteCharMotion {
+                        target,
+                        forward,
+                        till,
+                        count,
+                    } if buffer
+                        .char_motion_range(*target, *forward, *till, *count)
+                        .is_none() =>
+                    {
+                        return
+                    }
+                    _ => {}
+                }
                 let line = buffer.cursor().line();
                 let col = buffer.cursor().col();
                 if *linewise {
@@ -689,7 +782,28 @@ impl RepeatAction {
                     };
                     buffer.change_lines(start, end.min(buffer.line_count()));
                 } else {
-                    delete.execute(buffer);
+                    let version = buffer.version();
+                    if let Self::DeleteTextObject { object_type } = delete.as_ref() {
+                        if let Some(range) = object_type.resolve_for_change(buffer) {
+                            buffer.delete_range(
+                                range.start_line,
+                                range.start_col,
+                                range.end_line,
+                                range.end_col,
+                            );
+                            buffer.set_cursor_char_col(range.start_line, range.start_col);
+                        }
+                    } else {
+                        delete.execute(buffer);
+                    }
+                    if version == buffer.version()
+                        && matches!(
+                            delete.as_ref(),
+                            Self::ChangeToMatchingBracket | Self::DeleteSearchMatch { .. }
+                        )
+                    {
+                        return;
+                    }
                     // These normal-mode delete actions clamp an EOL insertion
                     // point. All other change actions resolve their own start,
                     // including backward motions and text objects.

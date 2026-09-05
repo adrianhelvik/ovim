@@ -1098,8 +1098,13 @@ pub(super) fn change_with(
     delete: impl FnOnce(&mut crate::buffer::Buffer) -> String,
 ) -> Result<()> {
     let cursor_before = editor.cursor_position();
+    let register = editor.pending_register();
 
     let (deleted, edits) = editor.buffer_mut().record(delete);
+    if edits.is_empty() && matches!(delete_action, RepeatAction::ChangeToMatchingBracket) {
+        editor.clear_count();
+        return Ok(());
+    }
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
@@ -1111,6 +1116,10 @@ pub(super) fn change_with(
         editor.mark_buffer_modified();
     }
 
+    editor
+        .buffer_mut()
+        .change_manager_mut()
+        .last_repeat_register = register;
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action,
         linewise: false,

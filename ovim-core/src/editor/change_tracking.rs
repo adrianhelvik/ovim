@@ -188,9 +188,15 @@ impl Editor {
             } else {
                 action
             };
+            let register = self
+                .input
+                .pending_register
+                .take()
+                .or(self.buffer().change_manager().last_repeat_register);
             // Paste repeat needs Editor-level access (registers), handle specially
             match &action {
                 RepeatAction::PasteAfter { count } | RepeatAction::PasteBefore { count } => {
+                    self.input.pending_register = register;
                     let count = *count;
                     let is_after = matches!(action, RepeatAction::PasteAfter { .. });
                     let _ = if is_after {
@@ -203,6 +209,7 @@ impl Editor {
                 _ => {}
             }
 
+            let original = self.buffer().rope().clone();
             let (before, after, edits) = {
                 let buf = self.buffer_mut();
                 let before = CursorPos::new(buf.cursor().line(), buf.cursor().col());
@@ -214,6 +221,10 @@ impl Editor {
             };
 
             if !edits.is_empty() {
+                if let Some((text, register_type)) = action.deleted_register(&edits, &original) {
+                    self.input.pending_register = register;
+                    self.delete_to_register_with_type(text, register_type);
+                }
                 self.push_recorded_undo(edits, before, after);
             }
             return;
