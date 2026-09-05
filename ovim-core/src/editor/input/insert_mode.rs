@@ -71,12 +71,21 @@ fn cleanup_whitespace_only_line(editor: &mut Editor) -> bool {
 
 /// Shared logic for exiting insert mode (Esc, Ctrl-[, Ctrl-C)
 fn exit_insert_mode(editor: &mut Editor) {
+    finish_insert_mode(editor, false);
+}
+
+/// Close the current recording before a temporary normal command can mutate
+/// the buffer. Ctrl-O keeps the insertion position and starts a fresh undo
+/// unit when the normal command completes.
+fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
     // Save last insert position BEFORE moving cursor (this is where we can continue inserting)
     let cursor = editor.buffer().cursor();
     editor.editing.last_insert_position = Some((cursor.line(), cursor.col().0));
 
     // Cleanup whitespace-only lines before finalizing changes
-    cleanup_whitespace_only_line(editor);
+    if !temporary {
+        cleanup_whitespace_only_line(editor);
+    }
 
     // Track whether finalize actually pushed an insert-mode undo entry.
     // For cases like `cw<Esc>`/`C<Esc>` where no text was typed, finalize
@@ -278,6 +287,9 @@ fn exit_insert_mode(editor: &mut Editor) {
     editor.editing.insert_normal_pending = false;
 
     editor.set_mode(Mode::Normal);
+    if temporary {
+        return;
+    }
 
     // Move cursor left when exiting insert mode (unless at column 0)
 
@@ -385,8 +397,8 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Ctrl-O - Execute one normal mode command, then return to insert
         KeyCode::Char('o') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            finish_insert_mode(editor, true);
             editor.editing.insert_normal_pending = true;
-            editor.set_mode(Mode::Normal);
         }
         // Ctrl-N - Next completion item
         KeyCode::Char('n') if key_event.modifiers.contains(Modifiers::CONTROL) => {

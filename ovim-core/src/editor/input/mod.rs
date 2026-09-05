@@ -151,6 +151,7 @@ impl InputHandler {
             return Ok(());
         }
 
+        let completing_insert_normal = editor.editing.insert_normal_pending;
         let mapping_handled = if allow_remap {
             Self::try_handle_mode_mapping(editor, key_event, remap_depth)?
         } else {
@@ -194,15 +195,24 @@ impl InputHandler {
         // Ctrl-O insert-normal: after one normal command, return to insert mode.
         // Only return if we're still in Normal mode (the command didn't switch to
         // Insert, Visual, Command, etc. on its own) and no pending multi-key state.
-        if editor.editing.insert_normal_pending && editor.mode() == Mode::Normal {
+        if completing_insert_normal
+            && editor.editing.insert_normal_pending
+            && editor.mode() == Mode::Normal
+        {
             // Check if the command is fully resolved (no pending operator/command)
             if editor.pending_operator().is_none()
                 && editor.pending_command().is_none()
+                && editor.pending_register().is_none()
+                && editor.count().is_none()
                 && matches!(editor.input_state(), InputState::Normal)
             {
                 editor.editing.insert_normal_pending = false;
+                editor.start_change_building(editor.cursor_position());
                 editor.set_mode(Mode::Insert);
             }
+        } else if completing_insert_normal && editor.mode() == Mode::Insert {
+            // Commands such as `c` and `i` opened their own insert session.
+            editor.editing.insert_normal_pending = false;
         }
 
         // Update scroll offset to keep cursor visible with scrolloff margin
