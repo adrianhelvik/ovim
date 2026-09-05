@@ -2212,6 +2212,7 @@ impl Editor {
         if let Some(origin_offset) = origin {
             let cm = self.buffer_mut().change_manager_mut();
             cm.last_repeat_action = Some(RepeatAction::InsertSession {
+                count: 1,
                 entry_mode,
                 origin_offset,
                 edits,

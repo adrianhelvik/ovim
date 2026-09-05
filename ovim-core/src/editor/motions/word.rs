@@ -1,5 +1,7 @@
 //! Word motions: w, W, b, B, e, E, ge, gE
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use super::{char_class, CharClass, Motions};
 use crate::buffer::Buffer;
 use crate::unicode::{grapheme_count, GraphemeCol};
@@ -32,8 +34,8 @@ impl Motions {
         }
 
         let line = crate::display::line_content(rope, line_idx);
-        let chars: Vec<char> = line.chars().collect();
-        let col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
+        let chars = word_units(&line);
+        let col = grapheme_col.0;
 
         if col >= chars.len() {
             // At end of line (or empty line), advance to next word start.
@@ -98,12 +100,7 @@ impl Motions {
             // else: end of buffer, don't move
         } else {
             let clamped = new_col.min(chars.len().saturating_sub(1));
-            buffer
-                .cursor_mut()
-                .set_col(crate::unicode::char_to_grapheme_col(
-                    &line,
-                    crate::unicode::CharCol(clamped),
-                ));
+            buffer.cursor_mut().set_col(GraphemeCol(clamped));
         }
     }
 
@@ -200,9 +197,9 @@ impl Motions {
 
         loop {
             let line = crate::display::line_content(rope, line_idx);
-            let chars: Vec<char> = line.chars().collect();
-            // Convert grapheme col to char col for char-based iteration.
-            let mut new_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
+            let chars = word_units(&line);
+            // Iterate whole graphemes, classified by their leading character.
+            let mut new_col = grapheme_col.0;
 
             // Skip backward over whitespace first. When new_col == chars.len(),
             // we're past the end and begin with chars[new_col - 1].
@@ -262,10 +259,9 @@ impl Motions {
                 }
             }
 
-            buffer.cursor_mut().set_position(
-                line_idx,
-                crate::unicode::char_to_grapheme_col(&line, crate::unicode::CharCol(new_col)),
-            );
+            buffer
+                .cursor_mut()
+                .set_position(line_idx, GraphemeCol(new_col));
             return;
         }
     }
@@ -318,8 +314,8 @@ impl Motions {
             return;
         }
 
-        let chars: Vec<char> = line.chars().collect();
-        let col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
+        let chars = word_units(&line);
+        let col = grapheme_col.0;
 
         if chars.is_empty() {
             // Skip consecutive blank lines to find next non-empty line
@@ -399,12 +395,7 @@ impl Motions {
             };
 
             if prefer_current || idx < end_of_current {
-                buffer
-                    .cursor_mut()
-                    .set_col(crate::unicode::char_to_grapheme_col(
-                        &line,
-                        crate::unicode::CharCol(end_of_current),
-                    ));
+                buffer.cursor_mut().set_col(GraphemeCol(end_of_current));
                 return;
             }
 
@@ -445,12 +436,7 @@ impl Motions {
             }
         };
 
-        buffer
-            .cursor_mut()
-            .set_col(crate::unicode::char_to_grapheme_col(
-                &line,
-                crate::unicode::CharCol(end_of_next),
-            ));
+        buffer.cursor_mut().set_col(GraphemeCol(end_of_next));
     }
 
     /// Moves cursor backward to the end of the previous word
@@ -493,12 +479,11 @@ impl Motions {
         let get_line_str = |l: usize| -> String { crate::display::line_content(rope, l) };
 
         // Helper to get the line's characters (terminator excluded).
-        let get_chars = |l: usize| -> Vec<char> { get_line_str(l).chars().collect() };
+        let get_chars = |l: usize| -> Vec<char> { word_units(&get_line_str(l)) };
 
-        let orig_line_str = get_line_str(orig_line);
         let orig_chars = get_chars(orig_line);
-        // Convert grapheme col to char col for internal iteration
-        let orig_col = crate::unicode::grapheme_to_char_col(&orig_line_str, orig_grapheme_col).0;
+        // Word units use the same grapheme coordinates as the cursor.
+        let orig_col = orig_grapheme_col.0;
         let orig_class = if orig_col < orig_chars.len() {
             Some(if big_word {
                 // For WORD: any non-ws is the same "class"
@@ -556,11 +541,7 @@ impl Motions {
             || col < orig_col.saturating_sub(1); // whitespace was skipped
 
         if crossed_boundary {
-            let line_str = get_line_str(line_idx);
-            buffer.cursor_mut().set_position(
-                line_idx,
-                crate::unicode::char_to_grapheme_col(&line_str, crate::unicode::CharCol(col)),
-            );
+            buffer.cursor_mut().set_position(line_idx, GraphemeCol(col));
             return;
         }
 
@@ -594,14 +575,9 @@ impl Motions {
         // Skip whitespace backward again
         let (final_line, final_char_col) =
             Self::skip_whitespace_backward(line_idx, col, &get_chars);
-        let final_line_str = get_line_str(final_line);
-        buffer.cursor_mut().set_position(
-            final_line,
-            crate::unicode::char_to_grapheme_col(
-                &final_line_str,
-                crate::unicode::CharCol(final_char_col),
-            ),
-        );
+        buffer
+            .cursor_mut()
+            .set_position(final_line, GraphemeCol(final_char_col));
     }
 
     /// Skip whitespace backward (crossing lines), returning the position of
@@ -646,4 +622,12 @@ impl Motions {
             col = if prev.is_empty() { 0 } else { prev.len() - 1 };
         }
     }
+}
+
+/// Classify each grapheme by its leading scalar so combining marks and ZWJ
+/// sequences cannot create word boundaries inside a visible character.
+fn word_units(line: &str) -> Vec<char> {
+    line.graphemes(true)
+        .filter_map(|g| g.chars().next())
+        .collect()
 }

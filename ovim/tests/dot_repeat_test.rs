@@ -132,7 +132,7 @@ fn test_dot_with_count() {
     test.press('x') // Delete one char
         .keys("3."); // Repeat 3 times
 
-    assert_eq!(test.buffer_content(), "cdefgh\n");
+    assert_eq!(test.buffer_content(), "efgh\n");
     test.assert_cursor(0, 0);
 }
 
@@ -152,9 +152,9 @@ fn test_dot_override_original_count() {
     let mut test = EditorTest::new("one two three four five six");
 
     test.keys("2dw") // Delete 2 words: "one two " → "three four five six"
-        .keys("3."); // Repeat with count 2 (count override not yet supported): "three four " → "five six"
+        .keys("3."); // Override the original count: delete three more words.
 
-    assert_eq!(test.buffer_content(), "five six\n");
+    assert_eq!(test.buffer_content(), "six\n");
     test.assert_cursor(0, 0);
 }
 
@@ -164,8 +164,8 @@ fn test_dot_repeat_counted_insert() {
 
     test.press('i').type_text("X").press_esc().keys("3."); // Repeat 3 times
 
-    assert_eq!(test.buffer_content(), "XXline\n");
-    test.assert_cursor(0, 1);
+    assert_eq!(test.buffer_content(), "XXXXline\n");
+    test.assert_cursor(0, 2);
 }
 
 // ============================================================================
@@ -1732,11 +1732,8 @@ fn test_dot_after_visual_change_with_backspace_matches_cw() {
 
     test.press('w').press('.');
 
-    // Dot-repeat's inserted-text is the naive concatenation — "XYZ",
-    // not the net-of-backspace "XZ". Matches existing `cw` behavior.
-    // TODO: upstream fix in get_inserted_text / session replay should
-    // produce "XZ XZ three\n" (Vim reference) — lift this test then.
-    assert_eq!(test.buffer_content(), "XZ XYZ three\n");
+    // Repeat the corrected text; backspaced characters must stay deleted.
+    assert_eq!(test.buffer_content(), "XZ XZ three\n");
 }
 
 #[test]

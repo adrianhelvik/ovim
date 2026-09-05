@@ -341,6 +341,12 @@ impl Buffer {
         crate::unicode::grapheme_to_char_col(&line_str, self.cursor.col())
     }
 
+    /// Character column immediately after the grapheme under the cursor.
+    pub fn cursor_grapheme_end_char_col(&self) -> CharCol {
+        let line = self.line_text(self.cursor.line()).unwrap_or_default();
+        crate::unicode::grapheme_to_char_col(&line, GraphemeCol(self.cursor.col().0 + 1))
+    }
+
     /// Gets a mutable cursor reference
     pub fn cursor_mut(&mut self) -> &mut Cursor {
         &mut self.cursor

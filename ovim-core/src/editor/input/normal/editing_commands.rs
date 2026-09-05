@@ -4,10 +4,8 @@
 //! Includes: x, X, D, C, s, S, p, P, Y, J, ~, u, Ctrl-R, .
 
 use crate::editor::input::helpers;
-use crate::editor::{Editor, PendingChangeRepeat, RegisterType};
-use crate::mode::Mode;
+use crate::editor::{Editor, RegisterType};
 use crate::repeat_action::RepeatAction;
-use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
@@ -81,19 +79,19 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // u - undo (but not Ctrl+U which is scroll up)
         KeyCode::Char('u') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
-            editor.undo();
+            editor.undo_count(editor.effective_count());
             editor.clear_count();
             Ok(true)
         }
         // Ctrl-R - redo
         KeyCode::Char('r') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            editor.redo();
+            editor.redo_count(editor.effective_count());
             editor.clear_count();
             Ok(true)
         }
         // . - repeat last change
         KeyCode::Char('.') => {
-            editor.repeat_last_change();
+            editor.repeat_last_change_with_count(editor.count());
             editor.clear_count();
             Ok(true)
         }
@@ -143,166 +141,30 @@ fn delete_to_end_of_line(editor: &mut Editor) -> Result<()> {
 }
 
 /// C - change to end of line
-fn change_to_end_of_line(editor: &mut Editor) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-    let line_idx = cursor_before.line;
-    let col = cursor_before.col;
-
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        let line_len = buf
-            .line_text(line_idx)
-            .map(|l| l.chars().count())
-            .unwrap_or(0);
-        if col.0 < line_len {
-            // Phase-15 debt: col is grapheme-space; delete_range needs char.
-            let deleted = buf.delete_range(
-                line_idx,
-                crate::unicode::CharCol(col.0),
-                line_idx,
-                crate::unicode::CharCol(line_len),
-            );
-            // Keep cursor at col (insert position) — don't clamp to normal mode
-            buf.cursor_mut().set_position(line_idx, col);
-            deleted
-        } else {
-            String::new()
-        }
-    });
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        let token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-        Some(token)
-    } else {
-        None
-    };
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteToEndOfLine,
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+pub(super) fn change_to_end_of_line(editor: &mut Editor) -> Result<()> {
+    super::operators::change_with(editor, RepeatAction::DeleteToEndOfLine, |buf| {
+        let line = buf.cursor().line();
+        let col = buf.cursor().col();
+        let deleted = buf.delete_to_end_of_line();
+        buf.cursor_mut().set_position(line, col);
+        deleted
+    })
 }
 
 /// s - substitute character(s) under cursor
 fn substitute_chars(editor: &mut Editor) -> Result<()> {
     let count = editor.effective_count();
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.delete_chars_forward(count));
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        let token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-        Some(token)
-    } else {
-        None
-    };
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteCharForward { count },
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    super::operators::change_with(editor, RepeatAction::DeleteCharForward { count }, |buf| {
+        buf.change_chars_forward(count)
+    })
 }
 
 /// S - substitute entire line
 fn substitute_line(editor: &mut Editor) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-    let start_line = editor.buffer().cursor().line();
     let count = editor.effective_count();
-    let end_line = (start_line + count).min(editor.buffer().line_count());
-
-    // Get indentation from the current line before deleting
-    let indent = if let Some(line) = editor.buffer().line_text(start_line) {
-        let trimmed = line.trim_start_matches([' ', '\t']);
-        line[..line.len() - trimmed.len()].to_string()
-    } else {
-        String::new()
-    };
-
-    // Record all edits atomically (delete + indent insert = single undo)
-    let (deleted_text, edits) = editor.buffer_mut().record(|buf| {
-        if count == 1 {
-            // Single line: clear content but preserve the line itself
-            let deleted = if let Some(line) = buf.line_text(start_line) {
-                let content_len = line.chars().count();
-                if content_len > 0 {
-                    buf.delete_range(
-                        start_line,
-                        crate::unicode::CharCol::ZERO,
-                        start_line,
-                        crate::unicode::CharCol(content_len),
-                    )
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
-
-            // Insert indentation
-            if !indent.is_empty() {
-                buf.insert_text_at(start_line, crate::unicode::CharCol::ZERO, &indent);
-            }
-
-            deleted
-        } else {
-            // Multi-line: delete all lines, insert a blank line with indent
-            let deleted = buf.delete_range(
-                start_line,
-                crate::unicode::CharCol::ZERO,
-                end_line,
-                crate::unicode::CharCol::ZERO,
-            );
-
-            let new_line_text = format!("{}\n", indent);
-            buf.insert_text_at(start_line, crate::unicode::CharCol::ZERO, &new_line_text);
-
-            deleted
-        }
-    });
-
-    // Store deleted text in register
-    if !deleted_text.is_empty() {
-        editor.delete_to_register_with_type(deleted_text, RegisterType::Line);
-    }
-
-    // Position cursor at end of indentation
-    let indent_len = indent.chars().count();
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(start_line, GraphemeCol(indent_len));
-
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteLines { count },
-        linewise: true,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    let start = editor.buffer().cursor().line();
+    let end = (start + count).min(editor.buffer().line_count());
+    super::operators::change_lines(editor, start, end, RepeatAction::DeleteLines { count })
 }
 
 /// Y - yank line

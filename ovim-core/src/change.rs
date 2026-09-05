@@ -456,16 +456,7 @@ impl Change {
     /// Extracts the inserted text from this change (for the . register)
     pub fn get_inserted_text(&self) -> String {
         match self {
-            Self::Recorded { edits, .. } => {
-                // Concatenate text from insert edits
-                let mut result = String::new();
-                for edit in edits {
-                    if let Edit::Insert { text, .. } = edit {
-                        result.push_str(text);
-                    }
-                }
-                result
-            }
+            Self::Recorded { edits, .. } => crate::edit::surviving_inserted_text(edits),
             Self::ResourceOp { .. } => String::new(),
         }
     }

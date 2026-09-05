@@ -143,14 +143,7 @@ fn exit_insert_mode(editor: &mut Editor) {
             // Skip the first edit — that's the synthetic newline created by
             // `insert_line_below` / `insert_line_above` before the user's
             // keystrokes. `RepeatAction::OpenLine` will recreate its own.
-            let inserted_text: String = edits
-                .iter()
-                .skip(1)
-                .filter_map(|e| match e {
-                    crate::edit::Edit::Insert { text, .. } => Some(text.as_str()),
-                    crate::edit::Edit::Delete { .. } => None,
-                })
-                .collect();
+            let inserted_text = crate::edit::surviving_inserted_text(&edits[1..]);
             Some(RepeatAction::OpenLine {
                 above: matches!(mode, InsertEntryMode::OpenAbove),
                 inserted_text,

@@ -59,6 +59,34 @@ impl Edit {
     }
 }
 
+/// Returns the text inserted by an edit sequence that survives its later edits.
+///
+/// Offsets are character offsets in the successive document states. Unknown
+/// original characters are represented by `None`, so deleting existing text
+/// cannot accidentally add it to the result. Rebase to the smallest offset to
+/// keep storage proportional to the edited span, not the document prefix.
+pub fn surviving_inserted_text(edits: &[Edit]) -> String {
+    let Some(origin) = edits.iter().map(Edit::offset).min() else {
+        return String::new();
+    };
+    let mut span = Vec::new();
+    for edit in edits {
+        let start = edit.offset() - origin;
+        match edit {
+            Edit::Insert { text, .. } => {
+                span.resize(span.len().max(start), None);
+                span.splice(start..start, text.chars().map(Some));
+            }
+            Edit::Delete { text, .. } => {
+                let end = start + text.chars().count();
+                span.resize(span.len().max(end), None);
+                span.drain(start..end);
+            }
+        }
+    }
+    span.into_iter().flatten().collect()
+}
+
 /// A mechanical undo record. Reversal is trivial — no semantic interpretation.
 #[derive(Clone, Debug)]
 pub enum UndoEntry {

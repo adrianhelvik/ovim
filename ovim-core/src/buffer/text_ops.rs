@@ -722,9 +722,32 @@ impl Buffer {
         deleted
     }
 
+    /// Clears a line range for a change operator, retaining its first line's
+    /// indentation and leaving the cursor at the insertion point.
+    /// `end_line` is exclusive; the replacement line also exists at EOF.
+    pub fn change_lines(&mut self, start_line: usize, end_line: usize) -> String {
+        let indent = self
+            .line_text(start_line)
+            .map(|line| crate::indentation::leading_str(&line).to_string())
+            .unwrap_or_default();
+        let deleted = self.delete_range(start_line, CharCol::ZERO, end_line, CharCol::ZERO);
+        self.insert_text_at(start_line, CharCol::ZERO, &format!("{indent}\n"));
+        self.set_cursor_char_col(start_line, CharCol(indent.chars().count()));
+        deleted
+    }
+
     /// Deletes count characters forward from cursor (x command).
     /// Returns the deleted text. Clamps to end of line.
     pub fn delete_chars_forward(&mut self, count: usize) -> String {
+        self.delete_chars_forward_inner(count, true)
+    }
+
+    /// Change characters without clamping the insertion point at end of line.
+    pub fn change_chars_forward(&mut self, count: usize) -> String {
+        self.delete_chars_forward_inner(count, false)
+    }
+
+    fn delete_chars_forward_inner(&mut self, count: usize, clamp: bool) -> String {
         let line_idx = self.cursor().line();
         let grapheme_col = self.cursor().col();
         let Some(line) = self.line_text(line_idx) else {
@@ -740,7 +763,9 @@ impl Buffer {
         let start_char = grapheme_to_char_col(&line, grapheme_col);
         let end_char = grapheme_to_char_col(&line, end_grapheme);
         let deleted = self.delete_range(line_idx, start_char, line_idx, end_char);
-        self.clamp_cursor_col();
+        if clamp {
+            self.clamp_cursor_col();
+        }
         deleted
     }
 
@@ -1077,10 +1102,8 @@ impl Buffer {
         Motions::word_end_forward(self, count);
 
         let end_line = self.cursor().line();
-        let end_col = self.cursor_char_col();
-
-        // Inclusive: delete through the character the motion lands on
-        let delete_end_col = end_col + 1;
+        // Inclusive: delete through the grapheme the motion lands on.
+        let delete_end_col = self.cursor_grapheme_end_char_col();
         let deleted = self.delete_range(start_line, start_col, end_line, delete_end_col);
         self.set_cursor_char_col(start_line, start_col);
         self.clamp_cursor_col();
@@ -1117,9 +1140,7 @@ impl Buffer {
         Motions::word_end_forward_big(self, count);
 
         let end_line = self.cursor().line();
-        let end_col = self.cursor_char_col();
-
-        let delete_end_col = end_col + 1;
+        let delete_end_col = self.cursor_grapheme_end_char_col();
         let deleted = self.delete_range(start_line, start_col, end_line, delete_end_col);
         self.set_cursor_char_col(start_line, start_col);
         self.clamp_cursor_col();
@@ -1160,10 +1181,10 @@ impl Buffer {
         }
 
         let end_line = self.cursor().line();
-        let end_col = self.cursor_char_col();
+        let end_col = self.cursor_grapheme_end_char_col();
 
         // Inclusive: delete through the character the motion lands on.
-        let deleted = self.delete_range(start_line, start_col, end_line, end_col + 1);
+        let deleted = self.delete_range(start_line, start_col, end_line, end_col);
         self.set_cursor_char_col(start_line, start_col);
         deleted
     }
@@ -1221,16 +1242,7 @@ impl Buffer {
     /// Deletes one character to the left of cursor (dh command).
     /// Returns the deleted text. Stops at start of line.
     pub fn delete_char_left(&mut self, count: usize) -> String {
-        let line_idx = self.cursor().line();
-        let col = self.cursor_char_col();
-        if col == CharCol::ZERO {
-            return String::new();
-        }
-        let start_col = col.saturating_sub(count);
-        let deleted = self.delete_range(line_idx, start_col, line_idx, col);
-        self.set_cursor_char_col(line_idx, start_col);
-        self.clamp_cursor_col();
-        deleted
+        self.delete_chars_backward(count)
     }
 
     /// Deletes from cursor to start of line (d0 command).

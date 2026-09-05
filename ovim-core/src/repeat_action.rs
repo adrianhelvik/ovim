@@ -174,6 +174,7 @@ pub enum RepeatAction {
     /// edit that preserves intra-session geometry, including edits that went
     /// below the origin (e.g., `<BS>` at column 0 joining lines).
     InsertSession {
+        count: usize,
         entry_mode: InsertEntryMode,
         origin_offset: usize,
         edits: Vec<Edit>,
@@ -181,6 +182,49 @@ pub enum RepeatAction {
 }
 
 impl RepeatAction {
+    /// Overrides the original command count for `[count].`.
+    /// The resulting action becomes the template for subsequent repeats.
+    pub fn with_count(mut self, count: usize) -> Self {
+        match &mut self {
+            Self::JoinLines { count: n, .. }
+            | Self::ToggleCase { count: n }
+            | Self::DeleteCharMotion { count: n, .. }
+            | Self::DeleteCharForward { count: n }
+            | Self::DeleteCharBackward { count: n }
+            | Self::DeleteLines { count: n }
+            | Self::DeleteWordForward { count: n }
+            | Self::DeleteWordChange { count: n }
+            | Self::DeleteWordChangeBig { count: n }
+            | Self::ChangeWordEnd { count: n }
+            | Self::ChangeWordEndBig { count: n }
+            | Self::DeleteWordBackward { count: n }
+            | Self::DeleteWordEnd { count: n }
+            | Self::DeleteWordBackwardBig { count: n }
+            | Self::DeleteWordEndBig { count: n }
+            | Self::DeleteCharLeft { count: n }
+            | Self::DeleteWordForwardBig { count: n }
+            | Self::DeleteLineDown { count: n }
+            | Self::DeleteLineUp { count: n }
+            | Self::DeleteParagraphForward { count: n }
+            | Self::DeleteParagraphBackward { count: n }
+            | Self::ReplaceChar { count: n, .. }
+            | Self::PasteAfter { count: n }
+            | Self::PasteBefore { count: n }
+            | Self::InsertSession { count: n, .. }
+            | Self::IndentLines { line_count: n, .. }
+            | Self::DedentLines { line_count: n, .. } => *n = count,
+            Self::NumberOperation { delta } => *delta = delta.signum() * count as i64,
+            Self::Change { delete, .. } => **delete = delete.as_ref().clone().with_count(count),
+            Self::DeleteToLastLine { target_line } | Self::DeleteToFirstLine { target_line } => {
+                *target_line = count.saturating_sub(1);
+            }
+            // These actions currently carry geometry or a resolved text object,
+            // rather than a command count.
+            _ => {}
+        }
+        self
+    }
+
     /// Execute this action at the current cursor position.
     /// Caller is responsible for wrapping in `buffer.record()`.
     pub fn execute(&self, buffer: &mut Buffer) {
@@ -511,12 +555,15 @@ impl RepeatAction {
             } => {
                 let start_line = buffer.cursor().line();
                 let start_col = buffer.cursor_char_col();
-                let end_line = start_line + line_delta;
-                let end_col = if *line_delta == 0 {
-                    start_col + *offset_col
+                let end_line = (start_line + line_delta).min(buffer.line_count().saturating_sub(1));
+                let end_grapheme = if *line_delta == 0 {
+                    buffer.cursor().col().0 + offset_col
                 } else {
-                    CharCol(*offset_col)
+                    *offset_col
                 };
+                let end_text = buffer.line_text(end_line).unwrap_or_default();
+                let end_col =
+                    crate::unicode::grapheme_to_char_col(&end_text, GraphemeCol(end_grapheme));
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.set_cursor_char_col(start_line, start_col);
             }
@@ -624,37 +671,34 @@ impl RepeatAction {
                 inserted_text,
                 linewise,
             } => {
-                // Inline changes usually insert at the original cursor column,
-                // except text objects (ci", ciw, etc.) which insert at the
-                // resolved object start after delete.
-                let pre_delete_line = buffer.cursor().line();
-                let pre_delete_col = buffer.cursor().col();
-
-                // Phase 1: Execute the semantic delete at current cursor position
-                delete.execute(buffer);
-
+                let line = buffer.cursor().line();
+                let col = buffer.cursor().col();
                 if *linewise {
-                    // Open a new line for the insertion (like cc after delete)
-                    let line = buffer.cursor().line();
-                    let insert_at = line.min(buffer.line_count());
-                    buffer.insert_text_at(insert_at, CharCol::ZERO, "\n");
-                    buffer.cursor_mut().set_position(insert_at, GraphemeCol(0));
-                } else if !matches!(
-                    delete.as_ref(),
-                    RepeatAction::DeleteTextObject { .. }
-                        | RepeatAction::DeleteSearchMatch { .. }
-                        // Backward char motions (cF/cT) resolve insertion at the
-                        // delete start, not at the original cursor column.
-                        | RepeatAction::DeleteCharMotion {
-                            forward: false,
-                            ..
+                    // Resolve the range before deleting: normal-mode deletion
+                    // clamps a last-line cursor onto the preceding line.
+                    let (start, end) = match delete.as_ref() {
+                        Self::DeleteLines { count } => (line, line + count),
+                        Self::DeleteVisualLine { line_count } => (line, line + line_count),
+                        Self::DeleteLineDown { count } => (line, line + count + 1),
+                        Self::DeleteLineUp { count } => (line.saturating_sub(*count), line + 1),
+                        Self::DeleteToLastLine { target_line }
+                        | Self::DeleteToFirstLine { target_line } => {
+                            (line.min(*target_line), line.max(*target_line) + 1)
                         }
-                ) {
-                    // For non-text-object changes (C, s, c$, etc.), preserve
-                    // the original insert point even if delete clamped cursor.
-                    buffer
-                        .cursor_mut()
-                        .set_position(pre_delete_line, pre_delete_col);
+                        _ => (line, line + 1),
+                    };
+                    buffer.change_lines(start, end.min(buffer.line_count()));
+                } else {
+                    delete.execute(buffer);
+                    // These normal-mode delete actions clamp an EOL insertion
+                    // point. All other change actions resolve their own start,
+                    // including backward motions and text objects.
+                    if matches!(
+                        delete.as_ref(),
+                        Self::DeleteCharForward { .. } | Self::DeleteToEndOfLine
+                    ) {
+                        buffer.cursor_mut().set_position(line, col);
+                    }
                 }
 
                 // Phase 2: Insert the captured text
@@ -681,9 +725,17 @@ impl RepeatAction {
                         final_col = final_col.saturating_sub(1);
                         buffer.set_cursor_char_col(final_line, final_col);
                     }
+                } else if *linewise {
+                    let line = buffer.cursor().line();
+                    let len = buffer.line_len(line);
+                    buffer.delete_range(line, CharCol::ZERO, line, CharCol(len));
+                    buffer.cursor_mut().set_col(GraphemeCol::ZERO);
+                } else if buffer.cursor().col().0 > 0 {
+                    buffer.cursor_mut().move_left(1);
                 }
             }
             Self::InsertSession {
+                count,
                 entry_mode,
                 origin_offset,
                 edits,
@@ -703,14 +755,14 @@ impl RepeatAction {
                                 .chars()
                                 .position(|c| !c.is_whitespace())
                                 .unwrap_or(0);
-                            buffer.cursor_mut().set_col(GraphemeCol(col));
+                            buffer.set_cursor_char_col(line_idx, CharCol(col));
                         }
                     }
                     InsertEntryMode::EndOfLine => {
                         let line_idx = buffer.cursor().line();
                         if let Some(line) = buffer.line_text(line_idx) {
                             let line_len = line.chars().count();
-                            buffer.cursor_mut().set_col(GraphemeCol(line_len));
+                            buffer.set_cursor_char_col(line_idx, CharCol(line_len));
                         }
                     }
                     // o/O use RepeatAction::OpenLine, not InsertSession.
@@ -731,54 +783,47 @@ impl RepeatAction {
                 // cursor state matters because future edits in the same
                 // session target offsets that assume the cursor moved this
                 // way.
-                let new_origin_offset = {
-                    let line = buffer.cursor().line();
-                    let char_col = buffer.cursor_char_col();
-                    buffer.rope().line_to_char(line) + char_col.0
-                };
-                let delta = new_origin_offset as i64 - *origin_offset as i64;
+                for _ in 0..*count {
+                    let new_origin_offset = {
+                        let line = buffer.cursor().line();
+                        let char_col = buffer.cursor_char_col();
+                        buffer.rope().line_to_char(line) + char_col.0
+                    };
+                    let delta = new_origin_offset as i64 - *origin_offset as i64;
 
-                for edit in edits {
-                    let new_offset = (edit.offset() as i64 + delta).max(0) as usize;
-                    match edit {
-                        Edit::Insert { text, .. } => {
-                            Edit::Insert {
-                                offset: new_offset,
-                                text: text.clone(),
+                    for edit in edits {
+                        let new_offset = (edit.offset() as i64 + delta).max(0) as usize;
+                        match edit {
+                            Edit::Insert { text, .. } => {
+                                Edit::Insert {
+                                    offset: new_offset,
+                                    text: text.clone(),
+                                }
+                                .apply(buffer);
+                                let end = new_offset + text.chars().count();
+                                let end = end.min(buffer.rope().len_chars());
+                                let line = buffer.rope().char_to_line(end);
+                                let col = end - buffer.rope().line_to_char(line);
+                                buffer.set_cursor_char_col(line, CharCol(col));
                             }
-                            .apply(buffer);
-                            let end = new_offset + text.chars().count();
-                            let end = end.min(buffer.rope().len_chars());
-                            let line = buffer.rope().char_to_line(end);
-                            let col = end - buffer.rope().line_to_char(line);
-                            buffer.set_cursor_char_col(line, CharCol(col));
-                        }
-                        Edit::Delete { text, .. } => {
-                            Edit::Delete {
-                                offset: new_offset,
-                                text: text.clone(),
+                            Edit::Delete { text, .. } => {
+                                Edit::Delete {
+                                    offset: new_offset,
+                                    text: text.clone(),
+                                }
+                                .apply(buffer);
+                                let anchor = new_offset.min(buffer.rope().len_chars());
+                                let line = buffer.rope().char_to_line(anchor);
+                                let col = anchor - buffer.rope().line_to_char(line);
+                                buffer.set_cursor_char_col(line, CharCol(col));
                             }
-                            .apply(buffer);
-                            let anchor = new_offset.min(buffer.rope().len_chars());
-                            let line = buffer.rope().char_to_line(anchor);
-                            let col = anchor - buffer.rope().line_to_char(line);
-                            buffer.set_cursor_char_col(line, CharCol(col));
                         }
                     }
                 }
 
-                // Step 3: Esc moves cursor left by 1 unless already at col 0.
-                //
-                // Skip this for single-edit plain-`Insert` sessions so dot
-                // repeat matches the direct-path `record_edit` flow: those
-                // single-keystroke inserts (visual-`c` → type one char →
-                // `<Esc>`, etc.) were pre-4.3 `Change::InsertText::repeat`
-                // which did NOT simulate Esc's cursor-left, and the
-                // InsertSession RepeatAction `record_edit` now sets must
-                // preserve that behavior.
-                let skip_esc_move =
-                    edits.len() == 1 && matches!(entry_mode, InsertEntryMode::Insert);
-                if !skip_esc_move && buffer.cursor_char_col() > 0 {
+                // Esc positions the cursor on the last inserted grapheme,
+                // including single-character insert sessions.
+                if buffer.cursor().col().0 > 0 {
                     buffer.cursor_mut().move_left(1);
                 }
             }
@@ -802,6 +847,7 @@ mod insert_session_tests {
         edits: Vec<Edit>,
     ) -> RepeatAction {
         RepeatAction::InsertSession {
+            count: 1,
             entry_mode,
             origin_offset,
             edits,

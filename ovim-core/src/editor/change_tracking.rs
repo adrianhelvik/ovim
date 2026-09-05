@@ -100,8 +100,18 @@ impl Editor {
     /// the OS error and the offending change stays on the undo stack so a
     /// retry is possible once they fix the filesystem.
     pub fn undo(&mut self) {
-        let (outcome, _edits) = self.buffer_mut().undo();
-        self.surface_undo_outcome(&outcome, "Undo");
+        self.undo_count(1);
+    }
+
+    /// Undoes up to `count` history groups, stopping at the boundary or an error.
+    pub fn undo_count(&mut self, count: usize) {
+        for _ in 0..count {
+            let (outcome, _edits) = self.buffer_mut().undo();
+            self.surface_undo_outcome(&outcome, "Undo");
+            if !matches!(outcome, UndoOutcome::Done) {
+                break;
+            }
+        }
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
         self.sync_modified_flag_with_save_point();
@@ -110,8 +120,18 @@ impl Editor {
 
     /// Redoes the next change. See `undo` for the OV-00212 toast rationale.
     pub fn redo(&mut self) {
-        let (outcome, _edits) = self.buffer_mut().redo();
-        self.surface_undo_outcome(&outcome, "Redo");
+        self.redo_count(1);
+    }
+
+    /// Redoes up to `count` history groups, stopping at the boundary or an error.
+    pub fn redo_count(&mut self, count: usize) {
+        for _ in 0..count {
+            let (outcome, _edits) = self.buffer_mut().redo();
+            self.surface_undo_outcome(&outcome, "Redo");
+            if !matches!(outcome, UndoOutcome::Done) {
+                break;
+            }
+        }
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
         self.sync_modified_flag_with_save_point();
@@ -155,8 +175,19 @@ impl Editor {
     /// Buffer mutations are captured via `record()` so the undo entry uses
     /// mechanical inverse edits rather than semantic replay.
     pub fn repeat_last_change(&mut self) {
+        self.repeat_last_change_with_count(None);
+    }
+
+    pub fn repeat_last_change_with_count(&mut self, count: Option<usize>) {
         // Try RepeatAction first (semantic repeat for Pattern B operations)
         if let Some(action) = self.buffer().change_manager().last_repeat_action.clone() {
+            let action = if let Some(count) = count {
+                let action = action.with_count(count);
+                self.set_repeat_action(action.clone());
+                action
+            } else {
+                action
+            };
             // Paste repeat needs Editor-level access (registers), handle specially
             match &action {
                 RepeatAction::PasteAfter { count } | RepeatAction::PasteBefore { count } => {

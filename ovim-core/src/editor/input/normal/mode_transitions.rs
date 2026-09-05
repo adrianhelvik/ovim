@@ -6,7 +6,6 @@
 use crate::editor::input::helpers;
 use crate::editor::{CursorPos, Editor, InsertEntryMode, Motions};
 use crate::mode::Mode;
-use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
@@ -102,8 +101,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 let line_len = line.chars().count();
                 editor
                     .buffer_mut()
-                    .cursor_mut()
-                    .set_col(GraphemeCol(line_len));
+                    .set_cursor_char_col(line_idx, crate::unicode::CharCol(line_len));
             }
             Ok(true)
         }
