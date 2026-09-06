@@ -241,6 +241,18 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             Ok(()) => ok("Opening browser"),
             Err(error) => err(format!("Could not open embedded browser: {error}")),
         },
+        // `:openwin [dir]` is the cross-platform entry point for "open a
+        // project in a new window". The GUI only binds an accelerator to it on
+        // macOS, because elsewhere Ctrl-O is Vim's jump-back motion.
+        "openwin" => {
+            editor.request_open_window(None);
+            ok_silent()
+        }
+        cmd if cmd.starts_with("openwin ") => {
+            let path = cmd["openwin ".len()..].trim();
+            editor.request_open_window((!path.is_empty()).then(|| path.to_string()));
+            ok_silent()
+        }
         "q" | "quit" => {
             if !editor.tab_page_manager().is_single_tab() {
                 editor.close_current_tab();
@@ -2249,6 +2261,48 @@ mod tests {
             CommandResult::Error(ref error)
                 if error.error == "Could not open embedded browser: The embedded browser is unavailable in this frontend"
         ));
+    }
+
+    #[test]
+    fn openwin_queues_a_directory_picker_for_the_frontend() {
+        let mut editor = Editor::new();
+
+        assert!(matches!(
+            execute_command(&mut editor, "openwin"),
+            CommandResult::Success(_)
+        ));
+
+        let pending = editor.take_pending_window_open().expect("window request");
+        assert_eq!(pending.path, None);
+        assert!(editor.take_pending_window_open().is_none());
+    }
+
+    #[test]
+    fn openwin_forwards_an_explicit_project_directory() {
+        let mut editor = Editor::new();
+
+        assert!(matches!(
+            execute_command(&mut editor, "openwin  ~/projects/ovim  "),
+            CommandResult::Success(_)
+        ));
+
+        // The path stays verbatim: expansion and validation belong to the
+        // frontend that actually opens the window.
+        let pending = editor.take_pending_window_open().expect("window request");
+        assert_eq!(pending.path.as_deref(), Some("~/projects/ovim"));
+    }
+
+    #[test]
+    fn openwin_with_a_blank_argument_falls_back_to_the_picker() {
+        let mut editor = Editor::new();
+
+        assert!(matches!(
+            execute_command(&mut editor, "openwin   "),
+            CommandResult::Success(_)
+        ));
+
+        let pending = editor.take_pending_window_open().expect("window request");
+        assert_eq!(pending.path, None);
     }
 
     /// OV-00331: `:qa` used to check only the CURRENT buffer, silently

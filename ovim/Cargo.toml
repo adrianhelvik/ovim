@@ -51,6 +51,9 @@ flate2 = "1"
 tar = "0.4"
 zip = "2"
 tauri = { version = "2", optional = true, features = ["unstable"] }
+# Native folder picker for "Open Project…". Used from Rust only, so no Tauri
+# plugin ACL/capability file is needed for the webview to reach it.
+rfd = { version = "0.17", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }
@@ -62,7 +65,7 @@ sysinfo = "0.32"
 [features]
 default = ["lua", "gui"]
 lua = ["mlua", "ovim-core/lua"]
-gui = ["dep:tauri"]
+gui = ["dep:tauri", "dep:rfd"]
 key-debug = []
 metrics = ["prometheus", "ovim-core/metrics"]
 # Statically link OpenSSL for portable release binaries

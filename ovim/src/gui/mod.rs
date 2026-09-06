@@ -12,10 +12,12 @@ pub mod app;
 pub mod browser;
 #[cfg(feature = "gui")]
 mod menu;
+#[cfg(feature = "gui")]
+pub mod window;
 
 use crate::cli::FileArg;
 use crate::color::Color;
-use crate::editor::{Editor, EditorServices, InputHandler};
+use crate::editor::{Editor, EditorServices, InputHandler, PendingWindowOpen};
 use crate::frontend::{
     handle_viewport_resize, process_editor_tick, process_external_file_change,
     process_picker_results, refresh_after_input, FrontendChannels,
@@ -1185,6 +1187,10 @@ async fn run_editor(
     let (java_status_tx, java_status_rx) = mpsc::channel(64);
     crate::lsp_init::init_java_status_sender(java_status_tx);
     let mut channels = FrontendChannels::new(java_status_rx);
+    // `:openwin` can raise a modal directory picker that stays up for as long
+    // as the user browses, so its outcome returns here asynchronously instead
+    // of stalling snapshot publishing behind the dialog.
+    let (window_status_tx, mut window_status_rx) = mpsc::unbounded_channel::<String>();
     let mut tick = tokio::time::interval(TICK_RATE);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_external_check = Instant::now();
@@ -1226,6 +1232,20 @@ async fn run_editor(
                 if rejected_terminal || rejected_shell {
                     editor.set_status_message("External shell sessions require the TUI frontend".to_string());
                 }
+                if let Some(pending) = editor.take_pending_window_open() {
+                    dispatch_window_open(pending, &window_status_tx);
+                }
+                publish_if_changed(
+                    &editor,
+                    &mut revision,
+                    &mut last_snapshot,
+                    &mut last_render_version,
+                    &updates,
+                );
+            }
+            status = window_status_rx.recv() => {
+                let Some(status) = status else { continue; };
+                editor.set_status_message(status);
                 publish_if_changed(
                     &editor,
                     &mut revision,
@@ -1238,6 +1258,23 @@ async fn run_editor(
     }
 
     editor.close_current_file_lsp().await;
+}
+
+/// Open a queued project window without blocking the editor loop.
+#[cfg(feature = "gui")]
+fn dispatch_window_open(pending: PendingWindowOpen, status: &mpsc::UnboundedSender<String>) {
+    let status = status.clone();
+    tokio::spawn(async move {
+        if let Some(message) = window::open_project_window(pending.path).await {
+            let _ = status.send(message);
+        }
+    });
+}
+
+/// Without the GUI feature there is no window server to spawn into.
+#[cfg(not(feature = "gui"))]
+fn dispatch_window_open(_pending: PendingWindowOpen, status: &mpsc::UnboundedSender<String>) {
+    let _ = status.send(crate::editor::WINDOW_FRONTEND_REQUIRED.to_string());
 }
 
 fn publish_if_changed(

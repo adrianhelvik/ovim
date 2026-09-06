@@ -185,6 +185,7 @@ const COMMAND_NAMES: &[&str] = &[
     "noremap",
     "nmapclear",
     "only",
+    "openwin",
     "pwd",
     "q",
     "qa",
@@ -435,7 +436,7 @@ pub fn execute_command_string_api(editor: &mut Editor, command: &str) -> Command
         CommandResult::Error(e) if e.error.contains("Not an editor command")
     );
     if !is_unknown {
-        return result;
+        return frontend_only_rejection(editor).unwrap_or(result);
     }
 
     // The standard dispatcher performs no mutation when it doesn't recognize a
@@ -446,8 +447,8 @@ pub fn execute_command_string_api(editor: &mut Editor, command: &str) -> Command
     editor.set_status_message(String::new());
     match execute_command_string(editor, command) {
         Ok(()) => {
-            if editor.take_pending_terminal_session().is_some() {
-                return err("Interactive terminal sessions require the TUI frontend");
+            if let Some(rejection) = frontend_only_rejection(editor) {
+                return rejection;
             }
             let status = editor.status_message().trim().to_string();
             if status.is_empty() {
@@ -460,6 +461,25 @@ pub fn execute_command_string_api(editor: &mut Editor, command: &str) -> Command
         }
         Err(e) => err(e.to_string()),
     }
+}
+
+/// Reject requests the string API cannot service.
+///
+/// `:terminal` needs a real terminal and `:openwin` needs a window server; an
+/// automation client has neither, so consume the queued request and report it
+/// instead of leaving it to be picked up by the next interactive frontend.
+fn frontend_only_rejection(editor: &mut Editor) -> Option<CommandResult> {
+    use crate::command_result::err;
+
+    if editor.take_pending_terminal_session().is_some() {
+        return Some(err(
+            "Interactive terminal sessions require the TUI frontend",
+        ));
+    }
+    if editor.take_pending_window_open().is_some() {
+        return Some(err(crate::editor::WINDOW_FRONTEND_REQUIRED));
+    }
+    None
 }
 
 /// Vim surfaces command errors on the status line using the `E<number>:`

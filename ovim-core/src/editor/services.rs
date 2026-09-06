@@ -10,6 +10,20 @@ pub struct EditorServices {
     browser: Option<BrowserClient>,
 }
 
+/// A project directory queued for a frontend that can open operating-system
+/// windows.
+///
+/// `path` is `None` when the user asked for a directory picker (`:openwin`)
+/// and `Some` for `:openwin {path}`. Frontends without windows report
+/// [`WINDOW_FRONTEND_REQUIRED`] instead of silently dropping the request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingWindowOpen {
+    pub path: Option<String>,
+}
+
+/// Message shown when `:openwin` reaches a frontend that owns no windows.
+pub const WINDOW_FRONTEND_REQUIRED: &str = "Opening project windows requires the GUI frontend";
+
 impl EditorServices {
     pub fn with_browser(mut self, browser: BrowserClient) -> Self {
         self.browser = Some(browser);
@@ -29,6 +43,19 @@ impl super::Editor {
         }
         self.browser_start_pending = true;
         Ok(())
+    }
+
+    /// Queue a project window for the active frontend to open.
+    ///
+    /// The editor core never spawns windows itself: a TUI would have nowhere
+    /// to put one, and the GUI opens each project as its own process.
+    pub fn request_open_window(&mut self, path: Option<String>) {
+        self.pending_window_open = Some(PendingWindowOpen { path });
+    }
+
+    /// Take a queued project window for the active frontend to open.
+    pub fn take_pending_window_open(&mut self) -> Option<PendingWindowOpen> {
+        self.pending_window_open.take()
     }
 
     pub(super) async fn dispatch_pending_browser_start(&mut self) {
