@@ -30,6 +30,7 @@ import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
 import { isGuiNativeControl, trapDialogFocus } from "./focus";
 import { anchoredOverlayPosition } from "./overlayPosition";
+import { projectWindowInvocation } from "./projectWindow";
 import { retainProjection, shouldAcceptRevision } from "./stateProjection";
 import {
     readWorkbenchLayout,
@@ -1559,6 +1560,18 @@ function App() {
         const nativeEditor =
             active instanceof HTMLTextAreaElement && active !== inputSink;
         switch (action) {
+            case "file.open-project":
+            case "file.new-window": {
+                const request = projectWindowInvocation(
+                    action,
+                    view().workspacePath,
+                );
+                if (request)
+                    void invoke(request.command, request.args).catch((reason) =>
+                        setError(String(reason)),
+                    );
+                break;
+            }
             case "file.save":
                 void editorCommand("w");
                 break;

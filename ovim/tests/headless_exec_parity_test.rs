@@ -31,6 +31,20 @@ fn exec_terminal_rejects_an_unattached_interactive_session() {
     assert!(test.editor.take_pending_terminal_session().is_none());
 }
 
+#[test]
+fn exec_openwin_rejects_a_frontend_without_windows() {
+    let mut test = EditorTest::new("text");
+
+    // A headless client has no window server, so the queued request must be
+    // consumed and reported rather than left for a later frontend to run.
+    for command in ["openwin", "openwin /tmp"] {
+        let result = exec(&mut test, command);
+
+        assert_error(&result, command);
+        assert!(test.editor.take_pending_window_open().is_none());
+    }
+}
+
 fn assert_success(result: &CommandResult, ctx: &str) {
     assert!(
         matches!(result, CommandResult::Success(_)),

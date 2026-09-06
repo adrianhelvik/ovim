@@ -511,6 +511,8 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_diff_state,
             gui_diff_open_file,
             super::menu::gui_set_menu_surface,
+            super::window::gui_open_project_dialog,
+            super::window::gui_open_project_window,
             super::browser::gui_browser_open,
             super::browser::gui_browser_state,
             super::browser::gui_browser_subscribe,

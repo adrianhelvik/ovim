@@ -454,6 +454,11 @@ pub async fn run_event_loop(
         if let Some(pending) = editor.take_pending_terminal_session() {
             execute_terminal_session(ui, editor, pending.command.as_deref());
         }
+        // `:openwin` targets the GUI, where each project window is its own
+        // process. A terminal frontend has no window to spawn.
+        if editor.take_pending_window_open().is_some() {
+            editor.set_status_message(ovim::editor::WINDOW_FRONTEND_REQUIRED.to_string());
+        }
 
         // Render after any select branch (if dirty)
         if editor.is_dirty() {

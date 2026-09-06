@@ -150,7 +150,7 @@ pub use register::{RegisterManager, RegisterType};
 pub use render_cache::RenderCache;
 pub use search::Search;
 pub use search_context::{SearchContext, VisualSearchState};
-pub use services::EditorServices;
+pub use services::{EditorServices, PendingWindowOpen, WINDOW_FRONTEND_REQUIRED};
 pub use single_line_input::SingleLineInput;
 pub use tabpage::{TabPage, TabPageId, TabPageManager};
 pub use test_panel::{
@@ -410,6 +410,8 @@ pub struct Editor {
     services: EditorServices,
     /// Deferred browser session request consumed by the async intent dispatcher.
     browser_start_pending: bool,
+    /// Project directory waiting for a window-capable frontend to open.
+    pending_window_open: Option<services::PendingWindowOpen>,
     /// API server port for an explicit headless automation session.
     api_port: Option<u16>,
     /// Active session name when a frontend registers one explicitly.
@@ -592,6 +594,7 @@ impl Editor {
             ai_state: Box::new(ai_state::AiState::default()),
             services: EditorServices::default(),
             browser_start_pending: false,
+            pending_window_open: None,
             api_port: None,
             active_session: None,
             git_branch: None,
@@ -644,6 +647,7 @@ impl Editor {
             ai_state: Box::new(ai_state::AiState::default()),
             services: EditorServices::default(),
             browser_start_pending: false,
+            pending_window_open: None,
             api_port: None,
             active_session: None,
             git_branch: None,

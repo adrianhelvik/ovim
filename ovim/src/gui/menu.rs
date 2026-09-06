@@ -4,6 +4,8 @@
 //! so native menu accelerators are the shared shortcut boundary. Browser-only
 //! accelerators must be released whenever the source editor owns the workbench;
 //! otherwise Ctrl-W, Ctrl-T, and friends never reach Vim on non-macOS hosts.
+//! Some accelerators are never claimed at all off macOS: Ctrl-O belongs to the
+//! jumplist no matter which surface is in front.
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -25,6 +27,7 @@ enum GuiMenuPlatform {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GuiMenuPolicy {
+    open_project_accelerator: Option<&'static str>,
     new_tab_accelerator: Option<&'static str>,
     restore_tab_accelerator: Option<&'static str>,
     close_accelerator: Option<&'static str>,
@@ -40,6 +43,12 @@ impl GuiMenuPolicy {
         let browser_active = surface == GuiMenuSurface::Browser;
         let conventional_macos_shortcuts = platform == GuiMenuPlatform::Macos;
         Self {
+            // Cmd-O is the platform convention on macOS and collides with
+            // nothing Vim owns. Elsewhere Ctrl-O is the jump-back-in-the-
+            // jumplist motion, so the menu item stays unaccelerated on every
+            // surface rather than swallowing a core editing motion — the
+            // `:openwin` Ex command is the cross-platform entry point.
+            open_project_accelerator: conventional_macos_shortcuts.then_some("CmdOrCtrl+O"),
             new_tab_accelerator: (browser_active || conventional_macos_shortcuts)
                 .then_some("CmdOrCtrl+T"),
             restore_tab_accelerator: (can_restore_browser
@@ -54,6 +63,7 @@ impl GuiMenuPolicy {
 
 #[derive(Clone)]
 pub struct GuiMenuState {
+    open_project: MenuItem<Wry>,
     new_browser_tab: MenuItem<Wry>,
     restore_browser_tab: MenuItem<Wry>,
     close: MenuItem<Wry>,
@@ -68,6 +78,8 @@ impl GuiMenuState {
             GuiMenuPlatform::Other
         };
         let policy = GuiMenuPolicy::for_surface(surface, platform, can_restore_browser);
+        self.open_project
+            .set_accelerator(policy.open_project_accelerator)?;
         self.new_browser_tab
             .set_accelerator(policy.new_tab_accelerator)?;
         self.restore_browser_tab.set_enabled(can_restore_browser)?;
@@ -93,6 +105,14 @@ pub fn gui_set_menu_surface(
 }
 
 pub fn install(app: &App) -> Result<GuiMenuState> {
+    let open_project = MenuItem::with_id(
+        app,
+        "file.open-project",
+        "Open Project\u{2026}",
+        true,
+        None::<&str>,
+    )?;
+    let new_window = MenuItem::with_id(app, "file.new-window", "New Window", true, None::<&str>)?;
     let new_browser_tab = MenuItem::with_id(
         app,
         "browser.new-tab",
@@ -156,6 +176,9 @@ pub fn install(app: &App) -> Result<GuiMenuState> {
         .item(&quit)
         .build()?;
     let file_menu = SubmenuBuilder::new(app, "File")
+        .item(&open_project)
+        .item(&new_window)
+        .separator()
         .item(&new_browser_tab)
         .item(&restore_browser_tab)
         .separator()
@@ -205,6 +228,7 @@ pub fn install(app: &App) -> Result<GuiMenuState> {
     app.set_menu(menu)?;
 
     let state = GuiMenuState {
+        open_project,
         new_browser_tab,
         restore_browser_tab,
         close,
@@ -233,6 +257,26 @@ mod tests {
         assert_eq!(policy.restore_tab_accelerator, None);
         assert_eq!(policy.close_accelerator, None);
         assert!(!policy.browser_navigation_enabled);
+    }
+
+    #[test]
+    fn macos_owns_the_open_project_accelerator() {
+        for surface in [GuiMenuSurface::Source, GuiMenuSurface::Browser] {
+            let policy = GuiMenuPolicy::for_surface(surface, GuiMenuPlatform::Macos, true);
+            assert_eq!(policy.open_project_accelerator, Some("CmdOrCtrl+O"));
+        }
+    }
+
+    /// Ctrl-O jumps back in the jumplist. Verified in `nvim --clean`
+    /// (2026-09-06): with the cursor moved by `G`, Ctrl-O returns it to the
+    /// previous jump position. A native accelerator would consume the key
+    /// before the webview ever forwards it, so no surface may claim it.
+    #[test]
+    fn non_macos_leaves_control_o_to_the_jumplist() {
+        for surface in [GuiMenuSurface::Source, GuiMenuSurface::Browser] {
+            let policy = GuiMenuPolicy::for_surface(surface, GuiMenuPlatform::Other, true);
+            assert_eq!(policy.open_project_accelerator, None);
+        }
     }
 
     #[test]
