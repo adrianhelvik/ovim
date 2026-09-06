@@ -12,8 +12,23 @@ pub mod app;
 pub mod browser;
 #[cfg(feature = "gui")]
 mod menu;
+pub mod protocol;
 #[cfg(feature = "gui")]
 pub mod window;
+
+// The protocol types used to live in this module. They are re-exported so the
+// Tauri command layer and the API keep importing them from `gui`, and so that
+// `gui::protocol` stays the single place a transport has to look.
+pub use protocol::{
+    GuiAgentOption, GuiAiChat, GuiAiProfileOption, GuiChatMessage, GuiChatSetup,
+    GuiChatSetupAction, GuiCodeAttachment, GuiCodeExplanation, GuiCodeExplanationDiscussion,
+    GuiCodeExplanationPage, GuiCommand, GuiCompletion, GuiCompletionItem, GuiCursor, GuiDebugFrame,
+    GuiDebugPanel, GuiDiagnostics, GuiFileTree, GuiFileTreeItem, GuiGitChanges, GuiHover,
+    GuiKeyInput, GuiLayoutNode, GuiLine, GuiLspEntry, GuiLspManager, GuiPane, GuiPicker,
+    GuiPickerItem, GuiProblem, GuiProblemList, GuiPrompt, GuiQueuedChatInput, GuiReply,
+    GuiReplyKind, GuiSegment, GuiSnapshot, GuiTab, GuiTestFailure, GuiTestPanel, GuiTheme,
+    GuiVectorSource,
+};
 
 use crate::cli::FileArg;
 use crate::color::Color;
@@ -27,8 +42,6 @@ use crate::mode::Mode;
 use crate::syntax::{HighlightGroup, UiGroup};
 use crate::unicode::GraphemeCol;
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
@@ -42,38 +55,6 @@ const HORIZONTAL_OVERSCAN: usize = 96;
 const MAX_FILE_TREE_ITEMS: usize = 300;
 const MAX_PICKER_ITEMS: usize = 24;
 const MAX_COMPLETION_ITEMS: usize = 12;
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiKeyInput {
-    pub key: String,
-    #[serde(default)]
-    pub shift: bool,
-    #[serde(default)]
-    pub control: bool,
-    #[serde(default)]
-    pub alt: bool,
-    #[serde(default)]
-    pub meta: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiAgentOption {
-    pub id: String,
-    pub task_name: String,
-    pub lifecycle: String,
-    pub model: String,
-    pub depth: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiAiProfileOption {
-    pub id: String,
-    pub provider: String,
-    pub model: String,
-}
 
 fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
     if let Some(summary) = editor.codex_auth_dialog_summary() {
@@ -177,25 +158,6 @@ fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiChatSetup {
-    pub kind: String,
-    pub title: String,
-    pub detail: String,
-    pub masked_input: Option<String>,
-    pub input_cursor: Option<usize>,
-    pub error: Option<String>,
-    pub actions: Vec<GuiChatSetupAction>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiChatSetupAction {
-    pub label: String,
-    pub key: String,
-}
-
 fn attach_chat_images(editor: &mut Editor, paths: &[std::path::PathBuf]) -> Result<()> {
     if editor.mode() != Mode::AiChat {
         anyhow::bail!("Open AI chat before dropping an image");
@@ -229,491 +191,13 @@ fn attach_chat_images(editor: &mut Editor, paths: &[std::path::PathBuf]) -> Resu
     Ok(())
 }
 
-impl GuiKeyInput {
-    fn into_core(self) -> Result<ovim_core::key::KeyEvent> {
-        use ovim_core::key::{KeyCode, KeyEvent, Modifiers};
-
-        let code = match self.key.as_str() {
-            "Enter" => KeyCode::Enter,
-            "Escape" => KeyCode::Esc,
-            "Tab" if self.shift => KeyCode::BackTab,
-            "Tab" => KeyCode::Tab,
-            "Backspace" => KeyCode::Backspace,
-            "Delete" => KeyCode::Delete,
-            "ArrowLeft" => KeyCode::Left,
-            "ArrowRight" => KeyCode::Right,
-            "ArrowUp" => KeyCode::Up,
-            "ArrowDown" => KeyCode::Down,
-            "Home" => KeyCode::Home,
-            "End" => KeyCode::End,
-            "PageUp" => KeyCode::PageUp,
-            "PageDown" => KeyCode::PageDown,
-            key if key.len() > 1 && key.starts_with('F') => key[1..]
-                .parse::<u8>()
-                .ok()
-                .filter(|number| (1..=24).contains(number))
-                .map(KeyCode::F)
-                .unwrap_or(KeyCode::Null),
-            key => {
-                let mut chars = key.chars();
-                match (chars.next(), chars.next()) {
-                    (Some(ch), None) => KeyCode::Char(ch),
-                    _ => anyhow::bail!("Unsupported GUI key: {key}"),
-                }
-            }
-        };
-
-        let mut modifiers = Modifiers::NONE;
-        if self.shift {
-            modifiers |= Modifiers::SHIFT;
-        }
-        if self.control {
-            modifiers |= Modifiers::CONTROL;
-        }
-        if self.alt {
-            modifiers |= Modifiers::ALT;
-        }
-        if self.meta {
-            modifiers |= Modifiers::SUPER;
-        }
-        Ok(KeyEvent::new(code, modifiers))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiSnapshot {
-    pub revision: u64,
-    pub mode: String,
-    pub dashboard: bool,
-    pub file_path: Option<String>,
-    pub file_name: String,
-    pub workspace_path: Option<String>,
-    pub project_name: String,
-    pub language: String,
-    pub encoding: String,
-    pub line_ending: String,
-    pub modified: bool,
-    pub has_unsaved_changes: bool,
-    pub buffer_revision: usize,
-    pub read_only: bool,
-    pub selection_text: Option<String>,
-    pub cursor: GuiCursor,
-    pub horizontal_offset: usize,
-    pub wrap: bool,
-    pub tab_width: usize,
-    pub expand_tab: bool,
-    pub first_line: usize,
-    pub total_lines: usize,
-    pub lines: Vec<GuiLine>,
-    pub layout: GuiLayoutNode,
-    pub panes: Vec<GuiPane>,
-    pub tabs: Vec<GuiTab>,
-    pub git_branch: Option<String>,
-    pub git_changes: GuiGitChanges,
-    pub diagnostics: GuiDiagnostics,
-    pub lsp_status: String,
-    pub status_message: String,
-    pub prompt: Option<GuiPrompt>,
-    pub picker: Option<GuiPicker>,
-    pub completion: Option<GuiCompletion>,
-    pub hover: Option<GuiHover>,
-    pub file_tree: Option<GuiFileTree>,
-    pub ai_chat: Option<GuiAiChat>,
-    pub test_panel: Option<GuiTestPanel>,
-    pub problems: Option<GuiProblemList>,
-    pub lsp_manager: Option<GuiLspManager>,
-    pub debug: Option<GuiDebugPanel>,
-    pub theme: GuiTheme,
-    pub should_quit: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiCursor {
-    pub line: usize,
-    pub column: usize,
-    pub display_column: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiLine {
-    pub number: usize,
-    pub continuation: bool,
-    pub display_start: usize,
-    pub current: bool,
-    pub segments: Vec<GuiSegment>,
-    pub git: Option<String>,
-    pub diagnostic: Option<String>,
-    pub diff: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum GuiLayoutNode {
-    Pane {
-        pane: usize,
-    },
-    Split {
-        direction: String,
-        ratio: f32,
-        first: Box<GuiLayoutNode>,
-        second: Box<GuiLayoutNode>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiPane {
-    pub index: usize,
-    pub buffer_id: u64,
-    pub focused: bool,
-    pub file_name: String,
-    pub modified: bool,
-    pub cursor: GuiCursor,
-    pub first_line: usize,
-    pub scroll_subrow: usize,
-    pub horizontal_offset: usize,
-    pub total_lines: usize,
-    pub lines: Vec<GuiLine>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiSegment {
-    pub text: String,
-    pub cells: usize,
-    pub token: Option<String>,
-    pub cursor: bool,
-    pub selected: bool,
-    pub search_match: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiTab {
-    pub id: u64,
-    pub index: usize,
-    pub title: String,
-    pub active: bool,
-    pub modified: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiGitChanges {
-    pub added: usize,
-    pub modified: usize,
-    pub removed: usize,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiDiagnostics {
-    pub errors: usize,
-    pub warnings: usize,
-    pub information: usize,
-    pub hints: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiPrompt {
-    pub prefix: String,
-    pub text: String,
-    pub cursor: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiPicker {
-    pub title: String,
-    pub query: String,
-    pub file_filter: Option<String>,
-    pub selected: usize,
-    pub total: usize,
-    pub items: Vec<GuiPickerItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiPickerItem {
-    pub index: usize,
-    pub display: String,
-    pub location: String,
-    pub detail: Option<String>,
-    pub matched: Vec<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiCompletion {
-    pub selected: usize,
-    pub items: Vec<GuiCompletionItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiCompletionItem {
-    pub index: usize,
-    pub label: String,
-    pub detail: Option<String>,
-    pub kind: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiHover {
-    pub content: String,
-    pub line: Option<usize>,
-    pub display_column: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiFileTree {
-    pub root: String,
-    pub selected: usize,
-    pub items: Vec<GuiFileTreeItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiFileTreeItem {
-    pub index: usize,
-    pub name: String,
-    pub path: String,
-    pub depth: usize,
-    pub directory: bool,
-    pub expanded: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiAiChat {
-    pub profile: String,
-    pub pending_code_attachment: Option<GuiCodeAttachment>,
-    pub profiles: Vec<GuiAiProfileOption>,
-    pub reasoning_effort: String,
-    pub reasoning_effort_selection: String,
-    pub reasoning_efforts: Vec<String>,
-    pub yolo_mode: bool,
-    pub comprehension_policy: String,
-    pub comprehension_checkpoint: Option<String>,
-    pub activity: String,
-    pub waiting: bool,
-    pub input: String,
-    pub input_cursor: usize,
-    pub pending_images: Vec<String>,
-    pub queued_inputs: Vec<GuiQueuedChatInput>,
-    pub setup: Option<GuiChatSetup>,
-    pub messages: Vec<GuiChatMessage>,
-    pub streaming: Option<String>,
-    pub streaming_thinking: Option<String>,
-    pub thinking_live: bool,
-    pub focus: String,
-    pub agents: Vec<GuiAgentOption>,
-    pub selected_agent_id: Option<String>,
-    pub followed_agent_id: Option<String>,
-    pub agent_cursor: usize,
-    pub approval: Option<String>,
-    pub code_explanation: Option<GuiCodeExplanation>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiCodeAttachment {
-    pub buffer_id: u64,
-    pub label: String,
-    pub start_line: usize,
-    pub start_column: usize,
-    pub end_line: usize,
-    pub end_column: usize,
-    pub linewise: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiQueuedChatInput {
-    pub id: u64,
-    pub kind: String,
-    pub content: String,
-    pub image_count: usize,
-    pub has_code_attachment: bool,
-    pub selected: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiCodeExplanation {
-    pub current: usize,
-    pub total: usize,
-    pub page: GuiCodeExplanationPage,
-    pub discussion: GuiCodeExplanationDiscussion,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum GuiCodeExplanationPage {
-    Concept {
-        title: String,
-        body: String,
-    },
-    Code {
-        path: String,
-        start_line: usize,
-        end_line: usize,
-        comment: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "state", rename_all = "camelCase")]
-pub enum GuiCodeExplanationDiscussion {
-    Navigating {
-        question_count: usize,
-        latest_question: Option<String>,
-        latest_answer: Option<String>,
-        latest_failed: bool,
-    },
-    Composing {
-        input: String,
-        cursor: usize,
-        question_count: usize,
-    },
-    Answering {
-        question: String,
-        answer: String,
-        question_count: usize,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiChatMessage {
-    pub id: String,
-    pub index: usize,
-    pub selected: bool,
-    pub role: String,
-    pub content: String,
-    pub attachment: Option<String>,
-    pub model: Option<String>,
-    pub tool_name: Option<String>,
-    pub tools: Vec<String>,
-    pub images: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiTestPanel {
-    pub scope: String,
-    pub command: String,
-    pub directory: String,
-    pub status: String,
-    pub elapsed_ms: u64,
-    pub summary: Option<String>,
-    pub failure: Option<GuiTestFailure>,
-    pub truncated: usize,
-    pub lines: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiTestFailure {
-    pub message: String,
-    pub file: Option<String>,
-    pub line: Option<usize>,
-    pub column: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiProblemList {
-    pub kind: String,
-    pub title: String,
-    pub selected: usize,
-    pub total: usize,
-    pub items: Vec<GuiProblem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiProblem {
-    pub index: usize,
-    pub severity: String,
-    pub file: String,
-    pub line: usize,
-    pub column: usize,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiLspManager {
-    pub filter: String,
-    pub selected: usize,
-    pub show_detail: bool,
-    pub items: Vec<GuiLspEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiLspEntry {
-    pub index: usize,
-    pub language: String,
-    pub section: String,
-    pub command: Option<String>,
-    pub state: Option<String>,
-    pub installing: Option<String>,
-    pub install_hint: Option<String>,
-    pub extensions: Vec<String>,
-    pub root_markers: Vec<String>,
-    pub capabilities: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiDebugPanel {
-    pub running: bool,
-    pub reason: Option<String>,
-    pub execution_line: Option<u64>,
-    pub stack: Vec<GuiDebugFrame>,
-    pub output: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiDebugFrame {
-    pub name: String,
-    pub file: String,
-    pub line: u64,
-    pub selected: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiTheme {
-    pub name: String,
-    pub background: String,
-    pub foreground: String,
-    pub surface: String,
-    pub surface_selected: String,
-    pub border: String,
-    pub accent: String,
-    pub accent_foreground: String,
-    pub muted: String,
-    pub cursor_line: String,
-    pub selection: String,
-    pub search: String,
-    pub error: String,
-    pub warning: String,
-    pub info: String,
-    pub success: String,
-    pub syntax: BTreeMap<String, String>,
-}
-
-enum GuiRequest {
+/// One editor request, with the channel its answer travels back on.
+///
+/// This is the in-process form: it pairs the serializable
+/// [`GuiCommand`] payload with a `oneshot::Sender`, and
+/// [`GuiRequest::into_parts`] separates the two again for a transport that
+/// cannot carry a channel.
+pub enum GuiRequest {
     Snapshot {
         columns: u16,
         rows: u16,
@@ -849,10 +333,434 @@ enum GuiRequest {
     Shutdown,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct GuiVectorSource {
-    pub source: String,
-    pub file_name: String,
+/// The reply half of a [`GuiRequest`], separated from its payload.
+///
+/// A [`GuiCommand`] can cross a process boundary but a `oneshot::Sender`
+/// cannot, so the two travel apart and are rejoined by
+/// [`GuiRequest::from_parts`] on the editor's side of the transport.
+pub enum GuiReplySender {
+    None,
+    Unit(oneshot::Sender<Result<(), String>>),
+    Snapshot(oneshot::Sender<Result<GuiSnapshot, String>>),
+    VectorSource(oneshot::Sender<Result<GuiVectorSource, String>>),
+    Path(oneshot::Sender<Result<std::path::PathBuf, String>>),
+}
+
+impl GuiReplySender {
+    /// Build the reply channel that `kind` describes.
+    ///
+    /// Callers get the shape from [`GuiCommand::reply_kind`] rather than
+    /// choosing it, which is what makes [`GuiRequest::from_parts`] unable to
+    /// pair a command with the wrong channel in practice.
+    pub fn channel(kind: GuiReplyKind) -> (Self, GuiReplyReceiver) {
+        match kind {
+            GuiReplyKind::None => (GuiReplySender::None, GuiReplyReceiver::None),
+            GuiReplyKind::Unit => {
+                let (tx, rx) = oneshot::channel();
+                (GuiReplySender::Unit(tx), GuiReplyReceiver::Unit(rx))
+            }
+            GuiReplyKind::Snapshot => {
+                let (tx, rx) = oneshot::channel();
+                (GuiReplySender::Snapshot(tx), GuiReplyReceiver::Snapshot(rx))
+            }
+            GuiReplyKind::VectorSource => {
+                let (tx, rx) = oneshot::channel();
+                (
+                    GuiReplySender::VectorSource(tx),
+                    GuiReplyReceiver::VectorSource(rx),
+                )
+            }
+            GuiReplyKind::Path => {
+                let (tx, rx) = oneshot::channel();
+                (GuiReplySender::Path(tx), GuiReplyReceiver::Path(rx))
+            }
+        }
+    }
+
+    pub fn kind(&self) -> GuiReplyKind {
+        match self {
+            GuiReplySender::None => GuiReplyKind::None,
+            GuiReplySender::Unit(_) => GuiReplyKind::Unit,
+            GuiReplySender::Snapshot(_) => GuiReplyKind::Snapshot,
+            GuiReplySender::VectorSource(_) => GuiReplyKind::VectorSource,
+            GuiReplySender::Path(_) => GuiReplyKind::Path,
+        }
+    }
+}
+
+/// The receiving end of a [`GuiReplySender`].
+pub enum GuiReplyReceiver {
+    None,
+    Unit(oneshot::Receiver<Result<(), String>>),
+    Snapshot(oneshot::Receiver<Result<GuiSnapshot, String>>),
+    VectorSource(oneshot::Receiver<Result<GuiVectorSource, String>>),
+    Path(oneshot::Receiver<Result<std::path::PathBuf, String>>),
+}
+
+impl GuiReplyReceiver {
+    /// Await the editor's answer.
+    ///
+    /// `Ok(None)` means the command is fire-and-forget and there is nothing to
+    /// wait for; `Err` means the editor dropped the channel without answering.
+    pub async fn recv(self) -> Result<Option<GuiReply>, String> {
+        const CLOSED: &str = "The Ovim editor thread closed the response";
+        Ok(match self {
+            GuiReplyReceiver::None => None,
+            GuiReplyReceiver::Unit(rx) => {
+                Some(GuiReply::Unit(rx.await.map_err(|_| CLOSED.to_string())?))
+            }
+            GuiReplyReceiver::Snapshot(rx) => Some(GuiReply::Snapshot(Box::new(
+                rx.await.map_err(|_| CLOSED.to_string())?,
+            ))),
+            GuiReplyReceiver::VectorSource(rx) => Some(GuiReply::VectorSource(
+                rx.await.map_err(|_| CLOSED.to_string())?,
+            )),
+            GuiReplyReceiver::Path(rx) => {
+                Some(GuiReply::Path(rx.await.map_err(|_| CLOSED.to_string())?))
+            }
+        })
+    }
+}
+
+impl GuiRequest {
+    /// Rejoin a wire payload with a reply channel.
+    ///
+    /// The channel has to match [`GuiCommand::reply_kind`]. A caller that
+    /// builds it with [`GuiReplySender::channel`] cannot get that wrong, so a
+    /// mismatch is a transport bug and is reported rather than papered over by
+    /// answering on a channel nobody is waiting on.
+    pub fn from_parts(command: GuiCommand, reply: GuiReplySender) -> Result<Self, String> {
+        Ok(match (command, reply) {
+            (GuiCommand::Snapshot { columns, rows }, GuiReplySender::Snapshot(reply)) => {
+                GuiRequest::Snapshot {
+                    columns,
+                    rows,
+                    reply,
+                }
+            }
+            (GuiCommand::VectorSource, GuiReplySender::VectorSource(reply)) => {
+                GuiRequest::VectorSource { reply }
+            }
+            (GuiCommand::VectorFeedback { feedback }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::VectorFeedback { feedback, reply }
+            }
+            (GuiCommand::DiffWorkspace, GuiReplySender::Path(reply)) => {
+                GuiRequest::DiffWorkspace { reply }
+            }
+            (GuiCommand::OpenDiffBuffer { title, content }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::OpenDiffBuffer {
+                    title,
+                    content,
+                    reply,
+                }
+            }
+            (GuiCommand::Key { input }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::Key { input, reply }
+            }
+            (GuiCommand::OpenAiChat, GuiReplySender::Unit(reply)) => {
+                GuiRequest::OpenAiChat { reply }
+            }
+            (
+                GuiCommand::UpdateChatInput {
+                    expected_input,
+                    expected_cursor,
+                    input,
+                    cursor,
+                    action,
+                },
+                GuiReplySender::Unit(reply),
+            ) => GuiRequest::UpdateChatInput {
+                expected_input,
+                expected_cursor,
+                input,
+                cursor,
+                action,
+                reply,
+            },
+            (GuiCommand::SetChatInputCursor { offset }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SetChatInputCursor { offset, reply }
+            }
+            (GuiCommand::SetChatInputWidth { columns }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SetChatInputWidth { columns, reply }
+            }
+            (GuiCommand::RemoveChatImage { index }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::RemoveChatImage { index, reply }
+            }
+            (GuiCommand::SelectAiProfile { profile }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SelectAiProfile { profile, reply }
+            }
+            (GuiCommand::SelectReasoningEffort { effort }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SelectReasoningEffort { effort, reply }
+            }
+            (GuiCommand::SelectChatMessage { index }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SelectChatMessage { index, reply }
+            }
+            (GuiCommand::ManageQueuedChatInput { id, action }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::ManageQueuedChatInput { id, action, reply }
+            }
+            (GuiCommand::AiPolicy { action }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::AiPolicy { action, reply }
+            }
+            (GuiCommand::EditorCommand { command }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::EditorCommand { command, reply }
+            }
+            (GuiCommand::SelectChatAgent { agent_id }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SelectChatAgent { agent_id, reply }
+            }
+            (GuiCommand::Paste { text }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::Paste { text, reply }
+            }
+            (GuiCommand::AttachImages { paths }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::AttachImages { paths, reply }
+            }
+            (GuiCommand::AttachImageData { name, data }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::AttachImageData { name, data, reply }
+            }
+            (
+                GuiCommand::SetCursor {
+                    pane,
+                    line,
+                    display_column,
+                },
+                GuiReplySender::Unit(reply),
+            ) => GuiRequest::SetCursor {
+                pane,
+                line,
+                display_column,
+                reply,
+            },
+            (GuiCommand::SelectTab { index }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SelectTab { index, reply }
+            }
+            (GuiCommand::FocusPane { index }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::FocusPane { index, reply }
+            }
+            (GuiCommand::SelectPicker { index }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SelectPicker { index, reply }
+            }
+            (GuiCommand::SelectCompletion { index, activate }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SelectCompletion {
+                    index,
+                    activate,
+                    reply,
+                }
+            }
+            (GuiCommand::SelectFileTree { index, activate }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SelectFileTree {
+                    index,
+                    activate,
+                    reply,
+                }
+            }
+            (
+                GuiCommand::SelectProblem {
+                    kind,
+                    index,
+                    activate,
+                },
+                GuiReplySender::Unit(reply),
+            ) => GuiRequest::SelectProblem {
+                kind,
+                index,
+                activate,
+                reply,
+            },
+            (GuiCommand::SelectLsp { index, activate }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SelectLsp {
+                    index,
+                    activate,
+                    reply,
+                }
+            }
+            (GuiCommand::SelectDebugFrame { index }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::SelectDebugFrame { index, reply }
+            }
+            (GuiCommand::Shutdown, GuiReplySender::None) => GuiRequest::Shutdown,
+            (command, reply) => {
+                return Err(format!(
+                    "A GUI command needing a {:?} reply was given a {:?} reply channel",
+                    command.reply_kind(),
+                    reply.kind()
+                ))
+            }
+        })
+    }
+
+    /// Split a request back into the payload a transport can serialize and the
+    /// reply channel it cannot.
+    ///
+    /// This is the exact inverse of [`GuiRequest::from_parts`]; the round-trip
+    /// test in this module is what keeps a field from being dropped on the way
+    /// through the wire format.
+    pub fn into_parts(self) -> (GuiCommand, GuiReplySender) {
+        match self {
+            GuiRequest::Snapshot {
+                columns,
+                rows,
+                reply,
+            } => (
+                GuiCommand::Snapshot { columns, rows },
+                GuiReplySender::Snapshot(reply),
+            ),
+            GuiRequest::VectorSource { reply } => (
+                GuiCommand::VectorSource,
+                GuiReplySender::VectorSource(reply),
+            ),
+            GuiRequest::VectorFeedback { feedback, reply } => (
+                GuiCommand::VectorFeedback { feedback },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::DiffWorkspace { reply } => {
+                (GuiCommand::DiffWorkspace, GuiReplySender::Path(reply))
+            }
+            GuiRequest::OpenDiffBuffer {
+                title,
+                content,
+                reply,
+            } => (
+                GuiCommand::OpenDiffBuffer { title, content },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::Key { input, reply } => {
+                (GuiCommand::Key { input }, GuiReplySender::Unit(reply))
+            }
+            GuiRequest::OpenAiChat { reply } => {
+                (GuiCommand::OpenAiChat, GuiReplySender::Unit(reply))
+            }
+            GuiRequest::UpdateChatInput {
+                expected_input,
+                expected_cursor,
+                input,
+                cursor,
+                action,
+                reply,
+            } => (
+                GuiCommand::UpdateChatInput {
+                    expected_input,
+                    expected_cursor,
+                    input,
+                    cursor,
+                    action,
+                },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SetChatInputCursor { offset, reply } => (
+                GuiCommand::SetChatInputCursor { offset },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SetChatInputWidth { columns, reply } => (
+                GuiCommand::SetChatInputWidth { columns },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::RemoveChatImage { index, reply } => (
+                GuiCommand::RemoveChatImage { index },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SelectAiProfile { profile, reply } => (
+                GuiCommand::SelectAiProfile { profile },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SelectReasoningEffort { effort, reply } => (
+                GuiCommand::SelectReasoningEffort { effort },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SelectChatMessage { index, reply } => (
+                GuiCommand::SelectChatMessage { index },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::ManageQueuedChatInput { id, action, reply } => (
+                GuiCommand::ManageQueuedChatInput { id, action },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::AiPolicy { action, reply } => {
+                (GuiCommand::AiPolicy { action }, GuiReplySender::Unit(reply))
+            }
+            GuiRequest::EditorCommand { command, reply } => (
+                GuiCommand::EditorCommand { command },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SelectChatAgent { agent_id, reply } => (
+                GuiCommand::SelectChatAgent { agent_id },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::Paste { text, reply } => {
+                (GuiCommand::Paste { text }, GuiReplySender::Unit(reply))
+            }
+            GuiRequest::AttachImages { paths, reply } => (
+                GuiCommand::AttachImages { paths },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::AttachImageData { name, data, reply } => (
+                GuiCommand::AttachImageData { name, data },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SetCursor {
+                pane,
+                line,
+                display_column,
+                reply,
+            } => (
+                GuiCommand::SetCursor {
+                    pane,
+                    line,
+                    display_column,
+                },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SelectTab { index, reply } => {
+                (GuiCommand::SelectTab { index }, GuiReplySender::Unit(reply))
+            }
+            GuiRequest::FocusPane { index, reply } => {
+                (GuiCommand::FocusPane { index }, GuiReplySender::Unit(reply))
+            }
+            GuiRequest::SelectPicker { index, reply } => (
+                GuiCommand::SelectPicker { index },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SelectCompletion {
+                index,
+                activate,
+                reply,
+            } => (
+                GuiCommand::SelectCompletion { index, activate },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SelectFileTree {
+                index,
+                activate,
+                reply,
+            } => (
+                GuiCommand::SelectFileTree { index, activate },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SelectProblem {
+                kind,
+                index,
+                activate,
+                reply,
+            } => (
+                GuiCommand::SelectProblem {
+                    kind,
+                    index,
+                    activate,
+                },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SelectLsp {
+                index,
+                activate,
+                reply,
+            } => (
+                GuiCommand::SelectLsp { index, activate },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::SelectDebugFrame { index, reply } => (
+                GuiCommand::SelectDebugFrame { index },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::Shutdown => (GuiCommand::Shutdown, GuiReplySender::None),
+        }
+    }
 }
 
 /// Send-side handle stored as Tauri application state.
@@ -3201,6 +3109,131 @@ fn indexed_rgb(index: u8) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_realistic_snapshot_survives_a_json_round_trip() {
+        // The frontend only ever sees `snapshot()`'s output, so the round trip
+        // is checked against a projected frame rather than a hand-built one:
+        // splits, tabs, syntax segments, an open chat, and a status message
+        // between them reach every branch a plain buffer would leave empty.
+        let content: String = (0..80)
+            .map(|line| format!("let value_{line} = {line};\n"))
+            .collect();
+        let mut editor = Editor::with_content(&content);
+        editor.set_file_path("src/sample.rs".to_string());
+        editor.buffer_mut().enable_syntax_highlighting();
+        editor.set_viewport_height(20);
+        editor.init_window_manager(120, 40);
+        editor.split_window_vertical();
+        editor.focus_next_window();
+        editor.split_window_horizontal();
+        editor.new_tab();
+        // Come back to the source buffer so the projected frame is the
+        // interesting one rather than the empty scratch tab.
+        editor.first_tab();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        editor.ai_state.chat.as_mut().unwrap().input = "explain this rope".to_string();
+        editor.set_status_message("written");
+
+        let view = snapshot(&editor, 12);
+
+        assert!(view.panes.len() > 1, "the fixture should produce splits");
+        assert!(view.tabs.len() > 1, "the fixture should produce tabs");
+        assert!(view.ai_chat.is_some(), "the fixture should open the chat");
+        assert!(matches!(view.layout, GuiLayoutNode::Split { .. }));
+        assert!(view
+            .lines
+            .iter()
+            .flat_map(|line| &line.segments)
+            .any(|segment| segment.token.is_some()));
+        assert_eq!(protocol::round_trip(&view), view);
+    }
+
+    #[test]
+    fn the_snapshot_wire_format_stays_camel_case() {
+        // The TypeScript frontend reads these exact keys. Adding `Deserialize`
+        // must not have renamed anything, so a few representative fields --
+        // one plain, one nested struct, one internally tagged enum -- are
+        // pinned here.
+        let mut editor = Editor::with_content("hello\n");
+        editor.set_file_path("src/sample.rs".to_string());
+
+        let json = serde_json::to_value(snapshot(&editor, 1)).unwrap();
+
+        assert_eq!(json["fileName"], "sample.rs");
+        assert!(json["totalLines"].is_number());
+        assert!(json["gitChanges"]["added"].is_number());
+        assert_eq!(json["layout"]["kind"], "pane");
+        assert!(json.get("file_name").is_none());
+    }
+
+    #[test]
+    fn every_command_rebuilds_the_request_it_came_from_without_losing_a_field() {
+        // `into_parts` is the inverse of `from_parts`, so a payload field that
+        // either conversion forgets shows up as an inequality here.
+        for command in protocol::sample_commands() {
+            let (reply, _receiver) = GuiReplySender::channel(command.reply_kind());
+            let request = GuiRequest::from_parts(command.clone(), reply)
+                .unwrap_or_else(|error| panic!("{command:?} could not be rebuilt: {error}"));
+
+            let (recovered, reply) = request.into_parts();
+
+            assert_eq!(recovered, command);
+            assert_eq!(reply.kind(), command.reply_kind());
+        }
+    }
+
+    #[test]
+    fn a_reply_channel_of_the_wrong_shape_is_refused_rather_than_mis_wired() {
+        let (reply, _receiver) = GuiReplySender::channel(GuiReplyKind::Unit);
+
+        let error = GuiRequest::from_parts(
+            GuiCommand::Snapshot {
+                columns: 80,
+                rows: 24,
+            },
+            reply,
+        )
+        .err()
+        .expect("a mismatched reply channel must be refused");
+
+        assert!(error.contains("Snapshot"), "{error}");
+        assert!(error.contains("Unit"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_rebuilt_request_answers_on_the_channel_its_command_asked_for() {
+        let command = GuiCommand::DiffWorkspace;
+        let (reply, receiver) = GuiReplySender::channel(command.reply_kind());
+        let request = GuiRequest::from_parts(command, reply).unwrap();
+
+        let GuiRequest::DiffWorkspace { reply } = request else {
+            panic!("a DiffWorkspace command must rebuild a DiffWorkspace request");
+        };
+        reply
+            .send(Ok(std::path::PathBuf::from("workspace/project")))
+            .unwrap();
+
+        assert_eq!(
+            receiver.recv().await.unwrap(),
+            Some(GuiReply::Path(Ok(std::path::PathBuf::from(
+                "workspace/project"
+            ))))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fire_and_forget_command_has_nothing_to_wait_for() {
+        let command = GuiCommand::Shutdown;
+        let (reply, receiver) = GuiReplySender::channel(command.reply_kind());
+
+        let request = GuiRequest::from_parts(command, reply).unwrap();
+
+        assert!(matches!(request, GuiRequest::Shutdown));
+        assert_eq!(receiver.recv().await.unwrap(), None);
+    }
 
     #[test]
     fn gui_chat_activation_dismisses_a_transient_picker() {
