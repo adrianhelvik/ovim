@@ -139,3 +139,36 @@ clipboard, and the reverse for paste. Daily papercut if skipped.
 
 Multi-root or mixed local/remote workspaces; remote terminal (blocked on the
 GUI terminal gap); local file drag-drop into a remote window.
+
+## Remote-incompatible surface (audited)
+
+Of 33 Tauri commands in `ovim/src/gui/app.rs`, 28 are pure passthrough to the
+bridge and work over any transport unchanged. The exceptions:
+
+1. **`gui_diff_state` / `gui_diff_open_file`** — both take the `PathBuf`
+   returned by `GuiCommand::DiffWorkspace` and run `native_diff::review()` /
+   `file_patch()` on it locally. The root problem is `DiffWorkspace` returning
+   a path at all: it hands a server-side path to a client that assumes it is
+   local. Fix in R3 by replacing it with commands that return the computed
+   `DiffReview` / patch, so the work happens where the repository is.
+
+2. **`GuiCommand::AttachImages { paths }`** — drag-drop yields paths on the
+   laptop, but the handler opens them on the editor's host. `AttachImageData`
+   (raw bytes) already exists and is transport-independent; route drag-drop
+   through it under a remote transport.
+
+3. **`PendingWindowOpen` / `:openwin`** — broken in *both* directions. A
+   remote `:openwin` produces a remote path that is then `fs::metadata`'d
+   locally and handed to a locally spawned `current_exe()`; and the local
+   directory picker produces a local path handed to a remote editor. The
+   window-open request must carry which host the path belongs to.
+
+4. **`render_vector_preview`** — spawns `strok` from the *local* PATH. It
+   works over a transport because it operates on the source string rather than
+   a path, but it puts a toolchain requirement on the laptop, contradicting the
+   "real toolchain runs remotely" premise. Needs an explicit decision, not an
+   accident.
+
+5. **Intentionally local, do not "fix"**: `gui_open_external`
+   (`open::that_in_background`) and `gui_window_action`. These belong on the
+   laptop.
