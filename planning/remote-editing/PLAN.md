@@ -172,3 +172,32 @@ bridge and work over any transport unchanged. The exceptions:
 5. **Intentionally local, do not "fix"**: `gui_open_external`
    (`open::that_in_background`) and `gui_window_action`. These belong on the
    laptop.
+
+## Implementation notes gathered during R1/R2
+
+**R3 is cheaper than first estimated.** `run_headless_loop`
+(`ovim/src/event_loop.rs`) already accepts `initial_dimensions`, calls
+`handle_viewport_resize`, and runs `process_editor_tick` +
+`process_pending_rehighlight` on a 50ms interval — the same tick work the GUI's
+`run_editor` performs. R3 is therefore a snapshot publisher plus two routes,
+not a rewrite of the headless loop. The existing `/resize` endpoint already
+lets a client set its viewport on connect, so no new server work is needed for
+sizing.
+
+**The Host-header trap, with its mechanism.** `OvimClient`
+(`ovim/src/client.rs`) builds `base_url` as `http://127.0.0.1:{port}`, so
+reqwest derives the `Host` header from the URL. Under `ssh -L` the local
+forwarded port differs from the remote port, and
+`ApiSecurity::host_is_allowed` compares against the *server's own* port — so
+the auto-derived header fails and every request 403s. The remote transport
+must set `Host` explicitly to the remote port.
+
+**`OvimClient` cannot be reused as-is.** It is blocking reqwest
+(`pub fn`, `.send()` without `.await`). `RemoteTransport` needs an async
+client, so R4 writes its own rather than extending `OvimClient`.
+
+**Test harness for R4 already exists.** R2 added `RecordingTransport` and
+`every_typed_helper_sends_the_command_variant_it_is_named_for` in
+`gui/bridge.rs`, which pins all 31 helpers to their command variants. R4
+should reuse that harness to prove the remote transport is wire-equivalent to
+the local one.
