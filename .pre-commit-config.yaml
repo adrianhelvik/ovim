@@ -1,13 +1,19 @@
+# Use the CI toolchain for Cargo and every subprocess it invokes.
 repos:
   - repo: local
     hooks:
       - id: cargo-fmt
         name: cargo fmt
-        entry: cargo fmt --all -- --check
+        entry: bash .github/scripts/cargo-ci.sh fmt --all -- --check
         language: system
         pass_filenames: false
       - id: cargo-clippy
-        name: cargo clippy
-        entry: cargo clippy --workspace --all-targets -- -D warnings
+        name: cargo clippy (GUI)
+        entry: bash .github/scripts/cargo-ci.sh clippy --workspace --all-targets --locked -- -D warnings
+        language: system
+        pass_filenames: false
+      - id: cargo-clippy-headless
+        name: cargo clippy (headless)
+        entry: bash .github/scripts/cargo-ci.sh clippy --workspace --all-targets --no-default-features --features lua --locked -- -D warnings
         language: system
         pass_filenames: false

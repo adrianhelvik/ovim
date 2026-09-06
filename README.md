@@ -289,11 +289,19 @@ linting. The pre-commit hooks enforce both formatter and lint checks before
 changes land.
 
 To run the same formatting and Clippy checks as CI before every commit, install
-[pre-commit](https://pre-commit.com/) and enable the repository hooks:
+[pre-commit](https://pre-commit.com/), install the pinned Rust toolchain, and enable
+the repository hooks:
 
 ```bash
+rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
 pre-commit install
 ```
+
+The hooks select the same Rust version as CI for Cargo, rustc, rustfmt, and
+Clippy, even when a system Rust installation appears first on `PATH`. Clippy
+runs with both GUI and headless features. Keep the versions in
+`.github/scripts/cargo-ci.sh` and `.github/workflows/ci.yml` together when
+updating the toolchain.
 
 Run the checks manually with `pre-commit run --all-files`. The full test suite
 remains available through `cargo test --workspace`.
